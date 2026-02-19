@@ -48,8 +48,8 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     for file in &files {
         let imports = db.get_imports_by_file(file.id)?;
 
-        // Group imports by source_path to create one edge per target file
-        let mut edges_by_target: HashMap<FileId, Vec<String>> = HashMap::new();
+        // Group imports by target file, tracking metadata per import
+        let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
 
         for import in &imports {
             let resolution = resolver.resolve(&import.source_path, &file.path);
@@ -58,10 +58,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 Resolution::Resolved(resolved_path)
                 | Resolution::ResolvedWithCaveat(resolved_path, _) => {
                     if let Some(&target_id) = path_to_id.get(&resolved_path) {
-                        edges_by_target
-                            .entry(target_id)
-                            .or_default()
-                            .push(import.imported_name.clone());
+                        edges_by_target.entry(target_id).or_default().push((
+                            import.imported_name.clone(),
+                            import.is_type_only,
+                            import.line_span.start.line,
+                        ));
                     }
                 }
                 Resolution::External(pkg) => {
@@ -98,13 +99,18 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         }
 
         // Create edges
-        for (target_id, names) in edges_by_target {
+        for (target_id, imports_meta) in edges_by_target {
+            let names: Vec<String> = imports_meta.iter().map(|(n, _, _)| n.clone()).collect();
+            // Edge is type-only only if ALL grouped imports are type-only
+            let is_type_only = imports_meta.iter().all(|(_, t, _)| *t);
+            // Use the earliest line number
+            let line = imports_meta.iter().map(|(_, _, l)| *l).min().unwrap_or(0);
             graph.add_import(FileImport {
                 from: file.id,
                 to: target_id,
                 imported_names: names,
-                is_type_only: false,
-                line: 0,
+                is_type_only,
+                line,
             });
         }
     }
@@ -451,6 +457,83 @@ pub fn run_summary(project_path: &Path, format: &OutputFormat, no_index: bool) -
     })
 }
 
+/// Run the `lint` command. Returns (output_string, has_errors).
+pub fn run_lint(
+    project_path: &Path,
+    config_path: Option<&str>,
+    rule_filter: Option<&str>,
+    severity_threshold: &str,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<(String, bool)> {
+    use crate::linting::config::{find_config_path, load_config, Severity};
+    use crate::linting::rules::evaluate_rules;
+
+    // Find and load config
+    let config_override = config_path.map(PathBuf::from);
+    let config_file = find_config_path(project_path, config_override.as_deref())
+        .context("No lint config found. Create .statik/rules.toml or use --config <path>.")?;
+
+    let mut config = load_config(&config_file)?;
+
+    // Filter to a specific rule if requested
+    if let Some(rule_id) = rule_filter {
+        config.rules.retain(|r| r.id == rule_id);
+        if config.rules.is_empty() {
+            anyhow::bail!("No rule found with id '{}'", rule_id);
+        }
+    }
+
+    // Parse severity threshold
+    let threshold = match severity_threshold {
+        "error" => Severity::Error,
+        "warning" => Severity::Warning,
+        _ => Severity::Info,
+    };
+
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+
+    let mut result = evaluate_rules(&config, &graph, project_path)?;
+
+    // Filter by severity threshold
+    result.violations.retain(|v| match threshold {
+        Severity::Error => v.severity == Severity::Error,
+        Severity::Warning => v.severity == Severity::Error || v.severity == Severity::Warning,
+        Severity::Info => true,
+    });
+
+    // Recompute summary after filtering
+    let errors = result
+        .violations
+        .iter()
+        .filter(|v| v.severity == Severity::Error)
+        .count();
+    let warnings = result
+        .violations
+        .iter()
+        .filter(|v| v.severity == Severity::Warning)
+        .count();
+    let infos = result
+        .violations
+        .iter()
+        .filter(|v| v.severity == Severity::Info)
+        .count();
+    result.summary.total_violations = result.violations.len();
+    result.summary.errors = errors;
+    result.summary.warnings = warnings;
+    result.summary.infos = infos;
+
+    let has_errors = errors > 0;
+
+    let output = match format {
+        OutputFormat::Text => format_lint_text(&result),
+        _ => format_json(&result, format),
+    };
+
+    Ok((output, has_errors))
+}
+
 /// Format any serializable analysis result as JSON.
 fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
@@ -767,6 +850,48 @@ fn format_summary_text(result: &serde_json::Value) -> String {
             count, files_in,
         ));
     }
+
+    out
+}
+
+fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
+    use crate::linting::config::Severity;
+
+    let mut out = String::new();
+
+    if result.violations.is_empty() {
+        out.push_str("No lint violations found.\n");
+    } else {
+        for v in &result.violations {
+            let severity_label = match v.severity {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                Severity::Info => "info",
+            };
+            out.push_str(&format!(
+                "{}[{}] {}\n",
+                severity_label, v.rule_id, v.description
+            ));
+            out.push_str(&format!(
+                "  {}:{} -> {}\n",
+                display_path(&v.source_file),
+                v.line,
+                display_path(&v.target_file),
+            ));
+            if !v.imported_names.is_empty() {
+                out.push_str(&format!("    imports: {}\n", v.imported_names.join(", ")));
+            }
+            if let Some(ref fix) = v.fix_direction {
+                out.push_str(&format!("    fix: {}\n", fix));
+            }
+            out.push('\n');
+        }
+    }
+
+    out.push_str(&format!(
+        "{} errors, {} warnings across {} rules\n",
+        result.summary.errors, result.summary.warnings, result.summary.rules_evaluated,
+    ));
 
     out
 }

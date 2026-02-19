@@ -85,6 +85,19 @@ pub enum Commands {
     /// Project overview statistics
     Summary,
 
+    /// Check architectural boundary rules
+    Lint {
+        /// Path to config file (default: .statik/rules.toml or statik.toml)
+        #[arg(long)]
+        config: Option<String>,
+        /// Only evaluate a specific rule by ID
+        #[arg(long)]
+        rule: Option<String>,
+        /// Minimum severity to report (error, warning, info)
+        #[arg(long, default_value = "info")]
+        severity_threshold: String,
+    },
+
     // --- Deferred commands (v2+, kept hidden) ---
     /// List symbols in the project [deferred to v2]
     #[command(hide = true)]

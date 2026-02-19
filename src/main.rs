@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod cli;
 pub mod db;
 pub mod discovery;
+pub mod linting;
 pub mod model;
 pub mod parser;
 pub mod resolver;
@@ -96,6 +97,25 @@ fn main() -> Result<()> {
         Commands::Summary => {
             let output = commands::run_summary(&project_path, &cli.format, cli.no_index)?;
             println!("{}", output);
+        }
+
+        Commands::Lint {
+            ref config,
+            ref rule,
+            ref severity_threshold,
+        } => {
+            let (output, has_errors) = commands::run_lint(
+                &project_path,
+                config.as_deref(),
+                rule.as_deref(),
+                severity_threshold,
+                &cli.format,
+                cli.no_index,
+            )?;
+            println!("{}", output);
+            if has_errors {
+                std::process::exit(1);
+            }
         }
 
         Commands::Symbols { .. } | Commands::References { .. } | Commands::Callers { .. } => {
