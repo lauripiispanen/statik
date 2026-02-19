@@ -45,10 +45,6 @@ impl TestProject {
         String::from_utf8_lossy(&output.stdout).to_string()
     }
 
-    fn stderr(&self, args: &[&str]) -> String {
-        let output = self.run(args);
-        String::from_utf8_lossy(&output.stderr).to_string()
-    }
 }
 
 /// Create a basic project with a known dependency structure:
