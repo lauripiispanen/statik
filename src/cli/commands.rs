@@ -199,7 +199,10 @@ pub fn run_deps(
     let result = analyze_deps(&graph, target_id, direction, transitive, max_depth)
         .context("Failed to analyze dependencies")?;
 
-    Ok(format_analysis_output(&result, "deps", format))
+    Ok(match format {
+        OutputFormat::Text => format_deps_text(&result),
+        _ => format_json(&result, format),
+    })
 }
 
 /// Run the `dead-code` command.
@@ -219,7 +222,10 @@ pub fn run_dead_code(
     };
 
     let result = detect_dead_code(&graph, scope);
-    Ok(format_analysis_output(&result, "dead-code", format))
+    Ok(match format {
+        OutputFormat::Text => format_dead_code_text(&result),
+        _ => format_json(&result, format),
+    })
 }
 
 /// Run the `cycles` command.
@@ -228,7 +234,10 @@ pub fn run_cycles(project_path: &Path, format: &OutputFormat, no_index: bool) ->
     let graph = build_file_graph(&db, project_path)?;
 
     let result = detect_cycles(&graph);
-    Ok(format_analysis_output(&result, "cycles", format))
+    Ok(match format {
+        OutputFormat::Text => format_cycles_text(&result),
+        _ => format_json(&result, format),
+    })
 }
 
 /// Run the `impact` command.
@@ -257,7 +266,10 @@ pub fn run_impact(
     let result =
         analyze_impact(&graph, target_id, max_depth).context("Failed to analyze impact")?;
 
-    Ok(format_analysis_output(&result, "impact", format))
+    Ok(match format {
+        OutputFormat::Text => format_impact_text(&result),
+        _ => format_json(&result, format),
+    })
 }
 
 /// Run the `exports` command.
@@ -345,7 +357,13 @@ pub fn run_exports(
         exports,
     };
 
-    Ok(format_analysis_output(&result, "exports", format))
+    Ok(match format {
+        OutputFormat::Text => {
+            let value = serde_json::to_value(&result).unwrap_or_default();
+            format_exports_text(&value)
+        }
+        _ => format_json(&result, format),
+    })
 }
 
 /// Run the `summary` command.
@@ -424,22 +442,623 @@ pub fn run_summary(project_path: &Path, format: &OutputFormat, no_index: bool) -
         },
     };
 
-    Ok(format_analysis_output(&result, "summary", format))
+    Ok(match format {
+        OutputFormat::Text => {
+            let value = serde_json::to_value(&result).unwrap_or_default();
+            format_summary_text(&value)
+        }
+        _ => format_json(&result, format),
+    })
 }
 
-/// Format any serializable analysis result.
-fn format_analysis_output<T: serde::Serialize>(
-    value: &T,
-    _command_name: &str,
-    format: &OutputFormat,
-) -> String {
+/// Format any serializable analysis result as JSON.
+fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
         OutputFormat::Compact => serde_json::to_string(value).unwrap_or_default(),
-        OutputFormat::Text => {
-            // For text output, use pretty JSON as fallback
-            // Commands that want custom text formatting override this
-            serde_json::to_string_pretty(value).unwrap_or_default()
+        OutputFormat::Text => unreachable!("text format should be handled by caller"),
+    }
+}
+
+/// Strip a common project root prefix from a path for display.
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
+// --- Text formatters for each command ---
+
+fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Dependencies for {}\n", display_path(&result.target_path)));
+    out.push('\n');
+
+    if !result.imports.is_empty() {
+        out.push_str(&format!("Imports ({}):\n", result.imports.len()));
+        for dep in &result.imports {
+            let indent = "  ".repeat(dep.depth);
+            let names = if dep.imported_names.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", dep.imported_names.join(", "))
+            };
+            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
         }
+        out.push('\n');
+    }
+
+    if !result.imported_by.is_empty() {
+        out.push_str(&format!("Imported by ({}):\n", result.imported_by.len()));
+        for dep in &result.imported_by {
+            let indent = "  ".repeat(dep.depth);
+            let names = if dep.imported_names.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", dep.imported_names.join(", "))
+            };
+            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
+        }
+        out.push('\n');
+    }
+
+    if result.imports.is_empty() && result.imported_by.is_empty() {
+        out.push_str("No dependencies found.\n");
+    }
+
+    out.push_str(&format!("Confidence: {}", result.confidence));
+    out
+}
+
+fn format_dead_code_text(result: &crate::analysis::dead_code::DeadCodeResult) -> String {
+    let mut out = String::new();
+
+    if !result.dead_files.is_empty() {
+        out.push_str(&format!("Dead files ({}):\n", result.dead_files.len()));
+        for f in &result.dead_files {
+            out.push_str(&format!("  {} [{}]\n", display_path(&f.path), f.confidence));
+        }
+        out.push('\n');
+    }
+
+    if !result.dead_exports.is_empty() {
+        out.push_str(&format!("Dead exports ({}):\n", result.dead_exports.len()));
+        for e in &result.dead_exports {
+            out.push_str(&format!(
+                "  {}  {}  [{}]\n",
+                display_path(&e.path),
+                e.export_name,
+                e.confidence,
+            ));
+        }
+        out.push('\n');
+    }
+
+    if result.dead_files.is_empty() && result.dead_exports.is_empty() {
+        out.push_str("No dead code found.\n\n");
+    }
+
+    out.push_str(&format!(
+        "Summary: {}/{} dead files, {}/{} dead exports, {} entry points\n",
+        result.summary.dead_files,
+        result.summary.total_files,
+        result.summary.dead_exports,
+        result.summary.total_exports,
+        result.summary.entry_points,
+    ));
+    out.push_str(&format!("Confidence: {}", result.confidence));
+
+    if !result.limitations.is_empty() {
+        out.push('\n');
+        for lim in &result.limitations {
+            out.push_str(&format!("  Warning: {}\n", lim.description));
+        }
+    }
+
+    out
+}
+
+fn format_cycles_text(result: &crate::analysis::cycles::CycleResult) -> String {
+    let mut out = String::new();
+
+    if result.cycles.is_empty() {
+        out.push_str("No circular dependencies found.\n");
+    } else {
+        out.push_str(&format!(
+            "Circular dependencies ({} cycles, {} files involved):\n\n",
+            result.summary.cycle_count, result.summary.files_in_cycles,
+        ));
+        for (i, cycle) in result.cycles.iter().enumerate() {
+            out.push_str(&format!("  Cycle {} ({} files):\n", i + 1, cycle.length));
+            for (j, file) in cycle.files.iter().enumerate() {
+                if j < cycle.files.len() - 1 {
+                    out.push_str(&format!("    {} ->\n", display_path(&file.path)));
+                } else {
+                    out.push_str(&format!("    {} ->\n", display_path(&file.path)));
+                    out.push_str(&format!(
+                        "    {} (cycle)\n",
+                        display_path(&cycle.files[0].path)
+                    ));
+                }
+            }
+            out.push('\n');
+        }
+    }
+
+    out.push_str(&format!("Confidence: {}", result.confidence));
+    out
+}
+
+fn format_impact_text(result: &crate::analysis::impact::ImpactResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Impact of changing {}\n\n",
+        display_path(&result.target_path)
+    ));
+
+    if result.affected.is_empty() {
+        out.push_str("No files affected.\n");
+    } else {
+        out.push_str(&format!(
+            "Affected files ({} total, max depth {}):\n",
+            result.summary.total_affected, result.summary.max_depth,
+        ));
+
+        let mut max_depth = 0;
+        for af in &result.affected {
+            if af.depth > max_depth {
+                max_depth = af.depth;
+            }
+        }
+
+        for depth in 1..=max_depth {
+            if let Some(files) = result.by_depth.get(&depth) {
+                out.push_str(&format!("  Depth {}:\n", depth));
+                for af in files {
+                    out.push_str(&format!("    {}\n", display_path(&af.path)));
+                }
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!("Confidence: {}", result.confidence));
+    out
+}
+
+fn format_exports_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+
+    let file = result
+        .get("file")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    out.push_str(&format!("Exports for {}\n\n", file));
+
+    if let Some(exports) = result.get("exports").and_then(|v| v.as_array()) {
+        if exports.is_empty() {
+            out.push_str("No exports found.\n");
+        } else {
+            // Table header
+            out.push_str(&format!(
+                "  {:<30} {:<10} {:<12} {:<6}\n",
+                "Name", "Default", "Re-export", "Used"
+            ));
+            out.push_str(&format!("  {}\n", "-".repeat(60)));
+
+            for exp in exports {
+                let name = exp.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let is_default = exp
+                    .get("is_default")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let is_reexport = exp
+                    .get("is_reexport")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let is_used = exp
+                    .get("is_used")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let used_marker = if is_used { "yes" } else { "NO" };
+                out.push_str(&format!(
+                    "  {:<30} {:<10} {:<12} {:<6}\n",
+                    name,
+                    if is_default { "yes" } else { "" },
+                    if is_reexport { "yes" } else { "" },
+                    used_marker,
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    if let Some(summary) = result.get("summary") {
+        let total = summary
+            .get("total")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let used = summary.get("used").and_then(|v| v.as_u64()).unwrap_or(0);
+        let unused = summary
+            .get("unused")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "Summary: {} total, {} used, {} unused",
+            total, used, unused
+        ));
+    }
+
+    out
+}
+
+fn format_summary_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    out.push_str("Project Summary\n");
+    out.push_str(&format!("{}\n\n", "=".repeat(40)));
+
+    if let Some(files) = result.get("files") {
+        let total = files.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+        let entry_points = files
+            .get("entry_points")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        out.push_str(&format!(
+            "Files: {} total, {} entry points\n",
+            total, entry_points
+        ));
+
+        if let Some(by_lang) = files.get("by_language").and_then(|v| v.as_object()) {
+            let mut langs: Vec<_> = by_lang.iter().collect();
+            langs.sort_by(|a, b| {
+                b.1.as_u64()
+                    .unwrap_or(0)
+                    .cmp(&a.1.as_u64().unwrap_or(0))
+            });
+            for (lang, count) in &langs {
+                out.push_str(&format!("  {}: {}\n", lang, count.as_u64().unwrap_or(0)));
+            }
+        }
+        out.push('\n');
+    }
+
+    if let Some(deps) = result.get("dependencies") {
+        let total = deps
+            .get("total_imports")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let unresolved = deps
+            .get("unresolved_imports")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "Dependencies: {} imports, {} unresolved\n",
+            total, unresolved,
+        ));
+    }
+
+    if let Some(dc) = result.get("dead_code") {
+        let dead_files = dc.get("dead_files").and_then(|v| v.as_u64()).unwrap_or(0);
+        let dead_exports = dc
+            .get("dead_exports")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total_exports = dc
+            .get("total_exports")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "Dead code: {} dead files, {}/{} dead exports\n",
+            dead_files, dead_exports, total_exports,
+        ));
+    }
+
+    if let Some(cy) = result.get("cycles") {
+        let count = cy
+            .get("cycle_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let files_in = cy
+            .get("files_in_cycles")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "Cycles: {} cycles, {} files involved",
+            count, files_in,
+        ));
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::cycles::{Cycle, CycleFile, CycleResult, CycleSummary};
+    use crate::analysis::dead_code::{DeadCodeResult, DeadCodeSummary, DeadFile};
+    use crate::analysis::dependencies::{DepNode, DepsResult, DepsSummary};
+    use crate::analysis::impact::{AffectedFile, ImpactResult, ImpactSummary};
+    use crate::analysis::Confidence;
+
+    #[test]
+    fn test_format_deps_text_with_imports() {
+        let result = DepsResult {
+            target_file: FileId(1),
+            target_path: PathBuf::from("src/index.ts"),
+            imports: vec![
+                DepNode {
+                    file_id: FileId(2),
+                    path: PathBuf::from("src/utils.ts"),
+                    depth: 1,
+                    imported_names: vec!["helper".to_string()],
+                },
+                DepNode {
+                    file_id: FileId(3),
+                    path: PathBuf::from("src/lib.ts"),
+                    depth: 2,
+                    imported_names: vec![],
+                },
+            ],
+            imported_by: vec![],
+            confidence: Confidence::Certain,
+            summary: DepsSummary {
+                direct_imports: 1,
+                transitive_imports: 2,
+                direct_importers: 0,
+                transitive_importers: 0,
+            },
+        };
+
+        let text = format_deps_text(&result);
+        assert!(text.contains("Dependencies for src/index.ts"));
+        assert!(text.contains("Imports (2):"));
+        assert!(text.contains("src/utils.ts (helper)"));
+        assert!(text.contains("src/lib.ts"));
+        assert!(text.contains("Confidence: certain"));
+    }
+
+    #[test]
+    fn test_format_deps_text_no_deps() {
+        let result = DepsResult {
+            target_file: FileId(1),
+            target_path: PathBuf::from("src/lonely.ts"),
+            imports: vec![],
+            imported_by: vec![],
+            confidence: Confidence::Certain,
+            summary: DepsSummary {
+                direct_imports: 0,
+                transitive_imports: 0,
+                direct_importers: 0,
+                transitive_importers: 0,
+            },
+        };
+
+        let text = format_deps_text(&result);
+        assert!(text.contains("No dependencies found."));
+    }
+
+    #[test]
+    fn test_format_dead_code_text() {
+        let result = DeadCodeResult {
+            dead_files: vec![DeadFile {
+                file_id: FileId(3),
+                path: PathBuf::from("src/orphan.ts"),
+                confidence: Confidence::Certain,
+            }],
+            dead_exports: vec![],
+            confidence: Confidence::Certain,
+            limitations: vec![],
+            summary: DeadCodeSummary {
+                total_files: 3,
+                dead_files: 1,
+                total_exports: 5,
+                dead_exports: 0,
+                entry_points: 1,
+                files_with_unresolvable_imports: 0,
+            },
+        };
+
+        let text = format_dead_code_text(&result);
+        assert!(text.contains("Dead files (1):"));
+        assert!(text.contains("src/orphan.ts [certain]"));
+        assert!(text.contains("Summary: 1/3 dead files, 0/5 dead exports, 1 entry points"));
+    }
+
+    #[test]
+    fn test_format_dead_code_text_clean() {
+        let result = DeadCodeResult {
+            dead_files: vec![],
+            dead_exports: vec![],
+            confidence: Confidence::Certain,
+            limitations: vec![],
+            summary: DeadCodeSummary {
+                total_files: 2,
+                dead_files: 0,
+                total_exports: 3,
+                dead_exports: 0,
+                entry_points: 1,
+                files_with_unresolvable_imports: 0,
+            },
+        };
+
+        let text = format_dead_code_text(&result);
+        assert!(text.contains("No dead code found."));
+    }
+
+    #[test]
+    fn test_format_cycles_text_no_cycles() {
+        let result = CycleResult {
+            cycles: vec![],
+            confidence: Confidence::Certain,
+            summary: CycleSummary {
+                total_files: 3,
+                files_in_cycles: 0,
+                cycle_count: 0,
+                shortest_cycle: 0,
+                longest_cycle: 0,
+            },
+        };
+
+        let text = format_cycles_text(&result);
+        assert!(text.contains("No circular dependencies found."));
+    }
+
+    #[test]
+    fn test_format_cycles_text_with_cycle() {
+        let result = CycleResult {
+            cycles: vec![Cycle {
+                files: vec![
+                    CycleFile {
+                        file_id: FileId(1),
+                        path: PathBuf::from("src/a.ts"),
+                    },
+                    CycleFile {
+                        file_id: FileId(2),
+                        path: PathBuf::from("src/b.ts"),
+                    },
+                ],
+                length: 2,
+            }],
+            confidence: Confidence::Certain,
+            summary: CycleSummary {
+                total_files: 3,
+                files_in_cycles: 2,
+                cycle_count: 1,
+                shortest_cycle: 2,
+                longest_cycle: 2,
+            },
+        };
+
+        let text = format_cycles_text(&result);
+        assert!(text.contains("Circular dependencies (1 cycles, 2 files involved):"));
+        assert!(text.contains("src/a.ts ->"));
+        assert!(text.contains("src/b.ts ->"));
+        assert!(text.contains("src/a.ts (cycle)"));
+    }
+
+    #[test]
+    fn test_format_impact_text() {
+        let mut by_depth = HashMap::new();
+        by_depth.insert(
+            1,
+            vec![AffectedFile {
+                file_id: FileId(2),
+                path: PathBuf::from("src/a.ts"),
+                depth: 1,
+            }],
+        );
+        by_depth.insert(
+            2,
+            vec![AffectedFile {
+                file_id: FileId(3),
+                path: PathBuf::from("src/b.ts"),
+                depth: 2,
+            }],
+        );
+
+        let result = ImpactResult {
+            target_file: FileId(1),
+            target_path: PathBuf::from("src/core.ts"),
+            affected: vec![
+                AffectedFile {
+                    file_id: FileId(2),
+                    path: PathBuf::from("src/a.ts"),
+                    depth: 1,
+                },
+                AffectedFile {
+                    file_id: FileId(3),
+                    path: PathBuf::from("src/b.ts"),
+                    depth: 2,
+                },
+            ],
+            by_depth,
+            confidence: Confidence::Certain,
+            summary: ImpactSummary {
+                direct_dependents: 1,
+                total_affected: 2,
+                max_depth: 2,
+            },
+        };
+
+        let text = format_impact_text(&result);
+        assert!(text.contains("Impact of changing src/core.ts"));
+        assert!(text.contains("Affected files (2 total, max depth 2):"));
+        assert!(text.contains("Depth 1:"));
+        assert!(text.contains("src/a.ts"));
+        assert!(text.contains("Depth 2:"));
+        assert!(text.contains("src/b.ts"));
+    }
+
+    #[test]
+    fn test_format_impact_text_no_affected() {
+        let result = ImpactResult {
+            target_file: FileId(1),
+            target_path: PathBuf::from("src/leaf.ts"),
+            affected: vec![],
+            by_depth: HashMap::new(),
+            confidence: Confidence::Certain,
+            summary: ImpactSummary {
+                direct_dependents: 0,
+                total_affected: 0,
+                max_depth: 0,
+            },
+        };
+
+        let text = format_impact_text(&result);
+        assert!(text.contains("No files affected."));
+    }
+
+    #[test]
+    fn test_format_exports_text() {
+        let value = serde_json::json!({
+            "file": "src/utils.ts",
+            "exports": [
+                {"name": "helper", "is_default": false, "is_reexport": false, "is_used": true},
+                {"name": "unused_fn", "is_default": false, "is_reexport": false, "is_used": false},
+                {"name": "default", "is_default": true, "is_reexport": false, "is_used": true},
+            ],
+            "summary": {"total": 3, "used": 2, "unused": 1}
+        });
+
+        let text = format_exports_text(&value);
+        assert!(text.contains("Exports for src/utils.ts"));
+        assert!(text.contains("Name"));
+        assert!(text.contains("helper"));
+        assert!(text.contains("unused_fn"));
+        assert!(text.contains("NO")); // unused_fn
+        assert!(text.contains("Summary: 3 total, 2 used, 1 unused"));
+    }
+
+    #[test]
+    fn test_format_summary_text() {
+        let value = serde_json::json!({
+            "files": {
+                "total": 10,
+                "by_language": {"TypeScript": 8, "JavaScript": 2},
+                "entry_points": 2
+            },
+            "dependencies": {
+                "total_imports": 25,
+                "unresolved_imports": 3
+            },
+            "dead_code": {
+                "dead_files": 1,
+                "dead_exports": 4,
+                "total_exports": 20
+            },
+            "cycles": {
+                "cycle_count": 1,
+                "files_in_cycles": 3
+            }
+        });
+
+        let text = format_summary_text(&value);
+        assert!(text.contains("Project Summary"));
+        assert!(text.contains("Files: 10 total, 2 entry points"));
+        assert!(text.contains("TypeScript: 8"));
+        assert!(text.contains("JavaScript: 2"));
+        assert!(text.contains("Dependencies: 25 imports, 3 unresolved"));
+        assert!(text.contains("Dead code: 1 dead files, 4/20 dead exports"));
+        assert!(text.contains("Cycles: 1 cycles, 3 files involved"));
     }
 }
