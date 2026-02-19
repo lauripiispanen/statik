@@ -1,23 +1,14 @@
-pub mod analysis;
-pub mod cli;
-pub mod db;
-pub mod discovery;
-pub mod linting;
-pub mod model;
-pub mod parser;
-pub mod resolver;
-
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
 
-use cli::commands;
-use cli::index::run_index;
-use cli::output::format_index_summary;
-use cli::{Cli, Commands};
-use discovery::DiscoveryConfig;
-use model::Language;
+use statik::cli::commands;
+use statik::cli::index::run_index;
+use statik::cli::output::format_index_summary;
+use statik::cli::{Cli, Commands};
+use statik::discovery::DiscoveryConfig;
+use statik::model::Language;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();

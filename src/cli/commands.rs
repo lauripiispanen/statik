@@ -1186,4 +1186,61 @@ mod tests {
         assert!(text.contains("Dead code: 1 dead files, 4/20 dead exports"));
         assert!(text.contains("Cycles: 1 cycles, 3 files involved"));
     }
+
+    #[test]
+    fn test_format_lint_text_with_violations() {
+        use crate::linting::config::Severity;
+        use crate::linting::rules::{LintResult, LintSummary, LintViolation};
+
+        let result = LintResult {
+            violations: vec![LintViolation {
+                rule_id: "no-ui-to-db".to_string(),
+                severity: Severity::Error,
+                description: "UI must not import DB".to_string(),
+                rationale: None,
+                source_file: PathBuf::from("src/ui/Button.ts"),
+                target_file: PathBuf::from("src/db/connection.ts"),
+                imported_names: vec!["getConnection".to_string()],
+                line: 5,
+                confidence: Confidence::Certain,
+                fix_direction: Some("Use service layer".to_string()),
+            }],
+            rules_evaluated: 1,
+            summary: LintSummary {
+                total_violations: 1,
+                errors: 1,
+                warnings: 0,
+                infos: 0,
+                rules_evaluated: 1,
+            },
+        };
+
+        let text = format_lint_text(&result);
+        assert!(text.contains("error[no-ui-to-db] UI must not import DB"));
+        assert!(text.contains("src/ui/Button.ts:5 -> src/db/connection.ts"));
+        assert!(text.contains("imports: getConnection"));
+        assert!(text.contains("fix: Use service layer"));
+        assert!(text.contains("1 errors, 0 warnings across 1 rules"));
+    }
+
+    #[test]
+    fn test_format_lint_text_no_violations() {
+        use crate::linting::rules::{LintResult, LintSummary};
+
+        let result = LintResult {
+            violations: vec![],
+            rules_evaluated: 2,
+            summary: LintSummary {
+                total_violations: 0,
+                errors: 0,
+                warnings: 0,
+                infos: 0,
+                rules_evaluated: 2,
+            },
+        };
+
+        let text = format_lint_text(&result);
+        assert!(text.contains("No lint violations found."));
+        assert!(text.contains("0 errors, 0 warnings across 2 rules"));
+    }
 }

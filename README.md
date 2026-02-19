@@ -50,6 +50,12 @@ statik cycles
 statik impact src/utils/helpers.ts
 ```
 
+### Check architectural boundaries
+
+```
+statik lint
+```
+
 ### Get a project overview
 
 ```
@@ -144,6 +150,66 @@ statik summary
 statik summary --format json
 ```
 
+### `statik lint`
+
+Check architectural boundary rules defined in a config file. Reports violations where files import across forbidden boundaries.
+
+```
+statik lint
+statik lint --config path/to/rules.toml
+statik lint --rule no-ui-to-db                     # evaluate a single rule
+statik lint --severity-threshold warning            # only report warnings and errors
+statik lint --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to config file (default: `.statik/rules.toml` or `statik.toml`) |
+| `--rule <id>` | Only evaluate a specific rule by ID |
+| `--severity-threshold error\|warning\|info` | Minimum severity to report (default: `info`) |
+
+The lint command exits with code 1 if any errors are found, and code 0 otherwise (even if warnings are present).
+
+#### Configuration
+
+Create `.statik/rules.toml` (or `statik.toml` in the project root) to define boundary rules:
+
+```toml
+[[rules]]
+id = "no-ui-to-db"
+severity = "error"
+description = "UI layer must not import from database layer"
+rationale = "The UI should go through the service layer"
+fix_direction = "Import from src/services/ instead"
+
+[rules.boundary]
+from = ["src/ui/**", "src/components/**"]
+deny = ["src/db/**"]
+
+[[rules]]
+id = "no-cross-feature"
+severity = "warning"
+description = "Features should not import from each other"
+
+[rules.boundary]
+from = ["src/features/auth/**"]
+deny = ["src/features/billing/**"]
+except = ["src/features/billing/types.ts"]
+```
+
+Each rule requires:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | yes | Unique rule identifier |
+| `severity` | yes | `error`, `warning`, or `info` |
+| `description` | yes | Human-readable description of the rule |
+| `rationale` | no | Why this rule exists (included in JSON output) |
+| `fix_direction` | no | Suggested fix direction (included in output) |
+| `boundary.from` | yes | Glob patterns for source files |
+| `boundary.deny` | yes | Glob patterns for forbidden import targets |
+| `boundary.except` | no | Glob patterns for exceptions to the deny list |
+
 ### Deferred commands (v2)
 
 These commands require type-resolved analysis and are deferred to a future release with deep mode support:
@@ -236,7 +302,7 @@ statik uses tree-sitter for syntactic analysis, not semantic analysis. This mean
 
 ### Text (default)
 
-Analysis commands currently output pretty-printed JSON for all formats. The `index` command produces a human-readable one-line summary in text mode.
+Human-readable output for all commands. Each command produces structured, readable text by default.
 
 ### JSON (`--format json`)
 
@@ -286,6 +352,37 @@ Example (`statik dead-code --format json`):
 }
 ```
 
+Example (`statik lint --format json`):
+
+```json
+{
+  "violations": [
+    {
+      "rule_id": "no-ui-to-db",
+      "severity": "error",
+      "description": "UI layer must not import from database layer",
+      "rationale": "The UI should go through the service layer",
+      "source_file": "src/ui/Button.ts",
+      "target_file": "src/db/connection.ts",
+      "imported_names": ["getConnection"],
+      "line": 5,
+      "confidence": "certain",
+      "fix_direction": "Import from src/services/ instead"
+    }
+  ],
+  "rules_evaluated": 1,
+  "summary": {
+    "total_violations": 1,
+    "errors": 1,
+    "warnings": 0,
+    "infos": 0,
+    "rules_evaluated": 1
+  }
+}
+```
+
+The `rationale` and `fix_direction` fields are included when defined in the config, providing context for AI assistants and developers to understand and resolve violations.
+
 ### Compact (`--format compact`)
 
 Single-line JSON output, suitable for piping to other tools.
@@ -295,7 +392,7 @@ Single-line JSON output, suitable for piping to other tools.
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Error (command failed, file not found in index, no index and `--no-index` used) |
+| 1 | Error (command failed, file not found in index, no index and `--no-index` used, or `lint` found errors) |
 
 ## License
 
