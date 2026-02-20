@@ -1010,7 +1010,22 @@ impl<'a> Extractor<'a> {
                             is_default: false,
                             is_reexport: true,
                             is_type_only: false,
-                            source_path: Some(source_path),
+                            source_path: Some(source_path.clone()),
+                        });
+                        // Also emit an ImportRecord so the re-export creates a
+                        // file-level dependency edge in build_file_graph()
+                        self.imports.push(ImportRecord {
+                            file: self.file_id,
+                            source_path,
+                            imported_name: "*".to_string(),
+                            local_name: String::new(),
+                            span: self.node_span(node),
+                            line_span: self.node_line_span(node),
+                            is_default: false,
+                            is_namespace: true,
+                            is_type_only: false,
+                            is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                     return;
@@ -1104,15 +1119,35 @@ impl<'a> Extractor<'a> {
                     };
                     self.symbols.push(symbol);
 
+                    let is_reexport = source_path.is_some();
                     self.exports.push(ExportRecord {
                         file: self.file_id,
                         symbol: id,
-                        exported_name,
+                        exported_name: exported_name.clone(),
                         is_default: false,
-                        is_reexport: source_path.is_some(),
+                        is_reexport,
                         is_type_only: false,
                         source_path: source_path.clone(),
                     });
+
+                    // For re-exports (export { foo } from './module'), also emit
+                    // an ImportRecord so the re-export creates a file-level
+                    // dependency edge in build_file_graph()
+                    if let Some(ref src) = source_path {
+                        self.imports.push(ImportRecord {
+                            file: self.file_id,
+                            source_path: src.clone(),
+                            imported_name: local_name,
+                            local_name: exported_name,
+                            span: self.node_span(child),
+                            line_span: self.node_line_span(child),
+                            is_default: false,
+                            is_namespace: false,
+                            is_type_only: false,
+                            is_side_effect: false,
+                            is_dynamic: false,
+                        });
+                    }
                 }
             }
         }
@@ -2033,5 +2068,62 @@ const CACHE_TTL = 3600;
 
         // CACHE_TTL is not exported
         assert!(!export_names.contains(&"CACHE_TTL"));
+    }
+
+    #[test]
+    fn test_wildcard_reexport_creates_import_record() {
+        let result = parse_ts("export * from './module';");
+        // Should create both an ExportRecord and an ImportRecord
+        assert_eq!(result.exports.len(), 1);
+        assert!(result.exports[0].is_reexport);
+
+        assert!(
+            result.imports.iter().any(|i| i.source_path == "./module" && i.imported_name == "*"),
+            "wildcard re-export should also create an ImportRecord for the dependency edge"
+        );
+    }
+
+    #[test]
+    fn test_named_reexport_creates_import_records() {
+        let result = parse_ts("export { foo, bar as baz } from './module';");
+        // Should create ExportRecords AND ImportRecords
+        assert_eq!(result.exports.len(), 2);
+
+        let import_names: Vec<&str> = result.imports.iter().map(|i| i.imported_name.as_str()).collect();
+        assert!(
+            import_names.contains(&"foo"),
+            "named re-export should create ImportRecord for 'foo'"
+        );
+        assert!(
+            import_names.contains(&"bar"),
+            "named re-export should create ImportRecord for 'bar' (original name)"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_import_non_literal_ignored() {
+        // Template literals and variables can't be resolved statically
+        let result = parse_ts(
+            r#"
+function load(name: string) {
+    return import(name);
+}
+"#,
+        );
+        // No import record should be created for variable arguments
+        assert!(
+            result.imports.is_empty(),
+            "dynamic import with variable argument should not create an import record"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_import_top_level() {
+        // Top-level dynamic import (not inside a function)
+        let result = parse_ts(r#"const p = import("./module");"#);
+        assert!(
+            result.imports.iter().any(|i| i.source_path == "./module" && i.is_dynamic),
+            "top-level dynamic import should be extracted"
+        );
     }
 }
