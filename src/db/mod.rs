@@ -189,14 +189,8 @@ impl Database {
                     id: FileId(row.get(0)?),
                     path: std::path::PathBuf::from(row.get::<_, String>(1)?),
                     mtime: row.get(2)?,
-                    language: Language::from_extension(match lang_str.as_str() {
-                        "typescript" => "ts",
-                        "javascript" => "js",
-                        "python" => "py",
-                        "rust" => "rs",
-                        _ => "unknown",
-                    })
-                    .unwrap_or(Language::TypeScript),
+                    language: Language::from_stored_str(&lang_str)
+                        .unwrap_or(Language::TypeScript),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
