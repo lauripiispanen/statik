@@ -21,11 +21,15 @@ pub struct RuleDefinition {
     pub rule: RuleKind,
 }
 
-/// The kind of lint rule. Currently only boundary rules.
+/// The kind of lint rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum RuleKind {
     Boundary(BoundaryRuleConfig),
+    Layer(LayerRuleConfig),
+    Containment(ContainmentRuleConfig),
+    ImportRestriction(ImportRestrictionRuleConfig),
+    FanLimit(FanLimitRuleConfig),
 }
 
 /// Configuration for a boundary rule.
@@ -35,6 +39,48 @@ pub struct BoundaryRuleConfig {
     pub deny: Vec<String>,
     #[serde(default)]
     pub except: Option<Vec<String>>,
+}
+
+/// Configuration for a layer hierarchy rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerRuleConfig {
+    pub layers: Vec<LayerDefinition>,
+}
+
+/// A single layer in a layer hierarchy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerDefinition {
+    pub name: String,
+    pub patterns: Vec<String>,
+}
+
+/// Configuration for a module containment rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainmentRuleConfig {
+    pub module: Vec<String>,
+    pub public_api: Vec<String>,
+}
+
+/// Configuration for an import restriction rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportRestrictionRuleConfig {
+    pub target: Vec<String>,
+    #[serde(default)]
+    pub require_type_only: bool,
+    #[serde(default)]
+    pub forbidden_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub allowed_names: Option<Vec<String>>,
+}
+
+/// Configuration for a fan-in/fan-out limit rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanLimitRuleConfig {
+    pub pattern: Vec<String>,
+    #[serde(default)]
+    pub max_fan_in: Option<u32>,
+    #[serde(default)]
+    pub max_fan_out: Option<u32>,
 }
 
 /// Severity level for a lint rule.
@@ -134,6 +180,7 @@ deny = ["src/db/**"]
                 assert_eq!(b.deny, vec!["src/db/**"]);
                 assert!(b.except.is_none());
             }
+            other => panic!("Expected Boundary rule, got {:?}", other),
         }
     }
 
@@ -160,6 +207,7 @@ except = ["src/features/billing/types.ts"]
                     Some(vec!["src/features/billing/types.ts".to_string()].as_slice())
                 );
             }
+            other => panic!("Expected Boundary rule, got {:?}", other),
         }
     }
 
@@ -359,5 +407,197 @@ deny = ["b"]
         let found = find_config_path(dir.path(), None);
         // Should prefer .statik/rules.toml
         assert_eq!(found, Some(statik_dir.join("rules.toml")));
+    }
+
+    #[test]
+    fn test_parse_layer_rule() {
+        let toml = r#"
+[[rules]]
+id = "clean-layers"
+severity = "error"
+description = "Dependencies must flow top-down"
+
+[rules.layer]
+layers = [
+  { name = "presentation", patterns = ["src/ui/**"] },
+  { name = "service", patterns = ["src/services/**"] },
+  { name = "data", patterns = ["src/db/**"] },
+]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::Layer(l) => {
+                assert_eq!(l.layers.len(), 3);
+                assert_eq!(l.layers[0].name, "presentation");
+                assert_eq!(l.layers[1].name, "service");
+                assert_eq!(l.layers[2].name, "data");
+                assert_eq!(l.layers[0].patterns, vec!["src/ui/**"]);
+            }
+            other => panic!("Expected Layer rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_containment_rule() {
+        let toml = r#"
+[[rules]]
+id = "auth-encapsulation"
+severity = "error"
+description = "Auth module must be accessed through its public API"
+
+[rules.containment]
+module = ["src/auth/**"]
+public_api = ["src/auth/index.ts"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::Containment(c) => {
+                assert_eq!(c.module, vec!["src/auth/**"]);
+                assert_eq!(c.public_api, vec!["src/auth/index.ts"]);
+            }
+            other => panic!("Expected Containment rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_import_restriction_rule() {
+        let toml = r#"
+[[rules]]
+id = "types-type-only"
+severity = "warning"
+description = "Imports from types/ must be type-only"
+
+[rules.import_restriction]
+target = ["src/types/**"]
+require_type_only = true
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::ImportRestriction(r) => {
+                assert_eq!(r.target, vec!["src/types/**"]);
+                assert!(r.require_type_only);
+                assert!(r.forbidden_names.is_none());
+                assert!(r.allowed_names.is_none());
+            }
+            other => panic!("Expected ImportRestriction rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_import_restriction_with_names() {
+        let toml = r#"
+[[rules]]
+id = "no-internals"
+severity = "error"
+description = "Cannot import internal functions"
+
+[rules.import_restriction]
+target = ["src/internal/**"]
+forbidden_names = ["getSecret", "internalHelper"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::ImportRestriction(r) => {
+                assert!(!r.require_type_only);
+                assert_eq!(
+                    r.forbidden_names.as_deref(),
+                    Some(["getSecret".to_string(), "internalHelper".to_string()].as_slice())
+                );
+            }
+            other => panic!("Expected ImportRestriction rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_fan_limit_rule() {
+        let toml = r#"
+[[rules]]
+id = "no-god-modules"
+severity = "warning"
+description = "Files should not have too many dependencies"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_out = 20
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::FanLimit(f) => {
+                assert_eq!(f.pattern, vec!["src/**"]);
+                assert_eq!(f.max_fan_out, Some(20));
+                assert!(f.max_fan_in.is_none());
+            }
+            other => panic!("Expected FanLimit rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_fan_limit_both_directions() {
+        let toml = r#"
+[[rules]]
+id = "limits"
+severity = "info"
+description = "Fan limits"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_in = 10
+max_fan_out = 15
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::FanLimit(f) => {
+                assert_eq!(f.max_fan_in, Some(10));
+                assert_eq!(f.max_fan_out, Some(15));
+            }
+            other => panic!("Expected FanLimit rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_mixed_rule_types() {
+        let toml = r#"
+[[rules]]
+id = "boundary"
+severity = "error"
+description = "Boundary rule"
+
+[rules.boundary]
+from = ["src/ui/**"]
+deny = ["src/db/**"]
+
+[[rules]]
+id = "layers"
+severity = "error"
+description = "Layer rule"
+
+[rules.layer]
+layers = [
+  { name = "ui", patterns = ["src/ui/**"] },
+  { name = "db", patterns = ["src/db/**"] },
+]
+
+[[rules]]
+id = "contain"
+severity = "warning"
+description = "Containment rule"
+
+[rules.containment]
+module = ["src/auth/**"]
+public_api = ["src/auth/index.ts"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 3);
+        assert!(matches!(&config.rules[0].rule, RuleKind::Boundary(_)));
+        assert!(matches!(&config.rules[1].rule, RuleKind::Layer(_)));
+        assert!(matches!(&config.rules[2].rule, RuleKind::Containment(_)));
     }
 }
