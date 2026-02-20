@@ -32,10 +32,28 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let path_to_id: HashMap<PathBuf, FileId> =
         files.iter().map(|f| (f.path.clone(), f.id)).collect();
 
+    // Pre-scan Java files for annotation-based entry points
+    let mut annotation_entry_files: std::collections::HashSet<FileId> =
+        std::collections::HashSet::new();
+    for file in &files {
+        if file.language == Language::Java {
+            let imports = db.get_imports_by_file(file.id)?;
+            for import in &imports {
+                if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
+                    if is_entry_point_annotation(ann) {
+                        annotation_entry_files.insert(file.id);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // Add files to the graph
     for file in &files {
         let exports = db.get_exports_by_file(file.id)?;
-        let is_entry = is_entry_point(&file.path);
+        let is_entry =
+            is_entry_point(&file.path) || annotation_entry_files.contains(&file.id);
 
         graph.add_file(FileInfo {
             id: file.id,
@@ -58,6 +76,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
 
         for import in &imports {
+            // Skip synthetic imports (annotation markers, type-ref markers)
+            if import.source_path.starts_with('@') {
+                continue;
+            }
+
             let lang = file_language.get(&file.id).copied().unwrap_or(Language::TypeScript);
             let resolution: Resolution = match lang {
                 Language::Java => java_resolver.resolve(&import.source_path, &file.path),
@@ -126,6 +149,26 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     }
 
     Ok(graph)
+}
+
+const ENTRY_POINT_ANNOTATIONS: &[&str] = &[
+    "SpringBootApplication",
+    "Test",
+    "ParameterizedTest",
+    "RepeatedTest",
+    "Component",
+    "Service",
+    "Repository",
+    "Controller",
+    "RestController",
+    "Configuration",
+    "Bean",
+    "Endpoint",
+    "WebServlet",
+];
+
+fn is_entry_point_annotation(name: &str) -> bool {
+    ENTRY_POINT_ANNOTATIONS.contains(&name)
 }
 
 /// Check if a file is an entry point.

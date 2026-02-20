@@ -126,11 +126,20 @@ impl<'a> Extractor<'a> {
         self.parent_stack.last().copied()
     }
 
+    fn all_parents_public(&self) -> bool {
+        self.parent_stack.iter().all(|&pid| {
+            self.symbols
+                .iter()
+                .find(|s| s.id == pid)
+                .map_or(false, |s| s.visibility == Visibility::Public)
+        })
+    }
+
     fn qualified_name(&self, name: &str) -> String {
         // If we have a parent symbol, qualify with parent name
         if let Some(parent_id) = self.current_parent() {
             if let Some(parent) = self.symbols.iter().find(|s| s.id == parent_id) {
-                return format!("{}::{}", parent.qualified_name, name);
+                return format!("{}.{}", parent.qualified_name, name);
             }
         }
         // Otherwise, qualify with package name if available
@@ -263,6 +272,56 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    fn collect_annotation_names(&self, decl_node: Node) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut cursor = decl_node.walk();
+        for child in decl_node.children(&mut cursor) {
+            match child.kind() {
+                "modifiers" => {
+                    let mut inner_cursor = child.walk();
+                    for inner_child in child.children(&mut inner_cursor) {
+                        if inner_child.kind() == "marker_annotation"
+                            || inner_child.kind() == "annotation"
+                        {
+                            if let Some(name_n) = inner_child.child_by_field_name("name") {
+                                names.push(self.node_text(name_n).to_string());
+                            }
+                        }
+                    }
+                }
+                "marker_annotation" | "annotation" => {
+                    if let Some(name_n) = child.child_by_field_name("name") {
+                        names.push(self.node_text(name_n).to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    fn emit_annotation_imports(&mut self, decl_node: Node) {
+        if self.current_parent().is_some() {
+            return;
+        }
+        let span = self.node_span(decl_node);
+        let line_span = self.node_line_span(decl_node);
+        for name in self.collect_annotation_names(decl_node) {
+            self.imports.push(ImportRecord {
+                file: self.file_id,
+                source_path: format!("@annotation:{}", name),
+                imported_name: name,
+                local_name: String::new(),
+                span,
+                line_span,
+                is_default: false,
+                is_namespace: false,
+                is_type_only: false,
+                is_side_effect: false,
+            });
+        }
+    }
+
     fn emit_annotation_ref(&mut self, annotation_node: Node, source: SymbolId) {
         if let Some(name_n) = annotation_node.child_by_field_name("name") {
             let ref_id = self.alloc_ref_id();
@@ -356,6 +415,7 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
         // Extract extends (superclass)
         if let Some(superclass) = node.child_by_field_name("superclass") {
@@ -367,8 +427,7 @@ impl<'a> Extractor<'a> {
             self.extract_implements(interfaces, id);
         }
 
-        // Public top-level classes are exports
-        if visibility == Visibility::Public && self.current_parent().is_none() {
+        if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -411,6 +470,7 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
         // Extract extends (for interfaces)
         let mut cursor = node.walk();
@@ -420,8 +480,7 @@ impl<'a> Extractor<'a> {
             }
         }
 
-        // Public top-level interfaces are exports
-        if visibility == Visibility::Public && self.current_parent().is_none() {
+        if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -464,14 +523,14 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
         // Extract implements (interfaces) for enum
         if let Some(interfaces) = node.child_by_field_name("interfaces") {
             self.extract_implements(interfaces, id);
         }
 
-        // Public top-level enums are exports
-        if visibility == Visibility::Public && self.current_parent().is_none() {
+        if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -514,9 +573,9 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
-        // Public top-level annotation types are exports
-        if visibility == Visibility::Public && self.current_parent().is_none() {
+        if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -552,9 +611,9 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
-        // Public top-level records are exports
-        if visibility == Visibility::Public && self.current_parent().is_none() {
+        if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -1250,7 +1309,7 @@ public class Foo {
         assert_eq!(foo.qualified_name, "com.example.Foo");
 
         let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
-        assert_eq!(bar.qualified_name, "com.example.Foo::bar");
+        assert_eq!(bar.qualified_name, "com.example.Foo.bar");
     }
 
     #[test]
