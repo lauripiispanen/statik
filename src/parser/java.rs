@@ -240,7 +240,7 @@ impl<'a> Extractor<'a> {
 
     fn extract_import(&mut self, node: Node) {
         let text = self.node_text(node).trim().to_string();
-        let is_static = text.contains("import static ");
+        let _is_static = text.contains("import static ");
 
         // Find the actual import path from the AST
         let mut import_path = String::new();

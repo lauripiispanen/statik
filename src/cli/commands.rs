@@ -11,7 +11,8 @@ use crate::db::Database;
 use crate::model::file_graph::{
     FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason,
 };
-use crate::model::FileId;
+use crate::model::{FileId, Language};
+use crate::resolver::java::JavaResolver;
 use crate::resolver::typescript::TypeScriptResolver;
 use crate::resolver::{Resolution, Resolver};
 
@@ -22,9 +23,10 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let files = db.all_files()?;
     let mut graph = FileGraph::new();
 
-    // Collect all known file paths for the resolver
+    // Collect all known file paths for resolvers
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
-    let resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths);
+    let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
+    let java_resolver = JavaResolver::new(project_root.to_path_buf(), known_paths);
 
     // Build path -> FileId lookup
     let path_to_id: HashMap<PathBuf, FileId> =
@@ -44,6 +46,10 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         });
     }
 
+    // Build file language lookup for resolver dispatch
+    let file_language: HashMap<FileId, Language> =
+        files.iter().map(|f| (f.id, f.language)).collect();
+
     // Resolve imports and add edges
     for file in &files {
         let imports = db.get_imports_by_file(file.id)?;
@@ -52,7 +58,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
 
         for import in &imports {
-            let resolution = resolver.resolve(&import.source_path, &file.path);
+            let lang = file_language.get(&file.id).copied().unwrap_or(Language::TypeScript);
+            let resolution: Resolution = match lang {
+                Language::Java => java_resolver.resolve(&import.source_path, &file.path),
+                _ => ts_resolver.resolve(&import.source_path, &file.path),
+            };
 
             match resolution {
                 Resolution::Resolved(resolved_path)
@@ -122,6 +132,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 fn is_entry_point(path: &Path) -> bool {
     let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let file_name_with_ext = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let entry_patterns = ["index", "main", "app", "server", "cli"];
     for pattern in &entry_patterns {
@@ -130,13 +141,29 @@ fn is_entry_point(path: &Path) -> bool {
         }
     }
 
-    // Test files are entry points
+    // TS/JS test files are entry points
     if file_name_with_ext.contains(".test.")
         || file_name_with_ext.contains(".spec.")
         || file_name.ends_with("_test")
         || file_name.ends_with("_spec")
     {
         return true;
+    }
+
+    // Java-specific entry points
+    if ext == "java" {
+        // JUnit test conventions
+        if file_name.ends_with("Test")
+            || file_name.ends_with("Tests")
+            || file_name.ends_with("IT")
+            || file_name.starts_with("Test")
+        {
+            return true;
+        }
+        // Spring Boot entry point
+        if file_name == "Application" {
+            return true;
+        }
     }
 
     false
