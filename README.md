@@ -1,6 +1,6 @@
 # statik
 
-Static code analysis for dependency graphs, dead code detection, and circular dependency detection in TypeScript/JavaScript projects.
+Static code analysis for dependency graphs, dead code detection, and circular dependency detection in TypeScript/JavaScript and Java projects.
 
 statik fills a gap between simple text search and full Language Server Protocol (LSP) features. Where LSP gives you go-to-definition and find-references for individual symbols, statik provides **graph-level analysis**: dependency chains between files, dead code detection, circular dependency detection, and refactoring blast radius. These are complementary capabilities -- statik does not replace LSP.
 
@@ -22,7 +22,7 @@ The binary is at `target/release/statik`.
 statik index /path/to/your/typescript-project
 ```
 
-This scans all TypeScript and JavaScript files, extracts symbols and import/export relationships, and stores the result in `.statik/index.db` at the project root.
+This scans all supported source files (TypeScript, JavaScript, Java), extracts symbols and import/export relationships, and stores the result in `.statik/index.db` at the project root.
 
 ```
 Indexed 87 files: 1423 symbols, 312 references (245ms)
@@ -117,7 +117,7 @@ statik dead-code --scope both        # both (default)
 |------|-------------|
 | `--scope files\|exports\|both` | What to check for (default: `both`) |
 
-Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`).
+Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, additional entry point conventions are recognized: JUnit test files (`*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java`) and Spring Boot entry points (`Application.java`).
 
 ### `statik cycles`
 
@@ -362,12 +362,12 @@ These commands require type-resolved analysis and are deferred to a future relea
 | `--no-index` | Skip auto-indexing, use existing index only |
 | `--include <glob>` | Include only files matching this glob |
 | `--exclude <glob>` | Exclude files matching this glob |
-| `--lang <language>` | Filter to a specific language (`typescript`, `javascript`) |
+| `--lang <language>` | Filter to a specific language (`typescript`, `javascript`, `java`) |
 | `--max-depth <N>` | Limit transitive depth for dependency/impact analysis |
 
 ## How It Works
 
-statik uses [tree-sitter](https://tree-sitter.github.io/) to parse source files into concrete syntax trees, then extracts symbols (functions, classes, interfaces, types, variables, constants, enums) and their relationships (imports, exports, call references, inheritance).
+statik uses [tree-sitter](https://tree-sitter.github.io/) to parse source files into concrete syntax trees, then extracts symbols (functions, classes, interfaces, types, variables, constants, enums, annotations) and their relationships (imports, exports, call references, inheritance).
 
 The data flow is:
 
@@ -380,7 +380,9 @@ The data flow is:
 
 ### Import resolution
 
-statik resolves TypeScript/JavaScript imports using a dedicated resolver that handles:
+Each language has a dedicated import resolver.
+
+**TypeScript/JavaScript** imports are resolved using:
 
 - **Relative imports** (`./foo`, `../bar`) with extension probing (.ts, .tsx, .js, .jsx, .mjs, .cjs)
 - **Index file resolution** (`./services` resolves to `./services/index.ts`)
@@ -388,7 +390,16 @@ statik resolves TypeScript/JavaScript imports using a dedicated resolver that ha
 - **tsconfig.json `baseUrl`** for non-relative module resolution
 - **External package detection** -- bare specifiers like `react` or `lodash` are classified as external and not followed
 
+**Java** imports are resolved using:
+
+- **Package-to-directory mapping** -- fully-qualified class names are converted to file paths (e.g., `com.example.Foo` resolves to `com/example/Foo.java`)
+- **Source root detection** -- automatically detects Maven/Gradle source roots (`src/main/java`, `src/test/java`) and falls back to the project root for flat layouts
+- **Static import resolution** -- static imports like `import static com.example.Foo.bar` resolve to the containing class file
+- **External package detection** -- imports from `java.*`, `javax.*`, `jakarta.*`, and common third-party packages (Spring, JUnit, etc.) are classified as external
+
 ### What gets extracted
+
+**TypeScript/JavaScript:**
 
 - **Functions** (including async, generators, arrow functions assigned to variables)
 - **Classes** (with methods, properties, heritage/extends/implements)
@@ -401,6 +412,19 @@ statik resolves TypeScript/JavaScript imports using a dedicated resolver that ha
 - **Call references** (function calls and `new` expressions within function bodies)
 - **Inheritance references** (extends, implements)
 
+**Java:**
+
+- **Classes** (with methods, fields, constructors, nested classes)
+- **Interfaces** (with method declarations, constants)
+- **Enums** (with constants and methods)
+- **Annotations** (`@interface` declarations)
+- **Records**
+- **Fields** (`static final` fields are classified as constants)
+- **Import statements** (regular, wildcard, static)
+- **Public top-level types are exported** (public classes, interfaces, enums, and annotations)
+- **Call references** (method calls and `new` expressions)
+- **Inheritance references** (extends, implements)
+
 ### Storage
 
 The index is stored at `.statik/index.db` in the project root. Add `.statik/` to your `.gitignore`. The database uses SQLite with WAL mode for fast writes.
@@ -411,6 +435,7 @@ The index is stored at `.statik/index.db` in the project root. Add `.statik/` to
 |----------|--------|
 | TypeScript (.ts, .tsx) | Supported |
 | JavaScript (.js, .jsx, .mjs, .cjs) | Supported |
+| Java (.java) | Supported |
 | Python (.py, .pyi) | File discovery only (no parser) |
 | Rust (.rs) | File discovery only (no parser) |
 
@@ -431,6 +456,14 @@ statik uses tree-sitter for syntactic analysis, not semantic analysis. This mean
 - **Side-effect imports tracked but unnamed** -- Imports like `import './polyfill'` are recorded as dependencies (creating file-level edges in the graph), but since they import no named symbols, they do not contribute to export usage counts.
 
 - **Precision over recall** -- statik is designed to avoid false positives. It may miss some dead code, but it should never falsely flag live code as dead. When confidence is low, the output says so.
+
+Java-specific limitations:
+
+- **No classpath resolution** -- statik resolves imports by mapping package names to source directories. It does not read `pom.xml`, `build.gradle`, or classpath configuration. External dependencies are classified as external and not followed.
+
+- **No annotation processing** -- annotations are extracted as symbols but annotation processor behavior (code generation, compile-time effects) is not modeled.
+
+- **Wildcard imports are imprecise** -- `import com.example.*` creates a dependency on the package directory, but statik cannot determine exactly which classes are used from that package.
 
 ## Output Formats
 
