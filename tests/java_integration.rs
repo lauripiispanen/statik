@@ -61,11 +61,12 @@ fn test_java_index_discovers_all_files() {
     let config = statik::discovery::DiscoveryConfig::default();
     let result = statik::cli::index::run_index(tmp.path(), &config).unwrap();
 
-    // We have: User, Role, UserService, StringUtils, UserController,
-    //          AdminController, UserRepository, UnusedHelper, CycleA, CycleB
+    // We have: User, Role, Auditable, AuditableUser, UserService, NotificationService,
+    //          StringUtils, UserController, AdminController, UserRepository,
+    //          UnusedHelper, CycleA, CycleB, Application
     assert_eq!(
-        result.files_indexed, 10,
-        "Expected 10 Java files, got {}",
+        result.files_indexed, 14,
+        "Expected 14 Java files, got {}",
         result.files_indexed
     );
     assert!(
@@ -144,11 +145,12 @@ fn test_java_deps_shows_importers() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
-    // User.java is imported by: UserService, UserController, AdminController, UserRepository
+    // User.java is imported by: UserService, UserController, AdminController,
+    // UserRepository, AuditableUser (extends), NotificationService, Application (via UserController)
     let imported_by = json["imported_by"].as_array().unwrap();
     assert!(
-        imported_by.len() >= 4,
-        "User.java should be imported by at least 4 files, got {}",
+        imported_by.len() >= 5,
+        "User.java should be imported by at least 5 files, got {}",
         imported_by.len()
     );
 
@@ -380,11 +382,12 @@ fn test_java_impact_analysis() {
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_affected = json["summary"]["total_affected"].as_u64().unwrap();
 
-    // User.java is imported by UserService, UserController, AdminController, UserRepository
-    // And UserService is imported by UserController -> transitive impact
+    // User.java is imported by UserService, UserController, AdminController,
+    // UserRepository, AuditableUser, NotificationService
+    // And UserService is imported by UserController, NotificationService, Application -> transitive
     assert!(
-        total_affected >= 4,
-        "Changing User.java should affect at least 4 files, got {}",
+        total_affected >= 6,
+        "Changing User.java should affect at least 6 files, got {}",
         total_affected
     );
 }
@@ -428,8 +431,8 @@ fn test_java_summary_command() {
     let total_files = json["files"]["total"].as_u64().unwrap();
 
     assert_eq!(
-        total_files, 10,
-        "Summary should report 10 Java files, got {}",
+        total_files, 14,
+        "Summary should report 14 Java files, got {}",
         total_files
     );
 
@@ -523,5 +526,528 @@ fn test_java_lint_text_output() {
         output.contains("AdminController") || output.contains("controller"),
         "Text output should mention violating file: {}",
         output
+    );
+}
+
+// =============================================================================
+// STATIC IMPORTS - verify static import resolution
+// =============================================================================
+
+#[test]
+fn test_java_static_import_resolves() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // AuditableUser uses `import static com.example.util.StringUtils.sanitize`
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/model/AuditableUser.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    // Static import of StringUtils.sanitize should resolve to StringUtils.java
+    // (User and Auditable are in the same package, so no import statement needed)
+    assert_eq!(
+        imports.len(),
+        1,
+        "AuditableUser should have 1 resolved import (static import), got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("StringUtils.java")),
+        "Static import should resolve to StringUtils.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
+// CROSS-PACKAGE IMPORTS - verify explicit import resolution
+// =============================================================================
+
+#[test]
+fn test_java_deps_cross_package_imports() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // NotificationService imports from model, util, and db packages
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/service/NotificationService.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    // NotificationService explicitly imports from 3 different packages
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/User.java")),
+        "Should import model/User.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/Auditable.java")),
+        "Should import model/Auditable.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("db/UserRepository.java")),
+        "Should import db/UserRepository.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
+// EXPORTS - verify interface exports
+// =============================================================================
+
+#[test]
+fn test_java_exports_public_interface() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_exports(
+        tmp.path(),
+        "src/main/java/com/example/model/Auditable.java",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let exports = json["exports"].as_array().unwrap();
+
+    let names: Vec<&str> = exports
+        .iter()
+        .filter_map(|e| e["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"Auditable"),
+        "Should export Auditable interface, got {:?}",
+        names
+    );
+}
+
+// =============================================================================
+// DEAD CODE - entry points should not be detected as dead
+// =============================================================================
+
+#[test]
+fn test_java_dead_code_excludes_entry_point() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_files = json["dead_files"].as_array().unwrap();
+    let dead_paths: Vec<&str> = dead_files
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // Application.java has "Application" in its name, which is a Java entry point
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("Application.java")),
+        "Application.java should NOT be dead (it's an entry point), dead files: {:?}",
+        dead_paths
+    );
+
+    // UnusedHelper should still be dead
+    assert!(
+        dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper.java should still be detected as dead, got {:?}",
+        dead_paths
+    );
+}
+
+// =============================================================================
+// SUMMARY - verify Java language breakdown
+// =============================================================================
+
+#[test]
+fn test_java_summary_language_breakdown() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // Verify language breakdown exists and shows Java
+    if let Some(by_language) = json["files"]["by_language"].as_object() {
+        let java_count = by_language
+            .get("Java")
+            .or_else(|| by_language.get("java"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(
+            java_count, 14,
+            "Should report 14 Java files in language breakdown, got {}",
+            java_count
+        );
+    }
+
+    // Verify dead code count includes UnusedHelper
+    let dead_count = json["dead_code"]["dead_files"].as_u64().unwrap_or(0);
+    assert!(
+        dead_count >= 1,
+        "Should detect at least 1 dead file in summary, got {}",
+        dead_count
+    );
+}
+
+// =============================================================================
+// IMPACT - verify transitive impact through new files
+// =============================================================================
+
+#[test]
+fn test_java_impact_stringutils_transitive() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // StringUtils is imported by UserService and AuditableUser (static import)
+    let output = commands::run_impact(
+        tmp.path(),
+        "src/main/java/com/example/util/StringUtils.java",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let total_affected = json["summary"]["total_affected"].as_u64().unwrap();
+
+    // StringUtils -> UserService -> UserController, Application, NotificationService
+    // StringUtils -> AuditableUser
+    // StringUtils -> NotificationService -> (nothing additional)
+    assert!(
+        total_affected >= 4,
+        "Changing StringUtils.java should affect at least 4 files transitively, got {}",
+        total_affected
+    );
+
+    // Verify specific affected files
+    let affected = json["affected"].as_array().unwrap();
+    let affected_paths: Vec<&str> = affected
+        .iter()
+        .filter_map(|a| a["path"].as_str())
+        .collect();
+    assert!(
+        affected_paths.iter().any(|p| p.contains("UserService.java")),
+        "UserService should be affected, got {:?}",
+        affected_paths
+    );
+    assert!(
+        affected_paths.iter().any(|p| p.contains("AuditableUser.java")),
+        "AuditableUser should be affected (static import), got {:?}",
+        affected_paths
+    );
+}
+
+// =============================================================================
+// DEPS - verify NotificationService has many imports (fan-out)
+// =============================================================================
+
+#[test]
+fn test_java_deps_notification_service_fan_out() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/service/NotificationService.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+
+    // NotificationService imports: User, Auditable, AuditableUser, Role, StringUtils, UserRepository
+    assert!(
+        imports.len() >= 5,
+        "NotificationService should import at least 5 files, got {}",
+        imports.len()
+    );
+
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+    assert!(
+        import_paths.iter().any(|p| p.contains("UserRepository.java")),
+        "Should import UserRepository.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
+// LINT - layer rule on Java
+// =============================================================================
+
+#[test]
+fn test_java_lint_layer_rule() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Layer rule: layers are ordered top-to-bottom. Lower layers (later index)
+    // must not import from higher layers (earlier index).
+    // Define layers so data is at top, controller at bottom:
+    //   data (index 0) -> service (index 1) -> controller (index 2)
+    // AdminController (controller, index 2) imports UserRepository (data, index 0),
+    // which is bottom-up, and thus a violation.
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "clean-layers"
+severity = "error"
+description = "Dependencies must flow top-down through layers"
+
+[rules.layer]
+layers = [
+  { name = "data", patterns = ["src/main/java/com/example/db/**"] },
+  { name = "service", patterns = ["src/main/java/com/example/service/**"] },
+  { name = "controller", patterns = ["src/main/java/com/example/controller/**"] },
+]
+"#,
+    )
+    .unwrap();
+
+    let (output, has_errors) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let violations = json["violations"].as_array().unwrap();
+
+    // AdminController (controller layer, index 2) imports UserRepository (data layer, index 0)
+    // This is a bottom-up import, violating the layer rule
+    let layer_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| v["rule_id"].as_str() == Some("clean-layers"))
+        .collect();
+
+    assert!(
+        !layer_violations.is_empty(),
+        "Should detect layer violation: controller -> data (bottom-up), violations: {:?}",
+        violations
+    );
+    assert!(has_errors, "Layer violation should be an error");
+}
+
+// =============================================================================
+// LINT - fan-limit rule on Java
+// =============================================================================
+
+#[test]
+fn test_java_lint_fan_limit_rule() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // NotificationService has 6 imports - set limit to 4
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "max-deps"
+severity = "error"
+description = "Files should not have too many dependencies"
+
+[rules.fan_limit]
+pattern = ["src/main/java/com/example/service/**"]
+max_fan_out = 4
+"#,
+    )
+    .unwrap();
+
+    let (output, has_errors) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let violations = json["violations"].as_array().unwrap();
+
+    let fan_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| v["rule_id"].as_str() == Some("max-deps"))
+        .collect();
+
+    assert!(
+        !fan_violations.is_empty(),
+        "Should detect fan-limit violation for NotificationService, violations: {:?}",
+        violations
+    );
+    assert!(has_errors, "Fan-limit violation should be an error");
+
+    // Verify the violation source is NotificationService
+    let source = fan_violations[0]["source_file"].as_str().unwrap();
+    assert!(
+        source.contains("NotificationService"),
+        "Violation should be on NotificationService, got {}",
+        source
+    );
+}
+
+// =============================================================================
+// LINT - containment rule on Java
+// =============================================================================
+
+#[test]
+fn test_java_lint_containment_rule() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Enforce that model package is only accessed through User.java as public API
+    // AuditableUser.java and Auditable.java are internal
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "model-encapsulation"
+severity = "error"
+description = "Model package must be accessed through User.java only"
+
+[rules.containment]
+module = ["src/main/java/com/example/model/**"]
+public_api = ["src/main/java/com/example/model/User.java", "src/main/java/com/example/model/Role.java"]
+"#,
+    )
+    .unwrap();
+
+    let (output, has_errors) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let violations = json["violations"].as_array().unwrap();
+
+    let containment_violations: Vec<_> = violations
+        .iter()
+        .filter(|v| v["rule_id"].as_str() == Some("model-encapsulation"))
+        .collect();
+
+    // NotificationService imports Auditable.java and AuditableUser.java which are not in public_api
+    assert!(
+        !containment_violations.is_empty(),
+        "Should detect containment violation for imports of non-public-api model files, violations: {:?}",
+        violations
+    );
+    assert!(has_errors, "Containment violation should be an error");
+}
+
+// =============================================================================
+// LINT - multiple rule types combined on Java
+// =============================================================================
+
+#[test]
+fn test_java_lint_multiple_rule_types() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "no-controller-to-db"
+severity = "error"
+description = "Controllers must not import directly from the database layer"
+
+[rules.boundary]
+from = ["src/main/java/com/example/controller/**"]
+deny = ["src/main/java/com/example/db/**"]
+
+[[rules]]
+id = "clean-layers"
+severity = "warning"
+description = "Dependencies must flow top-down through layers"
+
+[rules.layer]
+layers = [
+  { name = "controller", patterns = ["src/main/java/com/example/controller/**"] },
+  { name = "service", patterns = ["src/main/java/com/example/service/**"] },
+  { name = "data", patterns = ["src/main/java/com/example/db/**"] },
+]
+
+[[rules]]
+id = "fan-check"
+severity = "info"
+description = "Fan-out check"
+
+[rules.fan_limit]
+pattern = ["src/main/java/com/example/**"]
+max_fan_out = 100
+"#,
+    )
+    .unwrap();
+
+    let (output, _) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    // All 3 rules should be evaluated
+    let rules_evaluated = json["summary"]["rules_evaluated"].as_u64().unwrap();
+    assert_eq!(
+        rules_evaluated, 3,
+        "Should evaluate all 3 rules, got {}",
+        rules_evaluated
+    );
+
+    // Should have at least the boundary violation from AdminController -> db
+    let violations = json["violations"].as_array().unwrap();
+    assert!(
+        violations.iter().any(|v| v["rule_id"] == "no-controller-to-db"),
+        "Should detect boundary violation, got {:?}",
+        violations
     );
 }
