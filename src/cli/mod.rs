@@ -102,6 +102,13 @@ pub enum Commands {
         severity_threshold: String,
     },
 
+    /// Compare export changes between two index snapshots
+    Diff {
+        /// Path to the old/baseline index database
+        #[arg(long)]
+        before: String,
+    },
+
     /// List symbols in the project
     Symbols {
         /// Filter by file path

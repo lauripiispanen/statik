@@ -674,6 +674,27 @@ pub fn run_lint(
     Ok((output, has_errors))
 }
 
+/// Run the `diff` command.
+pub fn run_diff(
+    project_path: &Path,
+    before_path: &str,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    use crate::analysis::diff::compare_snapshots;
+
+    let db_before = Database::open(std::path::Path::new(before_path))
+        .context(format!("Failed to open baseline database: {}", before_path))?;
+    let db_after = ensure_index(project_path, no_index)?;
+
+    let result = compare_snapshots(&db_before, &db_after)?;
+
+    Ok(match format {
+        OutputFormat::Text => format_diff_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
 /// Run the `symbols` command.
 pub fn run_symbols(
     project_path: &Path,
@@ -1413,6 +1434,67 @@ fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
     out.push_str(&format!(
         "{} errors, {} warnings across {} rules\n",
         result.summary.errors, result.summary.warnings, result.summary.rules_evaluated,
+    ));
+
+    out
+}
+
+fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
+    use crate::analysis::diff::ChangeKind;
+
+    let mut out = String::new();
+
+    if result.changes.is_empty() {
+        out.push_str("No export changes detected.\n");
+    } else {
+        let breaking: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Breaking)
+            .collect();
+        let expanding: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Expanding)
+            .collect();
+
+        if !breaking.is_empty() {
+            out.push_str(&format!("Breaking changes ({}):\n", breaking.len()));
+            for c in &breaking {
+                out.push_str(&format!(
+                    "  - {}  {}  ({})\n",
+                    display_path(&c.file_path),
+                    c.export_name,
+                    c.detail,
+                ));
+            }
+            out.push('\n');
+        }
+
+        if !expanding.is_empty() {
+            out.push_str(&format!("New exports ({}):\n", expanding.len()));
+            for c in &expanding {
+                out.push_str(&format!(
+                    "  + {}  {}  ({})\n",
+                    display_path(&c.file_path),
+                    c.export_name,
+                    c.detail,
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    out.push_str(&format!(
+        "Summary: {} added, {} removed, {} changed, {} unchanged files\n",
+        result.summary.files_added,
+        result.summary.files_removed,
+        result.summary.files_changed,
+        result.summary.files_unchanged,
+    ));
+    out.push_str(&format!(
+        "  {} breaking, {} expanding changes",
+        result.summary.breaking_changes, result.summary.expanding_changes,
     ));
 
     out

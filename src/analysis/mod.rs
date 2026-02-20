@@ -1,6 +1,7 @@
 pub mod cycles;
 pub mod dead_code;
 pub mod dependencies;
+pub mod diff;
 pub mod impact;
 
 use serde::{Deserialize, Serialize};

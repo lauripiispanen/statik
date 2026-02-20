@@ -122,6 +122,16 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Diff { ref before } => {
+            let output = commands::run_diff(
+                &project_path,
+                before,
+                &cli.format,
+                cli.no_index,
+            )?;
+            println!("{}", output);
+        }
+
         Commands::Symbols {
             ref file,
             ref kind,
