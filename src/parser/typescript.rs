@@ -58,6 +58,8 @@ impl LanguageParser for TypeScriptParser {
             references: extractor.references,
             imports: extractor.imports,
             exports: extractor.exports,
+            type_references: Vec::new(),
+            annotations: Vec::new(),
         })
     }
 

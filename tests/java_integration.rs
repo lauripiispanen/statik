@@ -1313,3 +1313,158 @@ fn test_java_same_package_cycles_still_detected() {
         all_cycle_paths
     );
 }
+
+// =============================================================================
+// CUSTOM ENTRY POINTS - user-configured patterns and annotations
+// =============================================================================
+
+#[test]
+fn test_java_custom_entry_point_pattern() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Without config, UnusedHelper is dead
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper should be dead without custom config"
+    );
+
+    // Add custom entry point pattern that matches UnusedHelper
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"
+rules = []
+
+[entry_points]
+patterns = ["**/orphan/**"]
+"#,
+    )
+    .unwrap();
+
+    // Now UnusedHelper should NOT be dead
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper should NOT be dead with custom entry point pattern, dead: {:?}",
+        dead_paths
+    );
+}
+
+#[test]
+fn test_java_custom_entry_point_annotation() {
+    let tmp = setup_java_project();
+
+    // Create a file with a custom annotation that built-in heuristics don't recognize
+    let custom_dir = tmp
+        .path()
+        .join("src/main/java/com/example/batch");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+    std::fs::write(
+        custom_dir.join("BatchJob.java"),
+        r#"
+package com.example.batch;
+
+@Scheduled
+public class BatchJob {
+    public void run() {}
+}
+"#,
+    )
+    .unwrap();
+
+    index_java_project(tmp.path());
+
+    // Without config, BatchJob is dead (Scheduled is not a built-in entry annotation)
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        dead_paths.iter().any(|p| p.contains("BatchJob.java")),
+        "BatchJob should be dead without custom annotation config, dead: {:?}",
+        dead_paths
+    );
+
+    // Add custom annotation entry point
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"
+rules = []
+
+[entry_points]
+annotations = ["Scheduled"]
+"#,
+    )
+    .unwrap();
+
+    // Now BatchJob should NOT be dead
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("BatchJob.java")),
+        "BatchJob should NOT be dead with custom annotation entry point, dead: {:?}",
+        dead_paths
+    );
+}
+
+#[test]
+fn test_java_default_entry_points_unchanged_without_config() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Remove any existing config to test defaults
+    let _ = std::fs::remove_file(tmp.path().join(".statik/rules.toml"));
+    let _ = std::fs::remove_file(tmp.path().join("statik.toml"));
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // Built-in heuristics should still work: Application.java is an entry point
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("Application.java")),
+        "Application.java should still be entry point without config, dead: {:?}",
+        dead_paths
+    );
+    // UnusedHelper should still be dead
+    assert!(
+        dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper should still be dead without config, dead: {:?}",
+        dead_paths
+    );
+}

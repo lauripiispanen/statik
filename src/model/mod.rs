@@ -269,6 +269,10 @@ pub struct ParseResult {
     pub references: Vec<Reference>,
     pub imports: Vec<ImportRecord>,
     pub exports: Vec<ExportRecord>,
+    /// Simple type names used in this file (Java only, for same-package resolution).
+    pub type_references: Vec<String>,
+    /// Annotation names on top-level declarations (Java only, for entry point detection).
+    pub annotations: Vec<String>,
 }
 
 pub mod file_graph;

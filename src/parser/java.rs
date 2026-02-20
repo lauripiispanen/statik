@@ -38,12 +38,69 @@ impl LanguageParser for JavaParser {
         let mut extractor = Extractor::new(file_id, source, &tree);
         extractor.extract();
 
+        // Build set of explicitly imported names to avoid duplicating them as type-refs
+        let explicit_imports: HashSet<String> = extractor
+            .imports
+            .iter()
+            .filter(|i| !i.source_path.starts_with('@'))
+            .map(|i| i.imported_name.clone())
+            .collect();
+
+        // Filter type_refs: remove explicitly imported names
+        let type_references: Vec<String> = extractor
+            .type_refs
+            .iter()
+            .filter(|name| !explicit_imports.contains(*name))
+            .cloned()
+            .collect();
+
+        // Emit synthetic @type-ref: imports for same-package resolution
+        let span = Span { start: 0, end: 0 };
+        let line_span = LineSpan {
+            start: Position { line: 0, column: 0 },
+            end: Position { line: 0, column: 0 },
+        };
+        for name in &type_references {
+            extractor.imports.push(ImportRecord {
+                file: file_id,
+                source_path: format!("@type-ref:{}", name),
+                imported_name: name.clone(),
+                local_name: String::new(),
+                span,
+                line_span,
+                is_default: false,
+                is_namespace: false,
+                is_type_only: true,
+                is_side_effect: false,
+            });
+        }
+
+        // Emit synthetic @annotation: imports for entry point detection
+        for name in &extractor.annotations {
+            extractor.imports.push(ImportRecord {
+                file: file_id,
+                source_path: format!("@annotation:{}", name),
+                imported_name: name.clone(),
+                local_name: String::new(),
+                span,
+                line_span,
+                is_default: false,
+                is_namespace: false,
+                is_type_only: false,
+                is_side_effect: false,
+            });
+        }
+
+        let annotations = extractor.annotations.clone();
+
         Ok(ParseResult {
             file_id,
             symbols: extractor.symbols,
             references: extractor.references,
             imports: extractor.imports,
             exports: extractor.exports,
+            type_references,
+            annotations,
         })
     }
 
@@ -66,6 +123,12 @@ struct Extractor<'a> {
     parent_stack: Vec<SymbolId>,
     /// The package name from the `package` declaration, if any.
     package_name: Option<String>,
+    /// Collected type_identifier names for same-package resolution.
+    type_refs: HashSet<String>,
+    /// Generic type parameter names to exclude from type_refs.
+    type_params: HashSet<String>,
+    /// Annotation names on top-level declarations/methods for entry point detection.
+    annotations: Vec<String>,
 }
 
 impl<'a> Extractor<'a> {
@@ -82,6 +145,9 @@ impl<'a> Extractor<'a> {
             next_ref_id: file_id.0 * 100_000 + 1,
             parent_stack: Vec::new(),
             package_name: None,
+            type_refs: HashSet::new(),
+            type_params: HashSet::new(),
+            annotations: Vec::new(),
         }
     }
 
@@ -154,10 +220,8 @@ impl<'a> Extractor<'a> {
         let root = self.tree.root_node();
         // First pass: find the package declaration
         self.extract_package(&root);
-        // Second pass: extract symbols, references, imports, exports
+        // Second pass: extract symbols, references, imports, exports, type refs
         self.visit_children(root);
-        // Third pass: extract type references for same-package resolution
-        self.extract_type_references(root);
     }
 
     fn extract_package(&mut self, root: &Node) {
@@ -178,103 +242,76 @@ impl<'a> Extractor<'a> {
         }
     }
 
-    fn extract_type_references(&mut self, root: Node) {
-        let mut type_params = HashSet::new();
-        let mut type_refs = HashSet::new();
-        Self::collect_type_refs(root, self.source, &mut type_refs, &mut type_params);
-
-        let explicit_imports: HashSet<String> = self
-            .imports
-            .iter()
-            .filter(|i| !i.source_path.starts_with('@'))
-            .map(|i| i.imported_name.clone())
-            .collect();
-
-        let span = Span { start: 0, end: 0 };
-        let line_span = LineSpan {
-            start: Position { line: 0, column: 0 },
-            end: Position { line: 0, column: 0 },
-        };
-
-        for name in type_refs {
-            if explicit_imports.contains(&name) {
-                continue;
-            }
-            self.imports.push(ImportRecord {
-                file: self.file_id,
-                source_path: format!("@type-ref:{}", name),
-                imported_name: name,
-                local_name: String::new(),
-                span,
-                line_span,
-                is_default: false,
-                is_namespace: false,
-                is_type_only: true,
-                is_side_effect: false,
-            });
+    fn note_type_identifier(&mut self, node: Node) {
+        let text = self.node_text(node);
+        if !text.is_empty()
+            && text != "var"
+            && !self.type_params.contains(text)
+            && text.chars().next().map_or(false, |c| c.is_uppercase())
+        {
+            self.type_refs.insert(text.to_string());
         }
     }
 
-    fn collect_type_refs(
-        node: Node,
-        source: &str,
-        refs: &mut HashSet<String>,
-        type_params: &mut HashSet<String>,
-    ) {
-        // Collect type parameters from class/method/interface declarations
-        if matches!(
-            node.kind(),
-            "class_declaration"
-                | "interface_declaration"
-                | "method_declaration"
-                | "record_declaration"
-        ) {
-            if let Some(tp) = node.child_by_field_name("type_parameters") {
-                Self::collect_type_param_names(tp, source, type_params);
-            }
-        }
-
-        match node.kind() {
-            "type_identifier" => {
-                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
-                if !text.is_empty()
-                    && text != "var"
-                    && !type_params.contains(text)
-                    && text.chars().next().map_or(false, |c| c.is_uppercase())
-                {
-                    refs.insert(text.to_string());
-                }
-            }
-            _ => {
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    Self::collect_type_refs(child, source, refs, type_params);
-                }
-            }
-        }
-    }
-
-    fn collect_type_param_names(
-        type_params_node: Node,
-        source: &str,
-        out: &mut HashSet<String>,
-    ) {
+    fn collect_type_param_names(&mut self, type_params_node: Node) {
         let mut cursor = type_params_node.walk();
         for child in type_params_node.children(&mut cursor) {
             if child.kind() == "type_parameter" {
-                // The first child of a type_parameter is the identifier
                 let mut inner_cursor = child.walk();
                 for inner_child in child.children(&mut inner_cursor) {
-                    if inner_child.kind() == "type_identifier" || inner_child.kind() == "identifier"
+                    if inner_child.kind() == "type_identifier"
+                        || inner_child.kind() == "identifier"
                     {
-                        let name = inner_child.utf8_text(source.as_bytes()).unwrap_or("");
+                        let name = self.node_text(inner_child).to_string();
                         if !name.is_empty() {
-                            out.insert(name.to_string());
+                            self.type_params.insert(name);
                         }
                         break;
                     }
                 }
             }
+        }
+    }
+
+    fn collect_annotation_names_on(&mut self, decl_node: Node) {
+        if self.parent_stack.len() > 1 {
+            return;
+        }
+        let mut cursor = decl_node.walk();
+        for child in decl_node.children(&mut cursor) {
+            match child.kind() {
+                "modifiers" => {
+                    let mut inner_cursor = child.walk();
+                    for inner_child in child.children(&mut inner_cursor) {
+                        if inner_child.kind() == "marker_annotation"
+                            || inner_child.kind() == "annotation"
+                        {
+                            if let Some(name_n) = inner_child.child_by_field_name("name") {
+                                self.annotations
+                                    .push(self.node_text(name_n).to_string());
+                            }
+                        }
+                    }
+                }
+                "marker_annotation" | "annotation" => {
+                    if let Some(name_n) = child.child_by_field_name("name") {
+                        self.annotations.push(self.node_text(name_n).to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Walk all type_identifier nodes under a subtree, recording them as type refs.
+    fn scan_type_identifiers(&mut self, node: Node) {
+        if node.kind() == "type_identifier" {
+            self.note_type_identifier(node);
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.scan_type_identifiers(child);
         }
     }
 
@@ -312,6 +349,9 @@ impl<'a> Extractor<'a> {
             "object_creation_expression" => {
                 self.extract_new_reference(node);
                 self.visit_children(node);
+            }
+            "type_identifier" => {
+                self.note_type_identifier(node);
             }
             _ => {
                 self.visit_children(node);
@@ -371,56 +411,6 @@ impl<'a> Extractor<'a> {
                 }
                 _ => {}
             }
-        }
-    }
-
-    fn collect_annotation_names(&self, decl_node: Node) -> Vec<String> {
-        let mut names = Vec::new();
-        let mut cursor = decl_node.walk();
-        for child in decl_node.children(&mut cursor) {
-            match child.kind() {
-                "modifiers" => {
-                    let mut inner_cursor = child.walk();
-                    for inner_child in child.children(&mut inner_cursor) {
-                        if inner_child.kind() == "marker_annotation"
-                            || inner_child.kind() == "annotation"
-                        {
-                            if let Some(name_n) = inner_child.child_by_field_name("name") {
-                                names.push(self.node_text(name_n).to_string());
-                            }
-                        }
-                    }
-                }
-                "marker_annotation" | "annotation" => {
-                    if let Some(name_n) = child.child_by_field_name("name") {
-                        names.push(self.node_text(name_n).to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        names
-    }
-
-    fn emit_annotation_imports(&mut self, decl_node: Node) {
-        if self.parent_stack.len() > 1 {
-            return;
-        }
-        let span = self.node_span(decl_node);
-        let line_span = self.node_line_span(decl_node);
-        for name in self.collect_annotation_names(decl_node) {
-            self.imports.push(ImportRecord {
-                file: self.file_id,
-                source_path: format!("@annotation:{}", name),
-                imported_name: name,
-                local_name: String::new(),
-                span,
-                line_span,
-                is_default: false,
-                is_namespace: false,
-                is_type_only: false,
-                is_side_effect: false,
-            });
         }
     }
 
@@ -517,16 +507,20 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
 
-        // Extract extends (superclass)
-        if let Some(superclass) = node.child_by_field_name("superclass") {
-            self.extract_superclass(superclass, id);
+        if let Some(tp) = node.child_by_field_name("type_parameters") {
+            self.collect_type_param_names(tp);
         }
 
-        // Extract implements (interfaces)
+        if let Some(superclass) = node.child_by_field_name("superclass") {
+            self.extract_superclass(superclass, id);
+            self.scan_type_identifiers(superclass);
+        }
+
         if let Some(interfaces) = node.child_by_field_name("interfaces") {
             self.extract_implements(interfaces, id);
+            self.scan_type_identifiers(interfaces);
         }
 
         if visibility == Visibility::Public && self.all_parents_public() {
@@ -541,7 +535,6 @@ impl<'a> Extractor<'a> {
             });
         }
 
-        // Visit class body
         self.parent_stack.push(id);
         if let Some(body) = node.child_by_field_name("body") {
             self.visit_class_body(body);
@@ -572,13 +565,17 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
 
-        // Extract extends (for interfaces)
+        if let Some(tp) = node.child_by_field_name("type_parameters") {
+            self.collect_type_param_names(tp);
+        }
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "extends_interfaces" {
                 self.extract_type_list_refs(child, id);
+                self.scan_type_identifiers(child);
             }
         }
 
@@ -594,7 +591,6 @@ impl<'a> Extractor<'a> {
             });
         }
 
-        // Visit interface body
         self.parent_stack.push(id);
         if let Some(body) = node.child_by_field_name("body") {
             self.visit_interface_body(body);
@@ -625,11 +621,11 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
 
-        // Extract implements (interfaces) for enum
         if let Some(interfaces) = node.child_by_field_name("interfaces") {
             self.extract_implements(interfaces, id);
+            self.scan_type_identifiers(interfaces);
         }
 
         if visibility == Visibility::Public && self.all_parents_public() {
@@ -675,7 +671,7 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
 
         if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
@@ -713,7 +709,11 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
+
+        if let Some(tp) = node.child_by_field_name("type_parameters") {
+            self.collect_type_param_names(tp);
+        }
 
         if visibility == Visibility::Public && self.all_parents_public() {
             self.exports.push(ExportRecord {
@@ -846,9 +846,25 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
-        self.emit_annotation_imports(node);
+        self.collect_annotation_names_on(node);
 
-        // Visit method body for references
+        if let Some(tp) = node.child_by_field_name("type_parameters") {
+            self.collect_type_param_names(tp);
+        }
+        if let Some(ret) = node.child_by_field_name("type") {
+            self.scan_type_identifiers(ret);
+        }
+        if let Some(params) = node.child_by_field_name("parameters") {
+            self.scan_type_identifiers(params);
+        }
+        // throws clause
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "throws" {
+                self.scan_type_identifiers(child);
+            }
+        }
+
         self.parent_stack.push(id);
         if let Some(body) = node.child_by_field_name("body") {
             self.visit_children(body);
@@ -927,6 +943,9 @@ impl<'a> Extractor<'a> {
                 }
             }
         }
+
+        // Scan field type for type references
+        self.scan_type_identifiers(node);
 
         // Extract annotation references (e.g., @Autowired, @Inject)
         if let Some(id) = first_id {
@@ -2283,5 +2302,154 @@ public class Foo {
         for import in &type_ref_imports {
             assert!(import.is_type_only, "type-ref imports should be type_only");
         }
+    }
+
+    // =========================================================================
+    // Edge case tests for type reference extraction
+    // =========================================================================
+
+    #[test]
+    fn test_type_ref_enhanced_for_loop() {
+        let result = parse_java(
+            r#"
+import java.util.List;
+public class Foo {
+    public void process(List<User> users) {
+        for (User u : users) {
+            System.out.println(u);
+        }
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"User".to_string()),
+            "enhanced for loop variable type should be extracted: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_multi_catch() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void risky() {
+        try {
+            doStuff();
+        } catch (IOException | SQLException e) {
+            e.printStackTrace();
+        }
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"IOException".to_string()),
+            "multi-catch first type should be extracted: {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"SQLException".to_string()),
+            "multi-catch second type should be extracted: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_try_with_resources() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void read() {
+        try (BufferedReader br = new BufferedReader(null)) {
+            br.readLine();
+        }
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"BufferedReader".to_string()),
+            "try-with-resources type should be extracted: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_array_type() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    private User[] users;
+    public Widget[] getWidgets() { return null; }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"User".to_string()),
+            "array element type should be extracted from field: {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "array element type should be extracted from return type: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_no_self_reference() {
+        // A class referencing its own name (factory pattern) should still
+        // collect the type_ref, but when resolved at the graph level the
+        // resolver should skip self-edges. At the parser level we just
+        // verify the name is collected (it will be the class's own name).
+        let result = parse_java(
+            r#"
+public class Widget {
+    public static Widget create() {
+        return new Widget();
+    }
+}
+"#,
+        );
+        // Widget appears as both a declared class and a type ref (return type).
+        // The parser collects it; self-edge filtering is the resolver's job.
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "self-referencing type should still be collected as type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_var_not_extracted() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void method() {
+        var x = new User();
+        var y = "hello";
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"var".to_string()),
+            "var keyword should NOT be extracted as type-ref: {:?}",
+            refs
+        );
+        // User still appears from the new expression's type_identifier
+        assert!(
+            refs.contains(&"User".to_string()),
+            "User from new expression should be extracted: {:?}",
+            refs
+        );
     }
 }

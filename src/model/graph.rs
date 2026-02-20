@@ -260,6 +260,8 @@ mod tests {
             references: vec![],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
 
         graph.add_parse_result(result);
@@ -288,6 +290,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
 
         graph.add_parse_result(result);
@@ -323,6 +327,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -350,6 +356,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -380,6 +388,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -401,6 +411,8 @@ mod tests {
             references: vec![make_reference(1, 1, 2, RefKind::Call, 1)],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         let result2 = ParseResult {
             file_id: FileId(2),
@@ -408,6 +420,8 @@ mod tests {
             references: vec![],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result1);
         graph.add_parse_result(result2);
@@ -441,6 +455,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -471,6 +487,8 @@ mod tests {
             references: vec![make_reference(1, 1, 1, RefKind::Call, 1)],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -517,6 +535,8 @@ mod tests {
             references: vec![make_reference(1, 1, 2, RefKind::Call, 1)],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         let result2 = ParseResult {
             file_id: FileId(2),
@@ -524,6 +544,8 @@ mod tests {
             references: vec![],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result1);
         graph.add_parse_result(result2);
@@ -557,6 +579,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -582,6 +606,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         // File 2
         let result2 = ParseResult {
@@ -593,6 +619,8 @@ mod tests {
             references: vec![],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
 
         graph.add_parse_result(result1);
@@ -638,6 +666,8 @@ mod tests {
             ],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
@@ -663,6 +693,8 @@ mod tests {
             references: vec![],
             imports: vec![],
             exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         };
         graph.add_parse_result(result);
 
