@@ -127,6 +127,26 @@ pub fn find_config_path(project_root: &Path, config_override: Option<&Path>) -> 
     None
 }
 
+/// User-configurable entry point definitions.
+///
+/// These are checked IN ADDITION to the built-in entry point heuristics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryPointConfig {
+    /// Glob patterns matching entry point files (e.g., `"**/Bootstrap.java"`).
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    /// Annotation names that mark entry points (e.g., `"Scheduled"`).
+    #[serde(default)]
+    pub annotations: Vec<String>,
+}
+
+/// Wrapper for deserializing the optional `[entry_points]` section.
+#[derive(Debug, Deserialize)]
+struct ConfigWithEntryPoints {
+    #[serde(default)]
+    entry_points: Option<EntryPointConfig>,
+}
+
 /// Load and parse a lint config from a TOML file.
 pub fn load_config(path: &Path) -> Result<LintConfig> {
     let content =
@@ -138,6 +158,22 @@ pub fn load_config(path: &Path) -> Result<LintConfig> {
 pub fn parse_config(toml_str: &str) -> Result<LintConfig> {
     let config: LintConfig = toml::from_str(toml_str)?;
     Ok(config)
+}
+
+/// Load entry point config from a project, returning defaults if no config exists.
+pub fn load_entry_point_config(project_root: &Path) -> EntryPointConfig {
+    let path = match find_config_path(project_root, None) {
+        Some(p) => p,
+        None => return EntryPointConfig::default(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return EntryPointConfig::default(),
+    };
+    match toml::from_str::<ConfigWithEntryPoints>(&content) {
+        Ok(wrapper) => wrapper.entry_points.unwrap_or_default(),
+        Err(_) => EntryPointConfig::default(),
+    }
 }
 
 #[cfg(test)]
@@ -599,5 +635,106 @@ public_api = ["src/auth/index.ts"]
         assert!(matches!(&config.rules[0].rule, RuleKind::Boundary(_)));
         assert!(matches!(&config.rules[1].rule, RuleKind::Layer(_)));
         assert!(matches!(&config.rules[2].rule, RuleKind::Containment(_)));
+    }
+
+    // =========================================================================
+    // Entry point config
+    // =========================================================================
+
+    #[test]
+    fn test_parse_entry_points_config() {
+        let toml = r#"
+rules = []
+
+[entry_points]
+patterns = ["**/Bootstrap.java", "**/Main.java"]
+annotations = ["Scheduled", "MyCustomEntryPoint"]
+"#;
+        // LintConfig parsing should still work (ignores unknown sections)
+        let lint = parse_config(toml).unwrap();
+        assert!(lint.rules.is_empty());
+
+        // Entry point config should parse correctly
+        let wrapper: ConfigWithEntryPoints = toml::from_str(toml).unwrap();
+        let ep = wrapper.entry_points.unwrap();
+        assert_eq!(ep.patterns, vec!["**/Bootstrap.java", "**/Main.java"]);
+        assert_eq!(ep.annotations, vec!["Scheduled", "MyCustomEntryPoint"]);
+    }
+
+    #[test]
+    fn test_parse_entry_points_with_rules() {
+        let toml = r#"
+[[rules]]
+id = "test"
+severity = "error"
+description = "test rule"
+
+[rules.boundary]
+from = ["src/a/**"]
+deny = ["src/b/**"]
+
+[entry_points]
+patterns = ["**/Startup.java"]
+annotations = ["Cron"]
+"#;
+        let lint = parse_config(toml).unwrap();
+        assert_eq!(lint.rules.len(), 1);
+
+        let wrapper: ConfigWithEntryPoints = toml::from_str(toml).unwrap();
+        let ep = wrapper.entry_points.unwrap();
+        assert_eq!(ep.patterns, vec!["**/Startup.java"]);
+        assert_eq!(ep.annotations, vec!["Cron"]);
+    }
+
+    #[test]
+    fn test_parse_no_entry_points_section() {
+        let toml = r#"
+rules = []
+"#;
+        let wrapper: ConfigWithEntryPoints = toml::from_str(toml).unwrap();
+        assert!(wrapper.entry_points.is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_entry_points() {
+        let toml = r#"
+rules = []
+
+[entry_points]
+"#;
+        let wrapper: ConfigWithEntryPoints = toml::from_str(toml).unwrap();
+        let ep = wrapper.entry_points.unwrap();
+        assert!(ep.patterns.is_empty());
+        assert!(ep.annotations.is_empty());
+    }
+
+    #[test]
+    fn test_load_entry_point_config_no_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ep = load_entry_point_config(dir.path());
+        assert!(ep.patterns.is_empty());
+        assert!(ep.annotations.is_empty());
+    }
+
+    #[test]
+    fn test_load_entry_point_config_from_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let statik_dir = dir.path().join(".statik");
+        std::fs::create_dir_all(&statik_dir).unwrap();
+        std::fs::write(
+            statik_dir.join("rules.toml"),
+            r#"
+rules = []
+
+[entry_points]
+patterns = ["**/Batch.java"]
+annotations = ["Scheduled"]
+"#,
+        )
+        .unwrap();
+
+        let ep = load_entry_point_config(dir.path());
+        assert_eq!(ep.patterns, vec!["**/Batch.java"]);
+        assert_eq!(ep.annotations, vec!["Scheduled"]);
     }
 }

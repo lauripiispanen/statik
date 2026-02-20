@@ -23,6 +23,14 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let files = db.all_files()?;
     let mut graph = FileGraph::new();
 
+    // Load user-configured entry points
+    let ep_config = crate::linting::config::load_entry_point_config(project_root);
+    let custom_pattern_matcher = if ep_config.patterns.is_empty() {
+        None
+    } else {
+        Some(crate::linting::matcher::FileMatcher::new(&ep_config.patterns)?)
+    };
+
     // Collect all known file paths for resolvers
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
@@ -40,7 +48,9 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             let imports = db.get_imports_by_file(file.id)?;
             for import in &imports {
                 if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                    if is_entry_point_annotation(ann) {
+                    if is_entry_point_annotation(ann)
+                        || ep_config.annotations.iter().any(|a| a == ann)
+                    {
                         annotation_entry_files.insert(file.id);
                         break;
                     }
@@ -52,8 +62,12 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Add files to the graph
     for file in &files {
         let exports = db.get_exports_by_file(file.id)?;
-        let is_entry =
-            is_entry_point(&file.path) || annotation_entry_files.contains(&file.id);
+        let rel_path = crate::linting::matcher::to_relative(&file.path, project_root);
+        let is_entry = is_entry_point(&file.path)
+            || annotation_entry_files.contains(&file.id)
+            || custom_pattern_matcher
+                .as_ref()
+                .map_or(false, |m| m.matches(rel_path));
 
         graph.add_file(FileInfo {
             id: file.id,
