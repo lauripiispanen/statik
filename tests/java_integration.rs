@@ -557,17 +557,28 @@ fn test_java_static_import_resolves() {
         .filter_map(|i| i["path"].as_str())
         .collect();
 
-    // Static import of StringUtils.sanitize should resolve to StringUtils.java
-    // (User and Auditable are in the same package, so no import statement needed)
+    // AuditableUser has:
+    // - Static import: StringUtils.sanitize -> StringUtils.java
+    // - Same-package type refs: extends User -> User.java, implements Auditable -> Auditable.java
     assert_eq!(
         imports.len(),
-        1,
-        "AuditableUser should have 1 resolved import (static import), got {:?}",
+        3,
+        "AuditableUser should have 3 resolved imports (User, Auditable, StringUtils), got {:?}",
         import_paths
     );
     assert!(
         import_paths.iter().any(|p| p.contains("StringUtils.java")),
         "Static import should resolve to StringUtils.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("User.java")),
+        "Same-package type ref should resolve to User.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Auditable.java")),
+        "Same-package type ref should resolve to Auditable.java, got {:?}",
         import_paths
     );
 }

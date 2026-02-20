@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -153,15 +154,16 @@ impl<'a> Extractor<'a> {
         let root = self.tree.root_node();
         // First pass: find the package declaration
         self.extract_package(&root);
-        // Second pass: extract everything else
+        // Second pass: extract symbols, references, imports, exports
         self.visit_children(root);
+        // Third pass: extract type references for same-package resolution
+        self.extract_type_references(root);
     }
 
     fn extract_package(&mut self, root: &Node) {
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
             if child.kind() == "package_declaration" {
-                // Get the identifier or scoped_identifier child
                 let mut inner_cursor = child.walk();
                 for inner_child in child.children(&mut inner_cursor) {
                     match inner_child.kind() {
@@ -170,6 +172,106 @@ impl<'a> Extractor<'a> {
                                 Some(self.node_text(inner_child).to_string());
                         }
                         _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_type_references(&mut self, root: Node) {
+        let mut type_params = HashSet::new();
+        let mut type_refs = HashSet::new();
+        Self::collect_type_refs(root, self.source, &mut type_refs, &mut type_params);
+
+        let explicit_imports: HashSet<String> = self
+            .imports
+            .iter()
+            .filter(|i| !i.source_path.starts_with('@'))
+            .map(|i| i.imported_name.clone())
+            .collect();
+
+        let span = Span { start: 0, end: 0 };
+        let line_span = LineSpan {
+            start: Position { line: 0, column: 0 },
+            end: Position { line: 0, column: 0 },
+        };
+
+        for name in type_refs {
+            if explicit_imports.contains(&name) {
+                continue;
+            }
+            self.imports.push(ImportRecord {
+                file: self.file_id,
+                source_path: format!("@type-ref:{}", name),
+                imported_name: name,
+                local_name: String::new(),
+                span,
+                line_span,
+                is_default: false,
+                is_namespace: false,
+                is_type_only: true,
+                is_side_effect: false,
+            });
+        }
+    }
+
+    fn collect_type_refs(
+        node: Node,
+        source: &str,
+        refs: &mut HashSet<String>,
+        type_params: &mut HashSet<String>,
+    ) {
+        // Collect type parameters from class/method/interface declarations
+        if matches!(
+            node.kind(),
+            "class_declaration"
+                | "interface_declaration"
+                | "method_declaration"
+                | "record_declaration"
+        ) {
+            if let Some(tp) = node.child_by_field_name("type_parameters") {
+                Self::collect_type_param_names(tp, source, type_params);
+            }
+        }
+
+        match node.kind() {
+            "type_identifier" => {
+                let text = node.utf8_text(source.as_bytes()).unwrap_or("");
+                if !text.is_empty()
+                    && text != "var"
+                    && !type_params.contains(text)
+                    && text.chars().next().map_or(false, |c| c.is_uppercase())
+                {
+                    refs.insert(text.to_string());
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    Self::collect_type_refs(child, source, refs, type_params);
+                }
+            }
+        }
+    }
+
+    fn collect_type_param_names(
+        type_params_node: Node,
+        source: &str,
+        out: &mut HashSet<String>,
+    ) {
+        let mut cursor = type_params_node.walk();
+        for child in type_params_node.children(&mut cursor) {
+            if child.kind() == "type_parameter" {
+                // The first child of a type_parameter is the identifier
+                let mut inner_cursor = child.walk();
+                for inner_child in child.children(&mut inner_cursor) {
+                    if inner_child.kind() == "type_identifier" || inner_child.kind() == "identifier"
+                    {
+                        let name = inner_child.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                        break;
                     }
                 }
             }
@@ -1425,11 +1527,27 @@ public interface UserService {
 "#,
         );
 
-        // Verify imports
-        assert_eq!(result.imports.len(), 3);
-        assert!(result.imports.iter().any(|i| i.imported_name == "List"));
-        assert!(result.imports.iter().any(|i| i.imported_name == "Optional"));
-        assert!(result.imports.iter().any(|i| i.imported_name == "User"));
+        // Verify explicit imports (non-synthetic)
+        let explicit: Vec<_> = result
+            .imports
+            .iter()
+            .filter(|i| !i.source_path.starts_with('@'))
+            .collect();
+        assert_eq!(explicit.len(), 3);
+        assert!(explicit.iter().any(|i| i.imported_name == "List"));
+        assert!(explicit.iter().any(|i| i.imported_name == "Optional"));
+        assert!(explicit.iter().any(|i| i.imported_name == "User"));
+
+        // String appears as a type-ref (from method parameter)
+        let type_refs: Vec<_> = result
+            .imports
+            .iter()
+            .filter(|i| i.source_path.starts_with("@type-ref:"))
+            .collect();
+        assert!(
+            type_refs.iter().any(|i| i.imported_name == "String"),
+            "String should be extracted as type-ref"
+        );
 
         // Verify interface
         let iface = result

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::{Resolution, Resolver, UnresolvedReason};
@@ -25,6 +25,8 @@ pub struct JavaResolver {
     source_roots: Vec<PathBuf>,
     /// Set of known files in the project for fast existence checks.
     known_files: HashSet<PathBuf>,
+    /// Package name -> list of (class_name, file_path) for same-package resolution.
+    package_files: HashMap<String, Vec<(String, PathBuf)>>,
 }
 
 impl JavaResolver {
@@ -34,10 +36,12 @@ impl JavaResolver {
     /// - `known_files`: All known `.java` file paths in the project (absolute paths).
     pub fn new(project_root: PathBuf, known_files: Vec<PathBuf>) -> Self {
         let source_roots = Self::detect_source_roots(&project_root, &known_files);
+        let package_files = Self::build_package_map(&source_roots, &known_files);
         let known_set: HashSet<PathBuf> = known_files.into_iter().collect();
         JavaResolver {
             source_roots,
             known_files: known_set,
+            package_files,
         }
     }
 
@@ -107,8 +111,7 @@ impl JavaResolver {
         None
     }
 
-    /// Check if a fully-qualified name looks like a standard library or external package.
-    fn is_likely_external(fqn: &str) -> bool {
+    pub fn is_likely_external(fqn: &str) -> bool {
         let external_prefixes = [
             "java.",
             "javax.",
@@ -122,7 +125,129 @@ impl JavaResolver {
         ];
         external_prefixes.iter().any(|p| fqn.starts_with(p))
     }
+
+    fn build_package_map(
+        source_roots: &[PathBuf],
+        known_files: &[PathBuf],
+    ) -> HashMap<String, Vec<(String, PathBuf)>> {
+        let mut map: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
+        for file_path in known_files {
+            let ext = file_path.extension().and_then(|e| e.to_str());
+            if ext != Some("java") {
+                continue;
+            }
+            let class_name = match file_path.file_stem().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            // Infer package from relative path under source root
+            if let Some(pkg) = Self::infer_package(file_path, source_roots) {
+                map.entry(pkg)
+                    .or_default()
+                    .push((class_name, file_path.clone()));
+            }
+        }
+        map
+    }
+
+    fn infer_package(file_path: &Path, source_roots: &[PathBuf]) -> Option<String> {
+        for root in source_roots {
+            if let Ok(rel) = file_path.strip_prefix(root) {
+                if let Some(parent) = rel.parent() {
+                    if parent.as_os_str().is_empty() {
+                        return Some(String::new()); // default package
+                    }
+                    let pkg = parent
+                        .components()
+                        .map(|c| c.as_os_str().to_str().unwrap_or(""))
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    return Some(pkg);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn resolve_type_ref(
+        &self,
+        type_name: &str,
+        from_file: &Path,
+    ) -> Resolution {
+        if JAVA_LANG_TYPES.contains(&type_name) {
+            return Resolution::External("java.lang".to_string());
+        }
+
+        // Determine from_file's package
+        let from_pkg = Self::infer_package(from_file, &self.source_roots)
+            .unwrap_or_default();
+
+        if let Some(siblings) = self.package_files.get(&from_pkg) {
+            for (class_name, path) in siblings {
+                if class_name == type_name && path != from_file {
+                    return Resolution::Resolved(path.clone());
+                }
+            }
+        }
+
+        // Not found in same package; could be from a wildcard import or external
+        Resolution::Unresolved(UnresolvedReason::FileNotFound(
+            format!("type ref '{}' not in same package", type_name),
+        ))
+    }
+
+    pub fn resolve_wildcard(
+        &self,
+        package_fqn: &str,
+    ) -> Vec<PathBuf> {
+        if Self::is_likely_external(package_fqn) || package_fqn.starts_with("java.") {
+            return Vec::new();
+        }
+        if let Some(files) = self.package_files.get(package_fqn) {
+            return files.iter().map(|(_, path)| path.clone()).collect();
+        }
+        Vec::new()
+    }
 }
+
+const JAVA_LANG_TYPES: &[&str] = &[
+    "String",
+    "Object",
+    "Integer",
+    "Long",
+    "Double",
+    "Float",
+    "Boolean",
+    "Byte",
+    "Short",
+    "Character",
+    "Number",
+    "Class",
+    "System",
+    "Exception",
+    "RuntimeException",
+    "Error",
+    "Throwable",
+    "NullPointerException",
+    "IllegalArgumentException",
+    "IllegalStateException",
+    "UnsupportedOperationException",
+    "IndexOutOfBoundsException",
+    "ClassCastException",
+    "StringBuilder",
+    "StringBuffer",
+    "Math",
+    "Thread",
+    "Runnable",
+    "Comparable",
+    "Iterable",
+    "AutoCloseable",
+    "Override",
+    "Deprecated",
+    "SuppressWarnings",
+    "FunctionalInterface",
+    "SafeVarargs",
+];
 
 impl Resolver for JavaResolver {
     fn resolve(&self, import_source: &str, _from_file: &Path) -> Resolution {

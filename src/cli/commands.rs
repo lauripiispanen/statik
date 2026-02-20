@@ -76,15 +76,50 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
 
         for import in &imports {
-            // Skip synthetic imports (annotation markers, type-ref markers)
-            if import.source_path.starts_with('@') {
+            // Skip annotation marker imports (handled during entry point detection)
+            if import.source_path.starts_with("@annotation:") {
                 continue;
             }
 
             let lang = file_language.get(&file.id).copied().unwrap_or(Language::TypeScript);
-            let resolution: Resolution = match lang {
-                Language::Java => java_resolver.resolve(&import.source_path, &file.path),
-                _ => ts_resolver.resolve(&import.source_path, &file.path),
+            let resolution: Resolution = if let Some(type_name) =
+                import.source_path.strip_prefix("@type-ref:")
+            {
+                java_resolver.resolve_type_ref(type_name, &file.path)
+            } else if import.is_namespace && lang == Language::Java {
+                // Wildcard import: resolve to all files in the package
+                let files = java_resolver.resolve_wildcard(&import.source_path);
+                if files.is_empty() {
+                    if JavaResolver::is_likely_external(&import.source_path) {
+                        let pkg = import
+                            .source_path
+                            .split('.')
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        Resolution::External(pkg)
+                    } else {
+                        Resolution::External(import.source_path.clone())
+                    }
+                } else {
+                    for resolved_path in &files {
+                        if let Some(&target_id) = path_to_id.get(resolved_path) {
+                            if target_id != file.id {
+                                edges_by_target.entry(target_id).or_default().push((
+                                    "*".to_string(),
+                                    import.is_type_only,
+                                    import.line_span.start.line,
+                                ));
+                            }
+                        }
+                    }
+                    continue;
+                }
+            } else {
+                match lang {
+                    Language::Java => java_resolver.resolve(&import.source_path, &file.path),
+                    _ => ts_resolver.resolve(&import.source_path, &file.path),
+                }
             };
 
             match resolution {
