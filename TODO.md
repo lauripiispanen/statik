@@ -258,19 +258,19 @@ numbers.
 Define ordered layers; dependencies must flow in one direction.
 
 Tasks:
-- [ ] Define `LayerRule` config: ordered list of `Layer` entries, each with
+- [x] Define `LayerRule` config: ordered list of `Layer` entries, each with
   `name: String` and `pattern: GlobPattern`
-- [ ] Default direction: top-down (first layer is highest, may depend on lower
+- [x] Default direction: top-down (first layer is highest, may depend on lower
   layers, but not vice versa)
-- [ ] Implement evaluation: for each import edge, determine which layers the
+- [x] Implement evaluation: for each import edge, determine which layers the
   source and target belong to. If source is in a lower layer than target, it's a
   violation
-- [ ] Handle files that don't belong to any layer: ignore (not a violation)
-- [ ] Handle files that belong to multiple layers: use the first match (document
+- [x] Handle files that don't belong to any layer: ignore (not a violation)
+- [x] Handle files that belong to multiple layers: use the first match (document
   this behavior)
-- [ ] Report violations with: layer names, direction of violation, specific files
+- [x] Report violations with: layer names, direction of violation, specific files
   and import line
-- [ ] Add tests: valid top-down dependency, layer violation, cross-layer skip
+- [x] Add tests: valid top-down dependency, layer violation, cross-layer skip
   (A→C skipping B is valid if A is above C)
 
 **Acceptance**: Layers defined as `[presentation, service, data]` report a
@@ -287,15 +287,15 @@ Enforce that a module's internal files only communicate with the outside world
 through a designated public API file.
 
 Tasks:
-- [ ] Define `ContainmentRule` config: `module: GlobPattern` (the contained
+- [x] Define `ContainmentRule` config: `module: GlobPattern` (the contained
   directory), `public_api: Vec<String>` (files allowed to be imported externally)
-- [ ] Implement evaluation: for each import edge where target is inside the module
+- [x] Implement evaluation: for each import edge where target is inside the module
   and source is outside the module, check if the target is a public API file
 - [ ] Also check: imports from inside the module to outside should go through
   the module's own public API imports (optional, configurable)
-- [ ] Report violations with: the external file, the internal file it imports,
+- [x] Report violations with: the external file, the internal file it imports,
   and which public API file it should import instead
-- [ ] Add tests: valid import through public API, violation (direct internal
+- [x] Add tests: valid import through public API, violation (direct internal
   import), edge case (file at module boundary)
 
 **Acceptance**: A rule `{module = "src/auth/**", public_api = ["src/auth/index.ts"]}`
@@ -313,14 +313,14 @@ Constrain how files import from specific targets -- e.g., require type-only impo
 forbid specific symbols.
 
 Tasks:
-- [ ] Define `ImportRestrictionRule` config: `target: GlobPattern`,
+- [x] Define `ImportRestrictionRule` config: `target: GlobPattern`,
   `require_type_only: bool`, `forbidden_names: Option<Vec<String>>`,
   `allowed_names: Option<Vec<String>>`
-- [ ] Implement evaluation: for each import edge to a matching target, check
+- [x] Implement evaluation: for each import edge to a matching target, check
   constraints against `FileImport` metadata (`is_type_only`, `imported_names`)
-- [ ] Report violations with: the importing file, the specific import, which
+- [x] Report violations with: the importing file, the specific import, which
   constraint was violated
-- [ ] Add tests: type-only violation, forbidden name import, allowed-list
+- [x] Add tests: type-only violation, forbidden name import, allowed-list
   enforcement
 
 **Acceptance**: A rule requiring type-only imports from `src/types/**` correctly
@@ -337,14 +337,14 @@ from './types/user'`.
 Alert when files exceed dependency thresholds -- architectural hotspot detection.
 
 Tasks:
-- [ ] Define `FanLimitRule` config: `pattern: GlobPattern`,
+- [x] Define `FanLimitRule` config: `pattern: GlobPattern`,
   `max_fan_in: Option<u32>` (max number of files that depend on this file),
   `max_fan_out: Option<u32>` (max number of files this file depends on)
-- [ ] Implement evaluation: count edges in `FileGraph.imports` and
+- [x] Implement evaluation: count edges in `FileGraph.imports` and
   `FileGraph.imported_by` for matching files
-- [ ] Report violations with: the file, current count, threshold, and whether
+- [x] Report violations with: the file, current count, threshold, and whether
   it's fan-in or fan-out
-- [ ] Add tests: within limits, exceeds fan-in, exceeds fan-out
+- [x] Add tests: within limits, exceeds fan-in, exceeds fan-out
 
 **Acceptance**: A rule `{pattern = "src/**", max_fan_out = 20}` reports files with
 more than 20 direct dependencies.
@@ -415,11 +415,11 @@ reflects error-severity violations.
 Document how AI agents should consume `statik lint` output.
 
 Tasks:
-- [ ] Document the JSON output schema for lint violations
+- [x] Document the JSON output schema for lint violations
 - [ ] Provide example: agent reads violations, proposes import changes
-- [ ] Document recommended workflow: agent runs `statik lint --format json`,
+- [x] Document recommended workflow: agent runs `statik lint --format json`,
   parses violations, applies fixes, re-runs to verify
-- [ ] Provide example `.statik/rules.toml` for common architectural patterns
+- [x] Provide example `.statik/rules.toml` for common architectural patterns
   (clean architecture, feature modules, hexagonal architecture)
 - [ ] Document how to use `statik lint` in CI alongside AI agent review
 
