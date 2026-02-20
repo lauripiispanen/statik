@@ -51,6 +51,7 @@ impl LanguageParser for TypeScriptParser {
 
         let mut extractor = Extractor::new(file_id, source, &tree);
         extractor.extract();
+        extractor.resolve_intra_file_refs();
 
         Ok(ParseResult {
             file_id,
@@ -81,6 +82,8 @@ struct Extractor<'a> {
     next_ref_id: u64,
     /// Stack of parent symbol IDs for tracking nesting.
     parent_stack: Vec<SymbolId>,
+    /// Target names parallel to `references`, used for intra-file resolution post-pass.
+    ref_target_names: Vec<String>,
 }
 
 impl<'a> Extractor<'a> {
@@ -96,6 +99,7 @@ impl<'a> Extractor<'a> {
             next_symbol_id: file_id.0 * 100_000 + 1,
             next_ref_id: file_id.0 * 100_000 + 1,
             parent_stack: Vec::new(),
+            ref_target_names: Vec::new(),
         }
     }
 
@@ -1212,6 +1216,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn add_inheritance_ref(&mut self, source: SymbolId, target_node: Node) {
+        let target_name = self.node_text(target_node).to_string();
         let ref_id = self.alloc_ref_id();
         let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
         self.references.push(Reference {
@@ -1223,6 +1228,7 @@ impl<'a> Extractor<'a> {
             span: self.node_span(target_node),
             line_span: self.node_line_span(target_node),
         });
+        self.ref_target_names.push(target_name);
     }
 
     /// Try to extract a dynamic import expression: `import('./module')`.
@@ -1288,6 +1294,18 @@ impl<'a> Extractor<'a> {
         }
         let func_node = func_node.unwrap();
 
+        // Extract the target name for intra-file resolution.
+        // For member_expression (obj.method), use the rightmost identifier.
+        // For plain identifier (foo), use the whole text.
+        let target_name = if func_node.kind() == "member_expression" {
+            func_node
+                .child_by_field_name("property")
+                .map(|n| self.node_text(n).to_string())
+                .unwrap_or_else(|| self.node_text(func_node).to_string())
+        } else {
+            self.node_text(func_node).to_string()
+        };
+
         // Only record call references if we have a parent context
         if let Some(source_id) = self.current_parent() {
             let ref_id = self.alloc_ref_id();
@@ -1301,6 +1319,7 @@ impl<'a> Extractor<'a> {
                 span: self.node_span(func_node),
                 line_span: self.node_line_span(func_node),
             });
+            self.ref_target_names.push(target_name);
         }
     }
 
@@ -1308,6 +1327,7 @@ impl<'a> Extractor<'a> {
         // new ClassName(...)
         let constructor = node.child_by_field_name("constructor");
         if let Some(ctor_node) = constructor {
+            let target_name = self.node_text(ctor_node).to_string();
             if let Some(source_id) = self.current_parent() {
                 let ref_id = self.alloc_ref_id();
                 let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
@@ -1320,6 +1340,41 @@ impl<'a> Extractor<'a> {
                     span: self.node_span(ctor_node),
                     line_span: self.node_line_span(ctor_node),
                 });
+                self.ref_target_names.push(target_name);
+            }
+        }
+    }
+
+    /// Post-pass: resolve placeholder reference targets to actual symbols defined in this file.
+    /// Only resolves when exactly one symbol matches the target name (conservative).
+    fn resolve_intra_file_refs(&mut self) {
+        use std::collections::HashMap;
+
+        // Build name -> symbol ID lookup. If a name maps to multiple symbols, mark as ambiguous.
+        let mut name_to_id: HashMap<&str, Option<SymbolId>> = HashMap::new();
+        for symbol in &self.symbols {
+            match name_to_id.get(symbol.name.as_str()) {
+                None => {
+                    name_to_id.insert(&symbol.name, Some(symbol.id));
+                }
+                Some(Some(_)) => {
+                    // Ambiguous: multiple symbols with same name
+                    name_to_id.insert(&symbol.name, None);
+                }
+                Some(None) => {
+                    // Already marked ambiguous
+                }
+            }
+        }
+
+        // Resolve each reference that still has a placeholder target
+        for (i, reference) in self.references.iter_mut().enumerate() {
+            if reference.target.0 >= u64::MAX - 1_000_000 {
+                if let Some(target_name) = self.ref_target_names.get(i) {
+                    if let Some(Some(resolved_id)) = name_to_id.get(target_name.as_str()) {
+                        reference.target = *resolved_id;
+                    }
+                }
             }
         }
     }
@@ -2124,6 +2179,118 @@ function load(name: string) {
         assert!(
             result.imports.iter().any(|i| i.source_path == "./module" && i.is_dynamic),
             "top-level dynamic import should be extracted"
+        );
+    }
+
+    #[test]
+    fn test_intra_file_call_reference_resolved() {
+        let result = parse_ts(
+            r#"
+            function helper() { return 42; }
+            function main() { helper(); }
+            "#,
+        );
+
+        // Should have symbols for helper and main
+        let helper_sym = result.symbols.iter().find(|s| s.name == "helper").unwrap();
+        let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
+
+        // Should have a resolved call reference from main to helper
+        let call_ref = result.references.iter().find(|r| {
+            r.source == main_sym.id && r.kind == RefKind::Call
+        });
+        assert!(call_ref.is_some(), "should have a call reference from main");
+        let call_ref = call_ref.unwrap();
+        assert_eq!(
+            call_ref.target, helper_sym.id,
+            "call reference target should be resolved to helper's symbol ID"
+        );
+    }
+
+    #[test]
+    fn test_intra_file_new_reference_resolved() {
+        let result = parse_ts(
+            r#"
+            class Foo { constructor() {} }
+            function main() { new Foo(); }
+            "#,
+        );
+
+        let foo_sym = result.symbols.iter().find(|s| s.name == "Foo").unwrap();
+
+        // Find the call reference for `new Foo()`
+        let new_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Call && r.target == foo_sym.id
+        });
+        assert!(
+            new_ref.is_some(),
+            "new Foo() should have a resolved call reference to Foo, refs: {:?}",
+            result.references.iter().map(|r| (r.source, r.target, r.kind)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_intra_file_inheritance_resolved() {
+        let result = parse_ts(
+            r#"
+            class Base {}
+            class Derived extends Base {}
+            "#,
+        );
+
+        let base_sym = result.symbols.iter().find(|s| s.name == "Base").unwrap();
+
+        let inherit_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Inheritance && r.target == base_sym.id
+        });
+        assert!(
+            inherit_ref.is_some(),
+            "Derived should have a resolved inheritance ref to Base"
+        );
+    }
+
+    #[test]
+    fn test_cross_file_reference_stays_placeholder() {
+        let result = parse_ts(
+            r#"
+            function main() { externalFn(); }
+            "#,
+        );
+
+        // externalFn is not defined in this file, so the reference should remain a placeholder
+        let call_ref = result.references.iter().find(|r| r.kind == RefKind::Call);
+        assert!(call_ref.is_some());
+        let call_ref = call_ref.unwrap();
+        assert!(
+            call_ref.target.0 >= u64::MAX - 1_000_000,
+            "cross-file reference should keep placeholder target, got {}",
+            call_ref.target.0
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_name_stays_placeholder() {
+        // Two symbols with the same name should cause the reference to stay unresolved
+        let result = parse_ts(
+            r#"
+            function helper() { return 1; }
+            const helper = 42;
+            function main() { helper(); }
+            "#,
+        );
+
+        // There should be a call reference from main
+        let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
+        let call_ref = result.references.iter().find(|r| {
+            r.source == main_sym.id && r.kind == RefKind::Call
+        });
+        assert!(call_ref.is_some());
+        let call_ref = call_ref.unwrap();
+        // With two symbols named "helper", the resolution should be conservative (unresolved)
+        assert!(
+            call_ref.target.0 >= u64::MAX - 1_000_000,
+            "ambiguous name should leave reference as placeholder, got {}",
+            call_ref.target.0
         );
     }
 }
