@@ -740,12 +740,16 @@ impl<'a> Extractor<'a> {
         };
 
         // Fields can have multiple declarators: `int x, y;`
+        let mut first_id = None;
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_declarator" {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     let name = self.node_text(name_node).to_string();
                     let id = self.alloc_symbol_id();
+                    if first_id.is_none() {
+                        first_id = Some(id);
+                    }
                     self.symbols.push(Symbol {
                         id,
                         qualified_name: self.qualified_name(&name),
@@ -760,6 +764,11 @@ impl<'a> Extractor<'a> {
                     });
                 }
             }
+        }
+
+        // Extract annotation references (e.g., @Autowired, @Inject)
+        if let Some(id) = first_id {
+            self.extract_annotations_on(node, id);
         }
     }
 
