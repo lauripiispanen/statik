@@ -505,8 +505,8 @@ Tasks:
 - [x] Implement `JavaResolver` struct implementing `Resolver`
 - [x] Handle single-type imports: `import com.example.UserService` -> resolve
   to `com/example/UserService.java` relative to source root
-- [ ] Handle wildcard imports: `import com.example.*` -> resolve to all files in
-  `com/example/` directory (v1: classified as External, tracked as known limitation)
+- [x] Handle wildcard imports: `import com.example.*` -> resolve to all files in
+  `com/example/` directory (creates edges to all files in the package)
 - [x] Detect source roots: look for standard layouts (`src/main/java/`,
   `src/java/`, `src/`) and use package declarations to verify
 - [x] Classify external imports: if the import's package doesn't map to a source
@@ -546,31 +546,36 @@ positives.
 Items identified during implementation that are acceptable for v1 but should be
 addressed in future iterations:
 
-- [ ] **Wildcard import resolution**: `import com.example.*` currently resolves as
-  External instead of creating edges to all files in the package directory.
-  Requires directory enumeration in the resolver. Impact: missing dependency edges
-  for files using wildcard imports (uncommon in modern code, common in legacy).
-- [ ] **Qualified name separator**: Java uses `.` for package separation but `::` for
-  nested member names (inherited from TS parser pattern). Consider unifying to `.`
-  for Java qualified names.
-- [ ] **Annotation-based entry point detection**: Currently file-name-based only
-  (*Test, Application). Could enhance dead code detection by recognizing
-  @SpringBootApplication, @Test, @Component etc. as entry point markers via
-  parsed annotation references.
+- [x] **Wildcard import resolution**: `import com.example.*` now resolves to all
+  `.java` files in the package directory, creating dependency edges. Note: this is
+  an overapproximation -- edges are created to all files in the package regardless
+  of which classes are actually used.
+- [x] **Qualified name separator**: Java qualified names now use `.` consistently
+  (e.g., `com.example.Foo.bar`) instead of mixing `::` from the TS parser pattern.
+- [x] **Annotation-based entry point detection**: Files annotated with
+  @SpringBootApplication, @Test, @ParameterizedTest, @RepeatedTest, @Component,
+  @Service, @Repository, @Controller, @RestController, @Configuration, @Bean,
+  @Endpoint, @WebServlet are recognized as entry points. Limitation: only a
+  hardcoded list of annotations is recognized; meta-annotations and custom
+  framework annotations are not followed.
 - [ ] **pom.xml/build.gradle parsing**: Minimal parsing of build files for better
   external dependency classification and source root detection.
 - [ ] **Package-private visibility**: Mapped to Visibility::Private. Could add
   Visibility::PackagePrivate for more accurate dead code analysis within packages.
-- [ ] **Same-package implicit dependencies**: Java classes in the same package can
-  reference each other without import statements. This causes missed dependency
-  edges, false positives in dead code, and missed intra-package cycles. Fix
-  options: (a) analyze type references in method bodies/fields to find same-package
-  usages, (b) treat all files in the same package as implicitly connected (coarse
-  but simple), (c) use simple name matching against same-package class names in
-  type positions. Most impactful gap found during dogfooding.
-- [ ] **Inner class export tracking**: Public static inner classes (e.g.,
-  `User.Preferences`) are not listed as exports. The resolver handles inner class
-  imports via member-fallback, but export tracking doesn't capture them.
+- [x] **Same-package implicit dependencies**: Type reference scanner extracts type
+  names from field types, parameter types, return types, local variable types,
+  generic type arguments, casts, instanceof, and throws clauses, then resolves them
+  against same-package class names. No import statement needed.
+- [x] **Inner class export tracking**: Public nested types (classes, interfaces,
+  enums, annotations) where all ancestor types are also public are now listed as
+  exports.
+- [ ] **User-configurable entry points**: Entry point detection uses hardcoded file
+  name patterns and annotation names. Projects with custom entry point conventions
+  (e.g., `Bootstrap.java`, framework-specific annotations) cannot configure
+  additional entry points. Applies to all languages, not just Java.
+- [ ] **Spring DI container modeling**: Spring dependency injection wiring
+  (@Autowired, @Inject, constructor injection) is not modeled as dependency edges.
+- [ ] **Lombok support**: Lombok-generated code is not visible to tree-sitter.
 
 ---
 

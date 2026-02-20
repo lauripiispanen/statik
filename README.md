@@ -117,7 +117,7 @@ statik dead-code --scope both        # both (default)
 |------|-------------|
 | `--scope files\|exports\|both` | What to check for (default: `both`) |
 
-Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, additional entry point conventions are recognized: JUnit test files (`*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java`) and Spring Boot entry points (`Application.java`).
+Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`).
 
 ### `statik cycles`
 
@@ -422,6 +422,10 @@ Each language has a dedicated import resolver.
 - **Fields** (`static final` fields are classified as constants)
 - **Import statements** (regular, wildcard, static)
 - **Public top-level types are exported** (public classes, interfaces, enums, and annotations)
+- **Public nested type exports** (inner classes/interfaces where all ancestors are also public)
+- **Same-package type references** (field types, parameter types, return types, local variable types, generic type arguments, casts, instanceof, throws clauses)
+- **Wildcard import resolution** (`import com.example.*` resolves to all `.java` files in the package directory)
+- **Annotation-based entry point detection** (`@SpringBootApplication`, `@Test`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@ParameterizedTest`, `@RepeatedTest`, `@Endpoint`, `@WebServlet`)
 - **Call references** (method calls and `new` expressions)
 - **Inheritance references** (extends, implements)
 
@@ -461,11 +465,13 @@ Java-specific limitations:
 
 - **No classpath resolution** -- statik resolves imports by mapping package names to source directories. It does not read `pom.xml`, `build.gradle`, or classpath configuration. External dependencies are classified as external and not followed.
 
-- **No annotation processing** -- annotations are extracted as symbols but annotation processor behavior (code generation, compile-time effects) is not modeled.
+- **No annotation processing** -- annotations are extracted as symbols but annotation processor behavior (code generation, compile-time effects) is not modeled. Annotation-based entry point detection uses a hardcoded list of known annotations; meta-annotations and custom framework annotations are not followed.
 
-- **Wildcard imports are imprecise** -- `import com.example.*` creates a dependency on the package directory, but statik cannot determine exactly which classes are used from that package.
+- **Wildcard import overapproximation** -- `import com.example.*` resolves to all `.java` files in the package directory, creating edges to every file regardless of which classes are actually used. This is an overapproximation that may inflate dependency counts.
 
-- **Same-package references require imports** -- In Java, classes within the same package can reference each other without import statements. statik only tracks explicit `import` declarations, so same-package dependencies without imports are invisible. This can cause false positives in dead code detection and missed circular dependencies within a package.
+- **No Spring DI container modeling** -- Spring dependency injection wiring (`@Autowired`, `@Inject`, constructor injection) is not modeled. statik tracks the annotation references but does not infer runtime dependency edges from DI configuration.
+
+- **No Lombok support** -- Lombok-generated code (getters, setters, builders, etc.) is not visible to tree-sitter since it is generated at compile time.
 
 ## Output Formats
 
