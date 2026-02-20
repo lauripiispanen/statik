@@ -125,6 +125,7 @@ fn build_discovery_config(cli: &Cli) -> DiscoveryConfig {
             "javascript" | "js" => "js",
             "python" | "py" => "py",
             "rust" | "rs" => "rs",
+            "java" => "java",
             _ => return None,
         })
     });

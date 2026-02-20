@@ -25,6 +25,16 @@ pub struct DiscoveryConfig {
     pub languages: Vec<Language>,
 }
 
+/// Default exclude patterns for common build output and IDE directories.
+const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
+    // Java / JVM
+    "target/",
+    "build/",
+    ".gradle/",
+    ".idea/",
+    "*.class",
+];
+
 /// Discover source files in a project directory, respecting .gitignore.
 pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> Result<Vec<DiscoveredFile>> {
     let mut files = Vec::new();
@@ -37,18 +47,27 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> Result<Vec<Disco
         .git_exclude(true)
         .parents(true);
 
-    // Add exclude patterns as ignore overrides
-    if !config.exclude.is_empty() || !config.include.is_empty() {
-        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
-        for pattern in &config.exclude {
-            overrides
-                .add(&format!("!{}", pattern))
-                .context("invalid exclude pattern")?;
+    // Add exclude patterns as ignore overrides (defaults + user config)
+    {
+        let has_patterns = !config.exclude.is_empty() || !config.include.is_empty();
+        let has_defaults = !DEFAULT_EXCLUDE_PATTERNS.is_empty();
+        if has_patterns || has_defaults {
+            let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+            for pattern in DEFAULT_EXCLUDE_PATTERNS {
+                overrides
+                    .add(&format!("!{}", pattern))
+                    .context("invalid default exclude pattern")?;
+            }
+            for pattern in &config.exclude {
+                overrides
+                    .add(&format!("!{}", pattern))
+                    .context("invalid exclude pattern")?;
+            }
+            for pattern in &config.include {
+                overrides.add(pattern).context("invalid include pattern")?;
+            }
+            builder.overrides(overrides.build().context("failed to build overrides")?);
         }
-        for pattern in &config.include {
-            overrides.add(pattern).context("invalid include pattern")?;
-        }
-        builder.overrides(overrides.build().context("failed to build overrides")?);
     }
 
     for entry in builder.build() {
@@ -327,5 +346,92 @@ mod tests {
         let files = discover_files(root, &DiscoveryConfig::default()).unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].path.ends_with("deep.ts"));
+    }
+
+    #[test]
+    fn test_java_files_discovered() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src/main/java/com/example")).unwrap();
+        fs::write(
+            root.join("src/main/java/com/example/App.java"),
+            "package com.example; public class App {}",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main/java/com/example/Util.java"),
+            "package com.example; public class Util {}",
+        )
+        .unwrap();
+
+        let files = discover_files(root, &DiscoveryConfig::default()).unwrap();
+
+        let java_files: Vec<_> = files
+            .iter()
+            .filter(|f| f.language == Language::Java)
+            .collect();
+        assert_eq!(java_files.len(), 2, "should discover .java files");
+        assert!(java_files.iter().all(|f| f.language == Language::Java));
+    }
+
+    #[test]
+    fn test_java_build_dirs_excluded() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Source file (should be discovered)
+        fs::create_dir_all(root.join("src/main/java")).unwrap();
+        fs::write(
+            root.join("src/main/java/App.java"),
+            "public class App {}",
+        )
+        .unwrap();
+
+        // Build output dirs (should be excluded)
+        fs::create_dir_all(root.join("target/classes")).unwrap();
+        fs::write(
+            root.join("target/classes/App.java"),
+            "// compiled",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("build/classes")).unwrap();
+        fs::write(
+            root.join("build/classes/App.java"),
+            "// compiled",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(".gradle")).unwrap();
+        fs::write(root.join(".gradle/config.java"), "// gradle").unwrap();
+
+        let files = discover_files(root, &DiscoveryConfig::default()).unwrap();
+        let java_files: Vec<_> = files
+            .iter()
+            .filter(|f| f.language == Language::Java)
+            .collect();
+        assert_eq!(
+            java_files.len(),
+            1,
+            "only source file should be discovered, not build artifacts"
+        );
+        assert!(java_files[0].path.ends_with("App.java"));
+    }
+
+    #[test]
+    fn test_java_language_filter() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/App.java"), "public class App {}").unwrap();
+        fs::write(root.join("src/index.ts"), "export const x = 1;").unwrap();
+
+        let config = DiscoveryConfig {
+            languages: vec![Language::Java],
+            ..Default::default()
+        };
+        let files = discover_files(root, &config).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.ends_with("App.java"));
+        assert_eq!(files[0].language, Language::Java);
     }
 }

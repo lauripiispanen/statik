@@ -27,6 +27,8 @@ pub enum SymbolKind {
     Module,
     Import,
     Export,
+    Annotation,
+    Package,
 }
 
 impl SymbolKind {
@@ -45,6 +47,8 @@ impl SymbolKind {
             SymbolKind::Module => "module",
             SymbolKind::Import => "import",
             SymbolKind::Export => "export",
+            SymbolKind::Annotation => "annotation",
+            SymbolKind::Package => "package",
         }
     }
 }
@@ -67,6 +71,8 @@ impl FromStr for SymbolKind {
             "module" => Ok(SymbolKind::Module),
             "import" => Ok(SymbolKind::Import),
             "export" => Ok(SymbolKind::Export),
+            "annotation" => Ok(SymbolKind::Annotation),
+            "package" => Ok(SymbolKind::Package),
             _ => Err(format!("unknown symbol kind: {}", s)),
         }
     }
@@ -183,6 +189,7 @@ pub enum Language {
     JavaScript,
     Python,
     Rust,
+    Java,
 }
 
 impl Language {
@@ -192,6 +199,7 @@ impl Language {
             Language::JavaScript => "javascript",
             Language::Python => "python",
             Language::Rust => "rust",
+            Language::Java => "java",
         }
     }
 
@@ -201,6 +209,7 @@ impl Language {
             "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
             "py" | "pyi" => Some(Language::Python),
             "rs" => Some(Language::Rust),
+            "java" => Some(Language::Java),
             _ => None,
         }
     }
@@ -212,6 +221,7 @@ impl Language {
             "javascript" => Some(Language::JavaScript),
             "python" => Some(Language::Python),
             "rust" => Some(Language::Rust),
+            "java" => Some(Language::Java),
             _ => None,
         }
     }
