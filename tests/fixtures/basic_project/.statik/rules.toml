@@ -1,0 +1,58 @@
+# Boundary rule (existing)
+[[rules]]
+id = "no-ui-to-db"
+severity = "error"
+description = "UI layer must not import from database layer"
+rationale = "The UI should go through the service layer for data access"
+fix_direction = "Import from src/services/ instead of src/db/ directly"
+
+[rules.boundary]
+from = ["src/ui/**"]
+deny = ["src/db/**"]
+
+# Layer hierarchy rule
+[[rules]]
+id = "clean-layers"
+severity = "error"
+description = "Dependencies must flow top-down through layers"
+rationale = "Enforces clean architecture: presentation -> service -> data"
+
+[rules.layer]
+layers = [
+  { name = "presentation", patterns = ["src/ui/**"] },
+  { name = "service", patterns = ["src/services/**"] },
+  { name = "data", patterns = ["src/db/**"] },
+]
+
+# Module containment rule
+[[rules]]
+id = "auth-encapsulation"
+severity = "warning"
+description = "Auth module must be accessed through its public API"
+rationale = "The auth module exposes login/types through index.ts"
+fix_direction = "Import from src/auth/index.ts instead"
+
+[rules.containment]
+module = ["src/auth/**"]
+public_api = ["src/auth/index.ts"]
+
+# Import restriction rule
+[[rules]]
+id = "models-type-only"
+severity = "info"
+description = "Imports from models/ should be type-only when possible"
+
+[rules.import_restriction]
+target = ["src/models/**"]
+require_type_only = true
+
+# Fan-out limit rule
+[[rules]]
+id = "no-god-modules"
+severity = "warning"
+description = "Files should not have too many dependencies"
+fix_direction = "Split this file into smaller, focused modules"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_out = 10

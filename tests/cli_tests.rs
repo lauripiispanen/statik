@@ -1051,3 +1051,202 @@ fn test_single_file_project() {
         stdout
     );
 }
+
+// =============================================================================
+// NEW RULE TYPE INTEGRATION TESTS
+// =============================================================================
+
+#[test]
+fn test_lint_layer_rule_violation() {
+    let proj = create_basic_project();
+
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[[rules]]
+id = "clean-layers"
+severity = "error"
+description = "Dependencies must flow top-down"
+
+[rules.layer]
+layers = [
+  { name = "presentation", patterns = ["src/ui/**"] },
+  { name = "service", patterns = ["src/services/**"] },
+  { name = "data", patterns = ["src/db/**"] },
+]
+"#,
+    );
+
+    // src/ui/dashboard.ts imports from src/db/connection.ts
+    // That's presentation (index 0) -> data (index 2), which is top-down (valid).
+    // Need a bottom-up violation: data -> presentation
+    proj.write_file(
+        "src/db/renderer.ts",
+        r#"import { renderDashboard } from '../ui/dashboard';
+export const html = renderDashboard();
+"#,
+    );
+
+    let output = proj.run(&["lint"]);
+    assert!(!output.status.success(), "should exit 1 for layer violation");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("clean-layers"), "should mention the layer rule: {}", stdout);
+    assert!(stdout.contains("data"), "should mention the data layer: {}", stdout);
+    assert!(stdout.contains("presentation"), "should mention the presentation layer: {}", stdout);
+}
+
+#[test]
+fn test_lint_containment_rule_violation() {
+    let proj = create_basic_project();
+
+    proj.write_file(
+        "src/auth/index.ts",
+        r#"export { login } from './service';"#,
+    );
+    proj.write_file(
+        "src/auth/service.ts",
+        r#"export function login() { return "token"; }"#,
+    );
+
+    // Direct import of internal auth file (violation)
+    proj.write_file(
+        "src/consumer.ts",
+        r#"import { login } from './auth/service';"#,
+    );
+
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[[rules]]
+id = "auth-encapsulation"
+severity = "error"
+description = "Auth module must be accessed through its public API"
+
+[rules.containment]
+module = ["src/auth/**"]
+public_api = ["src/auth/index.ts"]
+"#,
+    );
+
+    let output = proj.run(&["lint"]);
+    assert!(!output.status.success(), "should exit 1 for containment violation");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("auth-encapsulation"), "should report containment rule: {}", stdout);
+    assert!(stdout.contains("src/auth/service.ts"), "should show internal target: {}", stdout);
+}
+
+#[test]
+fn test_lint_import_restriction_type_only() {
+    let proj = create_basic_project();
+
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[[rules]]
+id = "models-type-only"
+severity = "error"
+description = "Imports from models/ must be type-only"
+
+[rules.import_restriction]
+target = ["src/models/**"]
+require_type_only = true
+"#,
+    );
+
+    // src/services/userService.ts has `import { User } from '../models/user'`
+    // which is NOT type-only, so it should violate
+    let output = proj.run(&["lint"]);
+    assert!(!output.status.success(), "should exit 1 for type-only violation");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("models-type-only"), "should report import restriction: {}", stdout);
+    assert!(stdout.contains("type-only"), "should mention type-only: {}", stdout);
+}
+
+#[test]
+fn test_lint_fan_limit_violation() {
+    let proj = create_basic_project();
+
+    // Create a god module that imports everything
+    proj.write_file(
+        "src/god.ts",
+        r#"import { UserService } from './services/userService';
+import { formatName } from './utils/format';
+import { getConnection } from './db/connection';
+import { User } from './models/user';
+
+export function godFunction() {
+  return "I import too much";
+}
+"#,
+    );
+
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[[rules]]
+id = "no-god-modules"
+severity = "error"
+description = "Files should not have too many dependencies"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_out = 3
+"#,
+    );
+
+    let output = proj.run(&["lint"]);
+    assert!(!output.status.success(), "should exit 1 for fan-out violation");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("no-god-modules"), "should report fan limit: {}", stdout);
+    assert!(stdout.contains("fan-out"), "should mention fan-out: {}", stdout);
+}
+
+#[test]
+fn test_lint_mixed_rule_types_json() {
+    let proj = create_basic_project();
+
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[[rules]]
+id = "boundary"
+severity = "error"
+description = "UI must not import from DB"
+
+[rules.boundary]
+from = ["src/ui/**"]
+deny = ["src/db/**"]
+
+[[rules]]
+id = "layers"
+severity = "warning"
+description = "Layer enforcement"
+
+[rules.layer]
+layers = [
+  { name = "ui", patterns = ["src/ui/**"] },
+  { name = "db", patterns = ["src/db/**"] },
+]
+
+[[rules]]
+id = "fan-check"
+severity = "info"
+description = "Fan limits"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_out = 100
+"#,
+    );
+
+    let output = proj.run(&["lint", "--format", "json"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON to verify structure
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}: {}", e, stdout));
+
+    assert_eq!(json["rules_evaluated"], 3);
+    assert!(json["violations"].as_array().unwrap().len() >= 1);
+    assert_eq!(json["summary"]["rules_evaluated"], 3);
+}
