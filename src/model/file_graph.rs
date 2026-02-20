@@ -711,4 +711,91 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries.contains(&FileId(1)));
     }
+
+    #[test]
+    fn test_without_type_only_edges() {
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/index.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/types.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(3),
+            path: PathBuf::from("src/utils.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // Type-only edge: index -> types
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["UserType".to_string()],
+            is_type_only: true,
+            line: 1,
+        });
+        // Runtime edge: index -> utils
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(3),
+            imported_names: vec!["helper".to_string()],
+            is_type_only: false,
+            line: 2,
+        });
+
+        // Original graph has both edges
+        assert_eq!(graph.direct_imports(FileId(1)).len(), 2);
+
+        // Filtered graph should only have runtime edge
+        let filtered = graph.without_type_only_edges();
+        assert_eq!(filtered.file_count(), 3);
+        let imports = filtered.direct_imports(FileId(1));
+        assert_eq!(imports, vec![FileId(3)]);
+
+        // Reverse edges should also be filtered
+        assert!(filtered.direct_importers(FileId(2)).is_empty());
+        assert_eq!(filtered.direct_importers(FileId(3)), vec![FileId(1)]);
+    }
+
+    #[test]
+    fn test_without_type_only_edges_all_type_only() {
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/index.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/types.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["Type".to_string()],
+            is_type_only: true,
+            line: 1,
+        });
+
+        let filtered = graph.without_type_only_edges();
+        assert!(filtered.direct_imports(FileId(1)).is_empty());
+        assert!(filtered.direct_importers(FileId(2)).is_empty());
+    }
 }

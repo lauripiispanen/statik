@@ -55,6 +55,7 @@ fn main() -> Result<()> {
                 cli.max_depth,
                 &cli.format,
                 cli.no_index,
+                cli.runtime_only,
             )?;
             println!("{}", output);
         }
@@ -65,12 +66,23 @@ fn main() -> Result<()> {
         }
 
         Commands::DeadCode { ref scope } => {
-            let output = commands::run_dead_code(&project_path, scope, &cli.format, cli.no_index)?;
+            let output = commands::run_dead_code(
+                &project_path,
+                scope,
+                &cli.format,
+                cli.no_index,
+                cli.runtime_only,
+            )?;
             println!("{}", output);
         }
 
         Commands::Cycles => {
-            let output = commands::run_cycles(&project_path, &cli.format, cli.no_index)?;
+            let output = commands::run_cycles(
+                &project_path,
+                &cli.format,
+                cli.no_index,
+                cli.runtime_only,
+            )?;
             println!("{}", output);
         }
 
@@ -81,6 +93,7 @@ fn main() -> Result<()> {
                 cli.max_depth,
                 &cli.format,
                 cli.no_index,
+                cli.runtime_only,
             )?;
             println!("{}", output);
         }
@@ -109,9 +122,45 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Symbols { .. } | Commands::References { .. } | Commands::Callers { .. } => {
-            eprintln!("This command requires deep mode (v2). Run with --deep and ensure tsserver is installed.");
-            std::process::exit(1);
+        Commands::Symbols {
+            ref file,
+            ref kind,
+        } => {
+            let output = commands::run_symbols(
+                &project_path,
+                file.as_deref(),
+                kind.as_deref(),
+                &cli.format,
+                cli.no_index,
+            )?;
+            println!("{}", output);
+        }
+
+        Commands::References {
+            ref symbol,
+            ref kind,
+            ref file,
+        } => {
+            let output = commands::run_references(
+                &project_path,
+                symbol,
+                kind.as_deref(),
+                file.as_deref(),
+                &cli.format,
+                cli.no_index,
+            )?;
+            println!("{}", output);
+        }
+
+        Commands::Callers { ref symbol, ref file } => {
+            let output = commands::run_callers(
+                &project_path,
+                symbol,
+                file.as_deref(),
+                &cli.format,
+                cli.no_index,
+            )?;
+            println!("{}", output);
         }
     }
 

@@ -37,6 +37,10 @@ pub struct Cli {
     /// Limit transitive depth
     #[arg(long, global = true)]
     pub max_depth: Option<usize>,
+
+    /// Exclude type-only imports (show only runtime dependencies)
+    #[arg(long, global = true)]
+    pub runtime_only: bool,
 }
 
 #[derive(Subcommand)]
@@ -98,29 +102,36 @@ pub enum Commands {
         severity_threshold: String,
     },
 
-    // --- Deferred commands (v2+, kept hidden) ---
-    /// List symbols in the project [deferred to v2]
-    #[command(hide = true)]
+    /// List symbols in the project
     Symbols {
+        /// Filter by file path
         #[arg(long)]
         file: Option<String>,
+        /// Filter by symbol kind (function, class, method, etc.)
         #[arg(long)]
         kind: Option<String>,
-        #[arg(long)]
-        pattern: Option<String>,
     },
 
-    /// Find all references to a symbol [deferred to v2 -- LSP handles this better]
-    #[command(hide = true)]
+    /// Find all references to a symbol
     References {
+        /// Symbol name to search for
         symbol: String,
+        /// Filter by reference kind (call, type_usage, inheritance, etc.)
         #[arg(long)]
         kind: Option<String>,
+        /// Filter to a specific file
+        #[arg(long)]
+        file: Option<String>,
     },
 
-    /// Find all callsites [deferred to v2 -- LSP handles this better]
-    #[command(hide = true)]
-    Callers { symbol: String },
+    /// Find all call sites of a symbol
+    Callers {
+        /// Symbol name to search for
+        symbol: String,
+        /// Filter to a specific file
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]

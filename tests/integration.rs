@@ -86,6 +86,7 @@ fn test_deps_command_json() {
         None,
         &OutputFormat::Json,
         true,
+        false,
     )
     .unwrap();
 
@@ -135,6 +136,7 @@ fn test_deps_command_text() {
         None,
         &OutputFormat::Text,
         true,
+        false,
     )
     .unwrap();
 
@@ -154,7 +156,7 @@ fn test_dead_code_detects_orphan() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -177,7 +179,7 @@ fn test_dead_code_text_output() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false).unwrap();
 
     assert!(
         output.contains("orphan.ts"),
@@ -194,7 +196,7 @@ fn test_cycles_detects_circular_deps() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -228,7 +230,7 @@ fn test_cycles_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false).unwrap();
 
     assert!(
         output.contains("Circular dependencies"),
@@ -251,6 +253,7 @@ fn test_impact_analysis() {
         None,
         &OutputFormat::Json,
         true,
+        false,
     )
     .unwrap();
 
