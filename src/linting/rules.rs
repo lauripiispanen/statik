@@ -218,8 +218,21 @@ pub fn evaluate_rules(
             }
             RuleKind::ImportRestriction(restriction) => {
                 let target_matcher = FileMatcher::new(&restriction.target)?;
+                let forbidden_set: Option<HashSet<&str>> =
+                    restriction.forbidden_names.as_ref().map(|names| {
+                        names.iter().map(|s| s.as_str()).collect()
+                    });
+                let allowed_set: Option<HashSet<&str>> =
+                    restriction.allowed_names.as_ref().map(|names| {
+                        names.iter().map(|s| s.as_str()).collect()
+                    });
 
-                for (_source_id, edges) in graph.imports.iter() {
+                for (source_id, edges) in graph.imports.iter() {
+                    let source_info = match graph.files.get(source_id) {
+                        Some(info) => info,
+                        None => continue,
+                    };
+
                     for edge in edges {
                         let target_info = match graph.files.get(&edge.to) {
                             Some(info) => info,
@@ -231,10 +244,6 @@ pub fn evaluate_rules(
                             continue;
                         }
 
-                        let source_info = match graph.files.get(&edge.from) {
-                            Some(info) => info,
-                            None => continue,
-                        };
                         let source_rel = to_relative(&source_info.path, project_root);
 
                         // Check type-only requirement
@@ -254,17 +263,14 @@ pub fn evaluate_rules(
                                 confidence: Confidence::Certain,
                                 fix_direction: rule_def.fix_direction.clone(),
                             });
-                            continue;
                         }
 
                         // Check forbidden names
-                        if let Some(ref forbidden) = restriction.forbidden_names {
-                            let forbidden_set: HashSet<&str> =
-                                forbidden.iter().map(|s| s.as_str()).collect();
+                        if let Some(ref forbidden) = forbidden_set {
                             let violated_names: Vec<String> = edge
                                 .imported_names
                                 .iter()
-                                .filter(|n| forbidden_set.contains(n.as_str()))
+                                .filter(|n| forbidden.contains(n.as_str()))
                                 .cloned()
                                 .collect();
                             if !violated_names.is_empty() {
@@ -288,13 +294,11 @@ pub fn evaluate_rules(
                         }
 
                         // Check allowed names (allowlist mode)
-                        if let Some(ref allowed) = restriction.allowed_names {
-                            let allowed_set: HashSet<&str> =
-                                allowed.iter().map(|s| s.as_str()).collect();
+                        if let Some(ref allowed) = allowed_set {
                             let violated_names: Vec<String> = edge
                                 .imported_names
                                 .iter()
-                                .filter(|n| !allowed_set.contains(n.as_str()))
+                                .filter(|n| !allowed.contains(n.as_str()))
                                 .cloned()
                                 .collect();
                             if !violated_names.is_empty() {
@@ -1201,5 +1205,102 @@ mod tests {
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
         // lib/external.ts should NOT be checked (doesn't match src/**)
         assert!(result.violations.is_empty());
+    }
+
+    // ---- Multi-layer overlap test (first-match-wins) ----
+
+    #[test]
+    fn test_layer_multi_pattern_overlap_first_match_wins() {
+        let mut graph = FileGraph::new();
+        // src/shared/ui/Widget.ts matches both "src/shared/**" and "src/shared/ui/**"
+        graph.add_file(make_file(1, "src/shared/ui/Widget.ts"));
+        graph.add_file(make_file(2, "src/core/engine.ts"));
+        // shared layer (index 0) imports from core layer (index 1) — valid top-down
+        graph.add_import(make_edge(1, 2, &["Engine"], 5));
+
+        let config = LintConfig {
+            rules: vec![make_layer_rule(
+                "overlap-layers",
+                Severity::Error,
+                &[
+                    // Layer 0: shared (higher layer)
+                    ("shared", &["src/shared/**"]),
+                    // Layer 1: core (lower layer)
+                    ("core", &["src/core/**"]),
+                    // Layer 2: shared-ui (lower layer) — also matches Widget.ts
+                    ("shared-ui", &["src/shared/ui/**"]),
+                ],
+            )],
+        };
+
+        // Widget.ts should be assigned to "shared" (layer 0, first match),
+        // NOT "shared-ui" (layer 2). Importing from "core" (layer 1) is valid
+        // top-down from layer 0 -> layer 1.
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(
+            result.violations.is_empty(),
+            "Expected no violations because first-match assigns Widget.ts to 'shared' (layer 0), \
+             and importing from 'core' (layer 1) is valid top-down"
+        );
+
+        // Now reverse: core imports from shared/ui — should violate because
+        // core (layer 1) imports from shared (layer 0, the first match for Widget.ts)
+        let mut graph2 = FileGraph::new();
+        graph2.add_file(make_file(1, "src/shared/ui/Widget.ts"));
+        graph2.add_file(make_file(2, "src/core/engine.ts"));
+        graph2.add_import(make_edge(2, 1, &["Widget"], 3));
+
+        let result2 = evaluate_rules(&config, &graph2, Path::new("/project")).unwrap();
+        assert_eq!(
+            result2.violations.len(),
+            1,
+            "Expected violation: core (layer 1) imports from shared (layer 0)"
+        );
+        assert!(result2.violations[0].description.contains("core"));
+        assert!(result2.violations[0].description.contains("shared"));
+    }
+
+    // ---- require_type_only + forbidden_names interaction test ----
+
+    #[test]
+    fn test_import_restriction_type_only_and_forbidden_names_both_fire() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/app.ts"));
+        graph.add_file(make_file(2, "src/internal/secrets.ts"));
+        // Non-type-only import of a forbidden name
+        graph.add_import(make_edge(1, 2, &["getSecret"], 5));
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "restricted".to_string(),
+                severity: Severity::Error,
+                description: "Restricted import".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::ImportRestriction(ImportRestrictionRuleConfig {
+                    target: vec!["src/internal/**".to_string()],
+                    require_type_only: true,
+                    forbidden_names: Some(vec!["getSecret".to_string()]),
+                    allowed_names: None,
+                }),
+            }],
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        // Should produce TWO violations: one for type-only, one for forbidden name
+        assert_eq!(
+            result.violations.len(),
+            2,
+            "Expected two violations: type-only AND forbidden name"
+        );
+        let descriptions: Vec<&str> = result.violations.iter().map(|v| v.description.as_str()).collect();
+        assert!(
+            descriptions.iter().any(|d| d.contains("type-only")),
+            "Expected a type-only violation"
+        );
+        assert!(
+            descriptions.iter().any(|d| d.contains("forbidden imports")),
+            "Expected a forbidden-name violation"
+        );
     }
 }

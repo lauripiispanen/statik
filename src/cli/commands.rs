@@ -872,12 +872,16 @@ fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
                 "{}[{}] {}\n",
                 severity_label, v.rule_id, v.description
             ));
-            out.push_str(&format!(
-                "  {}:{} -> {}\n",
-                display_path(&v.source_file),
-                v.line,
-                display_path(&v.target_file),
-            ));
+            if v.source_file == v.target_file && v.line == 0 {
+                out.push_str(&format!("  {}\n", display_path(&v.source_file)));
+            } else {
+                out.push_str(&format!(
+                    "  {}:{} -> {}\n",
+                    display_path(&v.source_file),
+                    v.line,
+                    display_path(&v.target_file),
+                ));
+            }
             if !v.imported_names.is_empty() {
                 out.push_str(&format!("    imports: {}\n", v.imported_names.join(", ")));
             }
@@ -1242,5 +1246,54 @@ mod tests {
         let text = format_lint_text(&result);
         assert!(text.contains("No lint violations found."));
         assert!(text.contains("0 errors, 0 warnings across 2 rules"));
+    }
+
+    #[test]
+    fn test_format_lint_text_fan_limit_no_arrow() {
+        use crate::linting::config::Severity;
+        use crate::linting::rules::{LintResult, LintSummary, LintViolation};
+
+        let result = LintResult {
+            violations: vec![LintViolation {
+                rule_id: "no-god-modules".to_string(),
+                severity: Severity::Warning,
+                description: "Too many dependencies (fan-out 25 exceeds limit 20)".to_string(),
+                rationale: None,
+                source_file: PathBuf::from("src/app.ts"),
+                target_file: PathBuf::from("src/app.ts"),
+                imported_names: vec![],
+                line: 0,
+                confidence: Confidence::Certain,
+                fix_direction: Some("Split this file into smaller modules".to_string()),
+            }],
+            rules_evaluated: 1,
+            summary: LintSummary {
+                total_violations: 1,
+                errors: 0,
+                warnings: 1,
+                infos: 0,
+                rules_evaluated: 1,
+            },
+        };
+
+        let text = format_lint_text(&result);
+        assert!(
+            text.contains("warning[no-god-modules] Too many dependencies"),
+            "should contain severity and rule description"
+        );
+        assert!(
+            text.contains("  src/app.ts\n"),
+            "fan-limit violation should show just the file path, got: {}",
+            text
+        );
+        assert!(
+            !text.contains("->"),
+            "fan-limit violation should not contain arrow"
+        );
+        assert!(
+            !text.contains(":0"),
+            "fan-limit violation should not show line 0"
+        );
+        assert!(text.contains("fix: Split this file into smaller modules"));
     }
 }
