@@ -238,6 +238,47 @@ impl<'a> Extractor<'a> {
         (visibility, is_static, is_final)
     }
 
+    /// Extract annotation usages from a declaration node's modifiers and
+    /// direct annotation children, emitting RefKind::TypeUsage references
+    /// with the given symbol as the source.
+    fn extract_annotations_on(&mut self, decl_node: Node, symbol_id: SymbolId) {
+        let mut cursor = decl_node.walk();
+        for child in decl_node.children(&mut cursor) {
+            match child.kind() {
+                "modifiers" => {
+                    let mut inner_cursor = child.walk();
+                    for inner_child in child.children(&mut inner_cursor) {
+                        if inner_child.kind() == "marker_annotation"
+                            || inner_child.kind() == "annotation"
+                        {
+                            self.emit_annotation_ref(inner_child, symbol_id);
+                        }
+                    }
+                }
+                "marker_annotation" | "annotation" => {
+                    self.emit_annotation_ref(child, symbol_id);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn emit_annotation_ref(&mut self, annotation_node: Node, source: SymbolId) {
+        if let Some(name_n) = annotation_node.child_by_field_name("name") {
+            let ref_id = self.alloc_ref_id();
+            let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
+            self.references.push(Reference {
+                id: ref_id,
+                source,
+                target: placeholder_target,
+                kind: RefKind::TypeUsage,
+                file: self.file_id,
+                span: self.node_span(name_n),
+                line_span: self.node_line_span(name_n),
+            });
+        }
+    }
+
     fn extract_import(&mut self, node: Node) {
         let text = self.node_text(node).trim().to_string();
         let _is_static = text.contains("import static ");
@@ -314,6 +355,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("class {}", name)),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Extract extends (superclass)
         if let Some(superclass) = node.child_by_field_name("superclass") {
@@ -368,6 +410,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("interface {}", name)),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Extract extends (for interfaces)
         let mut cursor = node.walk();
@@ -420,6 +463,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("enum {}", name)),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Extract implements (interfaces) for enum
         if let Some(interfaces) = node.child_by_field_name("interfaces") {
@@ -469,6 +513,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("@interface {}", name)),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Public top-level annotation types are exports
         if visibility == Visibility::Public && self.current_parent().is_none() {
@@ -506,6 +551,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("record {}", name)),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Public top-level records are exports
         if visibility == Visibility::Public && self.current_parent().is_none() {
@@ -638,6 +684,7 @@ impl<'a> Extractor<'a> {
             signature: Some(signature),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Visit method body for references
         self.parent_stack.push(id);
@@ -674,6 +721,7 @@ impl<'a> Extractor<'a> {
             signature: Some(params),
         };
         self.symbols.push(symbol);
+        self.extract_annotations_on(node, id);
 
         // Visit constructor body for references
         self.parent_stack.push(id);
@@ -875,6 +923,7 @@ impl<'a> Extractor<'a> {
             });
         }
     }
+
 }
 
 #[cfg(test)]
@@ -1386,5 +1435,183 @@ public class App {
         let sig = greet.signature.as_ref().unwrap();
         assert!(sig.contains("greet"), "signature should contain method name: {}", sig);
         assert!(sig.contains("String"), "signature should contain return type: {}", sig);
+    }
+
+    #[test]
+    fn test_package_info_file() {
+        // package-info.java files contain just a package declaration and annotations.
+        // The parser should handle them gracefully without crashing.
+        let result = parse_java(
+            r#"
+/**
+ * This package contains utility classes.
+ */
+@javax.annotation.ParametersAreNonnullByDefault
+package com.example.util;
+"#,
+        );
+        // Should produce no symbols or exports, just set the package name
+        assert!(
+            result.symbols.is_empty(),
+            "package-info.java should produce no symbols"
+        );
+        assert!(
+            result.exports.is_empty(),
+            "package-info.java should produce no exports"
+        );
+    }
+
+    #[test]
+    fn test_annotation_usage_generates_type_reference() {
+        let result = parse_java(
+            r#"
+public class AppTest {
+    @Test
+    public void testSomething() {}
+
+    @Override
+    public String toString() { return ""; }
+}
+"#,
+        );
+        let test_method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "testSomething")
+            .unwrap();
+        let type_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.kind == RefKind::TypeUsage && r.source == test_method.id)
+            .collect();
+        assert!(
+            !type_refs.is_empty(),
+            "@Test annotation should generate a TypeUsage reference"
+        );
+    }
+
+    #[test]
+    fn test_spring_annotations_generate_references() {
+        let result = parse_java(
+            r#"
+@SpringBootApplication
+public class Application {
+    @Autowired
+    private UserService userService;
+
+    @RequestMapping("/api")
+    public void handle() {}
+}
+"#,
+        );
+        let app = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Application")
+            .unwrap();
+        // @SpringBootApplication on the class should generate a TypeUsage ref
+        let class_type_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.kind == RefKind::TypeUsage && r.source == app.id)
+            .collect();
+        assert!(
+            !class_type_refs.is_empty(),
+            "@SpringBootApplication should generate a TypeUsage reference on the class"
+        );
+    }
+
+    #[test]
+    fn test_record_declaration() {
+        let result = parse_java(
+            r#"
+package com.example;
+
+public record Point(int x, int y) {
+    public double distance() {
+        return Math.sqrt(x * x + y * y);
+    }
+}
+"#,
+        );
+
+        // Record should be extracted as a Class symbol
+        let point = result.symbols.iter().find(|s| s.name == "Point").unwrap();
+        assert_eq!(point.kind, SymbolKind::Class);
+        assert_eq!(point.visibility, Visibility::Public);
+        assert_eq!(point.qualified_name, "com.example.Point");
+        assert!(point.signature.as_ref().unwrap().contains("record"));
+
+        // Method inside the record should be extracted
+        let distance = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "distance")
+            .unwrap();
+        assert_eq!(distance.kind, SymbolKind::Method);
+        assert_eq!(distance.parent, Some(point.id));
+
+        // Public top-level record should be exported
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.exported_name == "Point"));
+    }
+
+    #[test]
+    fn test_generic_superclass() {
+        let result = parse_java(
+            r#"
+public class StringList extends ArrayList<String> {
+}
+"#,
+        );
+        let class = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "StringList")
+            .unwrap();
+        let inheritance_refs: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.kind == RefKind::Inheritance && r.source == class.id)
+            .collect();
+        // Should resolve the base type `ArrayList` despite `<String>` generic args
+        assert_eq!(
+            inheritance_refs.len(),
+            1,
+            "generic superclass should produce exactly one inheritance reference"
+        );
+    }
+
+    #[test]
+    fn test_multiple_field_declarators() {
+        let result = parse_java(
+            r#"
+public class Multi {
+    private int x, y, z;
+}
+"#,
+        );
+        let fields: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Variable)
+            .collect();
+        assert_eq!(
+            fields.len(),
+            3,
+            "should extract all three declarators from `int x, y, z;`"
+        );
+        let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"x"));
+        assert!(names.contains(&"y"));
+        assert!(names.contains(&"z"));
+
+        // All should be children of Multi
+        let multi = result.symbols.iter().find(|s| s.name == "Multi").unwrap();
+        for field in &fields {
+            assert_eq!(field.parent, Some(multi.id));
+        }
     }
 }
