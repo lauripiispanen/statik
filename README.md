@@ -50,7 +50,7 @@ statik cycles
 statik impact src/utils/helpers.ts
 ```
 
-### Check architectural boundaries
+### Check architectural rules
 
 ```
 statik lint
@@ -152,7 +152,7 @@ statik summary --format json
 
 ### `statik lint`
 
-Check architectural boundary rules defined in a config file. Reports violations where files import across forbidden boundaries.
+Check architectural rules defined in a config file. Reports violations of boundary rules, layer hierarchies, module containment, import restrictions, and fan-in/fan-out limits.
 
 ```
 statik lint
@@ -172,7 +172,31 @@ The lint command exits with code 1 if any errors are found, and code 0 otherwise
 
 #### Configuration
 
-Create `.statik/rules.toml` (or `statik.toml` in the project root) to define boundary rules:
+Create `.statik/rules.toml` (or `statik.toml` in the project root) to define lint rules. Every rule shares these common fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | yes | Unique rule identifier |
+| `severity` | yes | `error`, `warning`, or `info` |
+| `description` | yes | Human-readable description of the rule |
+| `rationale` | no | Why this rule exists (included in JSON output) |
+| `fix_direction` | no | Suggested fix direction (included in output) |
+
+Each rule also has a type-specific section (`[rules.boundary]`, `[rules.layer]`, etc.) that determines what it checks.
+
+#### Supported Rules
+
+| Rule type | Config key | Purpose |
+|-----------|------------|---------|
+| Boundary | `[rules.boundary]` | Block imports from one set of files to another |
+| Layer hierarchy | `[rules.layer]` | Enforce top-down dependency flow through ordered layers |
+| Module containment | `[rules.containment]` | Require external access through a public API file |
+| Import restriction | `[rules.import_restriction]` | Enforce type-only imports, forbidden/allowed names |
+| Fan-in/fan-out limit | `[rules.fan_limit]` | Detect architectural hotspots by capping dependency counts |
+
+#### Boundary rules
+
+Block imports between file sets. Use when you need to prevent a specific group of files from importing another group.
 
 ```toml
 [[rules]]
@@ -185,30 +209,140 @@ fix_direction = "Import from src/services/ instead"
 [rules.boundary]
 from = ["src/ui/**", "src/components/**"]
 deny = ["src/db/**"]
-
-[[rules]]
-id = "no-cross-feature"
-severity = "warning"
-description = "Features should not import from each other"
-
-[rules.boundary]
-from = ["src/features/auth/**"]
-deny = ["src/features/billing/**"]
-except = ["src/features/billing/types.ts"]
+except = ["src/db/types.ts"]
 ```
-
-Each rule requires:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | yes | Unique rule identifier |
-| `severity` | yes | `error`, `warning`, or `info` |
-| `description` | yes | Human-readable description of the rule |
-| `rationale` | no | Why this rule exists (included in JSON output) |
-| `fix_direction` | no | Suggested fix direction (included in output) |
-| `boundary.from` | yes | Glob patterns for source files |
-| `boundary.deny` | yes | Glob patterns for forbidden import targets |
-| `boundary.except` | no | Glob patterns for exceptions to the deny list |
+| `from` | yes | Glob patterns for source files |
+| `deny` | yes | Glob patterns for forbidden import targets |
+| `except` | no | Glob patterns for exceptions to the deny list |
+
+#### Layer hierarchy rules
+
+Enforce top-down dependency flow through an ordered list of layers. A layer can import from layers below it in the list, but not above. Use this to enforce clean architecture or layered patterns across an entire project.
+
+```toml
+[[rules]]
+id = "clean-layers"
+severity = "error"
+description = "Dependencies must flow top-down through layers"
+rationale = "Enforces clean architecture: presentation -> service -> data"
+
+[rules.layer]
+layers = [
+  { name = "presentation", patterns = ["src/ui/**"] },
+  { name = "service", patterns = ["src/services/**"] },
+  { name = "data", patterns = ["src/db/**"] },
+]
+```
+
+Layers are ordered top-to-bottom. In this example, `presentation` can import from `service` and `data`, `service` can import from `data`, but `data` cannot import from `service` or `presentation`.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `layers` | yes | Ordered list of `{ name, patterns }` objects |
+| `layers[].name` | yes | Human-readable layer name (used in violation messages) |
+| `layers[].patterns` | yes | Glob patterns matching files in this layer |
+
+#### Module containment rules
+
+Enforce that files inside a module are only imported through designated public API files. Use this when a module should expose a limited surface area (e.g., through an `index.ts` barrel file) and internal files should not be imported directly by outsiders.
+
+```toml
+[[rules]]
+id = "auth-encapsulation"
+severity = "warning"
+description = "Auth module must be accessed through its public API"
+fix_direction = "Import from src/auth/index.ts instead"
+
+[rules.containment]
+module = ["src/auth/**"]
+public_api = ["src/auth/index.ts"]
+```
+
+Files inside the module can import each other freely. Only imports from outside the module are checked.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `module` | yes | Glob patterns defining the module boundary |
+| `public_api` | yes | Glob patterns for files that outsiders are allowed to import |
+
+#### Import restriction rules
+
+Restrict how files matching a target pattern are imported. Supports type-only enforcement and forbidden/allowed import name lists.
+
+```toml
+[[rules]]
+id = "models-type-only"
+severity = "info"
+description = "Imports from models/ should be type-only when possible"
+
+[rules.import_restriction]
+target = ["src/models/**"]
+require_type_only = true
+```
+
+```toml
+[[rules]]
+id = "no-internals"
+severity = "error"
+description = "Cannot import internal functions from the internal module"
+
+[rules.import_restriction]
+target = ["src/internal/**"]
+forbidden_names = ["getSecret", "internalHelper"]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `target` | yes | Glob patterns for the import target files to restrict |
+| `require_type_only` | no | If `true`, all imports from target must use `import type` (default: `false`) |
+| `forbidden_names` | no | List of symbol names that cannot be imported from target |
+| `allowed_names` | no | If set, only these symbol names can be imported from target |
+
+#### Fan-in/fan-out limit rules
+
+Detect architectural hotspots by capping how many files a single file can depend on (fan-out) or how many files can depend on it (fan-in). Use this to prevent god modules and identify files that may need refactoring.
+
+```toml
+[[rules]]
+id = "no-god-modules"
+severity = "warning"
+description = "Files should not have too many dependencies"
+fix_direction = "Split this file into smaller, focused modules"
+
+[rules.fan_limit]
+pattern = ["src/**"]
+max_fan_out = 10
+```
+
+You can set `max_fan_in`, `max_fan_out`, or both:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns for files to check |
+| `max_fan_in` | no | Maximum number of files that may import this file |
+| `max_fan_out` | no | Maximum number of files this file may import |
+
+#### AI Agent Integration
+
+`statik lint` is designed to be consumed by AI coding agents. Use `--format json` for structured output that agents can parse and act on:
+
+```
+statik lint --format json
+```
+
+The JSON output includes `rationale` and `fix_direction` fields (when defined in the config) that give agents the context to understand *why* a violation exists and *how* to fix it, without requiring the agent to understand the full architectural intent behind the rule.
+
+Recommended agent workflow:
+
+1. Run `statik lint --format json` and parse `violations`
+2. For each violation, read `description`, `rationale`, and `fix_direction` to understand what to fix
+3. Apply the fix
+4. Re-run `statik lint --format json` to verify the violation is resolved
+
+See the [JSON output example](#json---format-json) above for the full violation schema.
 
 ### Deferred commands (v2)
 
