@@ -247,6 +247,7 @@ pub struct ImportRecord {
     pub is_namespace: bool,
     pub is_type_only: bool,
     pub is_side_effect: bool,
+    pub is_dynamic: bool,
 }
 
 /// Represents an export from a source file.

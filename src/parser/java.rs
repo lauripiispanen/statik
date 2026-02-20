@@ -72,6 +72,7 @@ impl LanguageParser for JavaParser {
                 is_namespace: false,
                 is_type_only: true,
                 is_side_effect: false,
+                is_dynamic: false,
             });
         }
 
@@ -88,6 +89,7 @@ impl LanguageParser for JavaParser {
                 is_namespace: false,
                 is_type_only: false,
                 is_side_effect: false,
+                is_dynamic: false,
             });
         }
 
@@ -481,6 +483,7 @@ impl<'a> Extractor<'a> {
             is_namespace: is_wildcard,
             is_type_only: false, // Java has no type-only import distinction
             is_side_effect: false,
+            is_dynamic: false,
         });
     }
 

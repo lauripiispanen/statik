@@ -207,7 +207,9 @@ impl<'a> Extractor<'a> {
                 self.extract_export(node);
             }
             "call_expression" => {
-                self.extract_call_reference(node);
+                if !self.try_extract_dynamic_import(node) {
+                    self.extract_call_reference(node);
+                }
                 // Still visit children for nested calls
                 self.visit_children(node);
             }
@@ -839,6 +841,7 @@ impl<'a> Extractor<'a> {
                             is_namespace: true,
                             is_type_only,
                             is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                 }
@@ -863,6 +866,7 @@ impl<'a> Extractor<'a> {
                 is_namespace: false,
                 is_type_only: false,
                 is_side_effect: true,
+                is_dynamic: false,
             });
         }
     }
@@ -891,6 +895,7 @@ impl<'a> Extractor<'a> {
                         is_namespace: false,
                         is_type_only,
                         is_side_effect: false,
+                        is_dynamic: false,
                     });
                 }
                 "named_imports" => {
@@ -910,6 +915,7 @@ impl<'a> Extractor<'a> {
                             is_namespace: true,
                             is_type_only,
                             is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                 }
@@ -948,6 +954,7 @@ impl<'a> Extractor<'a> {
                         is_namespace: false,
                         is_type_only,
                         is_side_effect: false,
+                        is_dynamic: false,
                     });
                 }
             }
@@ -1181,6 +1188,62 @@ impl<'a> Extractor<'a> {
             span: self.node_span(target_node),
             line_span: self.node_line_span(target_node),
         });
+    }
+
+    /// Try to extract a dynamic import expression: `import('./module')`.
+    /// Returns true if this call expression was a dynamic import, false otherwise.
+    fn try_extract_dynamic_import(&mut self, node: Node) -> bool {
+        let func_node = match node.child_by_field_name("function") {
+            Some(n) => n,
+            None => return false,
+        };
+
+        // Dynamic imports appear as call_expression with function = "import"
+        if func_node.kind() != "import" {
+            return false;
+        }
+
+        // Get the arguments
+        let args_node = match node.child_by_field_name("arguments") {
+            Some(n) => n,
+            None => return false,
+        };
+
+        // The first argument should be a string literal
+        let mut cursor = args_node.walk();
+        let first_arg = args_node.children(&mut cursor).find(|c| {
+            c.kind() == "string" || c.kind() == "template_string" || c.kind() != ","
+                && c.kind() != "("
+                && c.kind() != ")"
+        });
+
+        if let Some(arg) = first_arg {
+            if arg.kind() == "string" {
+                // String literal argument: import('./module')
+                let source_path = self
+                    .node_text(arg)
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
+                self.imports.push(ImportRecord {
+                    file: self.file_id,
+                    source_path,
+                    imported_name: "*".to_string(),
+                    local_name: String::new(),
+                    span: self.node_span(node),
+                    line_span: self.node_line_span(node),
+                    is_default: false,
+                    is_namespace: true,
+                    is_type_only: false,
+                    is_side_effect: false,
+                    is_dynamic: true,
+                });
+            }
+            // Non-literal arguments (template strings, variables) -- we can't
+            // resolve these statically, so just skip them. The call_expression
+            // will still be visited for call references.
+        }
+
+        true
     }
 
     fn extract_call_reference(&mut self, node: Node) {
@@ -1631,7 +1694,6 @@ class Foo {
     }
 
     #[test]
-    #[ignore] // TODO: dynamic imports not yet tracked as import records
     fn test_dynamic_import_expression() {
         let result = parse_ts(
             r#"
@@ -1645,6 +1707,9 @@ async function loadModule() {
             result.imports.iter().any(|i| i.source_path == "./lazy"),
             "dynamic import('./lazy') should generate an import record"
         );
+        let dynamic_import = result.imports.iter().find(|i| i.source_path == "./lazy").unwrap();
+        assert!(dynamic_import.is_dynamic, "should be marked as dynamic");
+        assert!(dynamic_import.is_namespace, "dynamic imports are namespace imports");
     }
 
     // --- Additional edge case tests added by test-reviewer ---

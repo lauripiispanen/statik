@@ -152,6 +152,31 @@ impl FileGraph {
         self.files.get(&id)
     }
 
+    /// Return a new FileGraph with type-only edges removed.
+    /// Useful for --runtime-only analysis where only runtime dependencies matter.
+    pub fn without_type_only_edges(&self) -> Self {
+        let mut new_graph = Self::new();
+
+        // Copy all files
+        for info in self.files.values() {
+            new_graph.add_file(info.clone());
+        }
+
+        // Copy only non-type-only edges
+        for edges in self.imports.values() {
+            for edge in edges {
+                if !edge.is_type_only {
+                    new_graph.add_import(edge.clone());
+                }
+            }
+        }
+
+        // Copy unresolved imports
+        new_graph.unresolved = self.unresolved.clone();
+
+        new_graph
+    }
+
     /// Get the unresolved imports list.
     pub fn unresolved_imports(&self) -> &[UnresolvedImport] {
         &self.unresolved
@@ -365,6 +390,7 @@ mod tests {
             is_namespace: false,
             is_type_only: false,
             is_side_effect: false,
+            is_dynamic: false,
         }
     }
 
