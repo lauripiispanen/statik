@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::model::{FileId, Language, ParseResult};
 
+pub mod java;
 pub mod typescript;
 
 /// Trait for language-specific symbol extractors.
@@ -33,6 +34,7 @@ impl ParserRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(typescript::TypeScriptParser::new()));
+        registry.register(Box::new(java::JavaParser::new()));
         registry
     }
 
