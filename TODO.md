@@ -428,45 +428,45 @@ Tasks:
 
 ---
 
-## Phase 3: Multi-Language Foundation
+## Phase 3: Multi-Language Foundation (Java v1 COMPLETE)
 
-### 3.1 Language enum and SymbolKind expansion
+### 3.1 Language enum and SymbolKind expansion ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/model/mod.rs`
 
 Tasks:
-- [ ] Add `Language::Java` variant
-- [ ] Add `Language::from_extension` mapping for `.java`
-- [ ] Add `Language::from_stored_str` mapping for `"java"`
-- [ ] Add `SymbolKind::Annotation` variant
-- [ ] Add `SymbolKind::Package` variant
-- [ ] Ensure `SymbolKind::from_str` handles new variants
-- [ ] Ensure DB serialization/deserialization handles new kinds gracefully
+- [x] Add `Language::Java` variant
+- [x] Add `Language::from_extension` mapping for `.java`
+- [x] Add `Language::from_stored_str` mapping for `"java"`
+- [x] Add `SymbolKind::Annotation` variant
+- [x] Add `SymbolKind::Package` variant
+- [x] Ensure `SymbolKind::from_str` handles new variants
+- [x] Ensure DB serialization/deserialization handles new kinds gracefully
 
 **Acceptance**: `Language::Java` round-trips through the DB correctly. Unknown
 `SymbolKind` values in existing DBs don't cause crashes.
 
 ---
 
-### 3.2 Java file discovery
+### 3.2 Java file discovery ✅
 **Complexity**: S
 **Prerequisites**: 3.1
 **Files**: `src/discovery/mod.rs`
 
 Tasks:
-- [ ] Add `.java` to `Language::from_extension`
-- [ ] Add default exclude patterns for Java projects: `target/`, `build/`,
+- [x] Add `.java` to `Language::from_extension`
+- [x] Add default exclude patterns for Java projects: `target/`, `build/`,
   `.gradle/`, `.idea/`, `*.class`
-- [ ] Test discovery on a standard Maven project layout
-- [ ] Test that `--lang java` filter works
+- [x] Test discovery on a standard Maven project layout
+- [x] Test that `--lang java` filter works
 
 **Acceptance**: `statik index` discovers `.java` files in a Maven project, skipping
 `target/` and `build/` directories.
 
 ---
 
-### 3.3 Java tree-sitter parser
+### 3.3 Java tree-sitter parser ✅
 **Complexity**: L
 **Prerequisites**: 3.1, 3.2
 **Files**: New `src/parser/java.rs`, `src/parser/mod.rs`, `Cargo.toml`
@@ -474,21 +474,21 @@ Tasks:
 Implement `LanguageParser` for Java using the `tree-sitter-java` crate.
 
 Tasks:
-- [ ] Add `tree-sitter-java` dependency to `Cargo.toml`
-- [ ] Create `JavaParser` struct implementing `LanguageParser`
-- [ ] Extract symbols: classes, interfaces, enums, annotations, methods, fields,
+- [x] Add `tree-sitter-java` dependency to `Cargo.toml`
+- [x] Create `JavaParser` struct implementing `LanguageParser`
+- [x] Extract symbols: classes, interfaces, enums, annotations, methods, fields,
   constructors
-- [ ] Extract imports: `import` statements (single and wildcard)
-- [ ] Extract exports: Java doesn't have exports in the TS sense. Treat all
+- [x] Extract imports: `import` statements (single and wildcard)
+- [x] Extract exports: Java doesn't have exports in the TS sense. Treat all
   `public` top-level declarations as exports. Package-private declarations are
   exports within the package.
-- [ ] Handle `package` declarations to establish qualified names
-- [ ] Map Java constructs to `SymbolKind`: class -> Class, interface -> Interface,
+- [x] Handle `package` declarations to establish qualified names
+- [x] Map Java constructs to `SymbolKind`: class -> Class, interface -> Interface,
   enum -> Enum, method -> Method, field -> Variable, annotation -> Annotation
-- [ ] Handle inner classes (parent relationship)
-- [ ] Handle `extends` and `implements` as `RefKind::Inheritance` references
-- [ ] Register `JavaParser` in `ParserRegistry::with_defaults()`
-- [ ] Add unit tests with Java source code fixtures
+- [x] Handle inner classes (parent relationship)
+- [x] Handle `extends` and `implements` as `RefKind::Inheritance` references
+- [x] Register `JavaParser` in `ParserRegistry::with_defaults()`
+- [x] Add unit tests with Java source code fixtures
 
 **Acceptance**: `statik index` on a Java project produces correct symbol tables.
 Classes, methods, and imports are extracted. `statik exports` on a Java file shows
@@ -496,28 +496,25 @@ public declarations.
 
 ---
 
-### 3.4 Java import resolver
+### 3.4 Java import resolver ✅
 **Complexity**: XL
 **Prerequisites**: 3.3
 **Files**: New `src/resolver/java.rs`, `src/resolver/mod.rs`
 
-This is the most complex task in Phase 3. Java import resolution requires
-understanding package-to-directory mapping.
-
 Tasks:
-- [ ] Implement `JavaResolver` struct implementing `Resolver`
-- [ ] Handle single-type imports: `import com.example.UserService` -> resolve
+- [x] Implement `JavaResolver` struct implementing `Resolver`
+- [x] Handle single-type imports: `import com.example.UserService` -> resolve
   to `com/example/UserService.java` relative to source root
 - [ ] Handle wildcard imports: `import com.example.*` -> resolve to all files in
-  `com/example/` directory
-- [ ] Detect source roots: look for standard layouts (`src/main/java/`,
+  `com/example/` directory (v1: classified as External, tracked as known limitation)
+- [x] Detect source roots: look for standard layouts (`src/main/java/`,
   `src/java/`, `src/`) and use package declarations to verify
-- [ ] Classify external imports: if the import's package doesn't map to a source
+- [x] Classify external imports: if the import's package doesn't map to a source
   file, classify as `External`
 - [ ] Parse `pom.xml` and `build.gradle` minimally to extract dependency group/
-  artifact IDs for better external classification (nice-to-have, not required)
-- [ ] Handle static imports: `import static com.example.Utils.helper`
-- [ ] Add unit tests with mock project layouts
+  artifact IDs for better external classification (deferred)
+- [x] Handle static imports: `import static com.example.Utils.helper`
+- [x] Add unit tests with mock project layouts
 - [ ] Add integration test with a real Maven project
 
 **Acceptance**: `statik deps` on a Java file shows correct intra-project imports.
@@ -526,23 +523,44 @@ package name.
 
 ---
 
-### 3.5 Mixed-project support
+### 3.5 Mixed-project support ✅
 **Complexity**: M
 **Prerequisites**: 3.3, 3.4
 **Files**: `src/cli/commands.rs`, `src/model/file_graph.rs`
 
 Tasks:
-- [ ] Ensure `build_file_graph()` selects the correct resolver per file language
-- [ ] Ensure `FileGraph` handles files with different languages in the same graph
-- [ ] `statik summary` shows file counts broken down by language (already partially
-  implemented)
-- [ ] `statik dead-code` works correctly when Java and TS files coexist (no false
-  cross-language edges)
+- [x] Ensure `build_file_graph()` selects the correct resolver per file language
+- [x] Ensure `FileGraph` handles files with different languages in the same graph
+- [x] `statik summary` shows file counts broken down by language
+- [x] `statik dead-code` works correctly when Java and TS files coexist
 - [ ] Add integration test with a monorepo containing both TS and Java source
 
 **Acceptance**: `statik summary` on a monorepo with TS and Java files shows correct
 per-language counts. Dead code detection does not produce cross-language false
 positives.
+
+---
+
+### 3.6 Known limitations for Java v1 (follow-up work)
+
+Items identified during implementation that are acceptable for v1 but should be
+addressed in future iterations:
+
+- [ ] **Wildcard import resolution**: `import com.example.*` currently resolves as
+  External instead of creating edges to all files in the package directory.
+  Requires directory enumeration in the resolver. Impact: missing dependency edges
+  for files using wildcard imports (uncommon in modern code, common in legacy).
+- [ ] **Qualified name separator**: Java uses `.` for package separation but `::` for
+  nested member names (inherited from TS parser pattern). Consider unifying to `.`
+  for Java qualified names.
+- [ ] **Annotation-based entry point detection**: Currently file-name-based only
+  (*Test, Application). Could enhance dead code detection by recognizing
+  @SpringBootApplication, @Test, @Component etc. as entry point markers via
+  parsed annotation references.
+- [ ] **pom.xml/build.gradle parsing**: Minimal parsing of build files for better
+  external dependency classification and source root detection.
+- [ ] **Package-private visibility**: Mapped to Visibility::Private. Could add
+  Visibility::PackagePrivate for more accurate dead code analysis within packages.
 
 ---
 
