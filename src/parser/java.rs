@@ -287,7 +287,7 @@ impl<'a> Extractor<'a> {
             line_span: self.node_line_span(node),
             is_default: false,
             is_namespace: is_wildcard,
-            is_type_only: !is_static,
+            is_type_only: false, // Java has no type-only import distinction
             is_side_effect: false,
         });
     }
