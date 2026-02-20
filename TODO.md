@@ -561,6 +561,16 @@ addressed in future iterations:
   external dependency classification and source root detection.
 - [ ] **Package-private visibility**: Mapped to Visibility::Private. Could add
   Visibility::PackagePrivate for more accurate dead code analysis within packages.
+- [ ] **Same-package implicit dependencies**: Java classes in the same package can
+  reference each other without import statements. This causes missed dependency
+  edges, false positives in dead code, and missed intra-package cycles. Fix
+  options: (a) analyze type references in method bodies/fields to find same-package
+  usages, (b) treat all files in the same package as implicitly connected (coarse
+  but simple), (c) use simple name matching against same-package class names in
+  type positions. Most impactful gap found during dogfooding.
+- [ ] **Inner class export tracking**: Public static inner classes (e.g.,
+  `User.Preferences`) are not listed as exports. The resolver handles inner class
+  imports via member-fallback, but export tracking doesn't capture them.
 
 ---
 

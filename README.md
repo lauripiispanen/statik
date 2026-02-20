@@ -465,6 +465,8 @@ Java-specific limitations:
 
 - **Wildcard imports are imprecise** -- `import com.example.*` creates a dependency on the package directory, but statik cannot determine exactly which classes are used from that package.
 
+- **Same-package references require imports** -- In Java, classes within the same package can reference each other without import statements. statik only tracks explicit `import` declarations, so same-package dependencies without imports are invisible. This can cause false positives in dead code detection and missed circular dependencies within a package.
+
 ## Output Formats
 
 ### Text (default)
