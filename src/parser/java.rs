@@ -403,7 +403,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn emit_annotation_imports(&mut self, decl_node: Node) {
-        if self.current_parent().is_some() {
+        if self.parent_stack.len() > 1 {
             return;
         }
         let span = self.node_span(decl_node);
@@ -846,6 +846,7 @@ impl<'a> Extractor<'a> {
         };
         self.symbols.push(symbol);
         self.extract_annotations_on(node, id);
+        self.emit_annotation_imports(node);
 
         // Visit method body for references
         self.parent_stack.push(id);
@@ -1798,6 +1799,489 @@ public class Multi {
         let multi = result.symbols.iter().find(|s| s.name == "Multi").unwrap();
         for field in &fields {
             assert_eq!(field.parent, Some(multi.id));
+        }
+    }
+
+    fn type_ref_names(result: &ParseResult) -> Vec<String> {
+        result
+            .imports
+            .iter()
+            .filter(|i| i.source_path.starts_with("@type-ref:"))
+            .map(|i| i.imported_name.clone())
+            .collect()
+    }
+
+    fn annotation_names(result: &ParseResult) -> Vec<String> {
+        result
+            .imports
+            .iter()
+            .filter(|i| i.source_path.starts_with("@annotation:"))
+            .map(|i| i.imported_name.clone())
+            .collect()
+    }
+
+    // =========================================================================
+    // Type reference extraction
+    // =========================================================================
+
+    #[test]
+    fn test_type_ref_field_types() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    private Bar bar;
+    private Baz baz;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Bar".to_string()), "refs: {:?}", refs);
+        assert!(refs.contains(&"Baz".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_return_types() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public Widget getWidget() { return null; }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_parameter_types() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process(Request req, Response res) {}
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Request".to_string()), "refs: {:?}", refs);
+        assert!(refs.contains(&"Response".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_local_variables() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void method() {
+        Config cfg = null;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Config".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_generics() {
+        let result = parse_java(
+            r#"
+import java.util.List;
+public class Foo {
+    private List<Widget> widgets;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        // Widget is a type_identifier inside generic_type
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+        // List is an explicit import, should not appear as type-ref
+        assert!(!refs.contains(&"List".to_string()), "List should be filtered (explicit import): {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_cast_expression() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void method(Object obj) {
+        Widget w = (Widget) obj;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_instanceof() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public boolean check(Object obj) {
+        return obj instanceof Widget;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_throws_clause() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void risky() throws CustomException {}
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"CustomException".to_string()),
+            "refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_filters_generic_type_params() {
+        let result = parse_java(
+            r#"
+public class Container<T, E> {
+    private T value;
+    private E error;
+    private Widget widget;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"T".to_string()),
+            "generic type param T should be filtered: {:?}",
+            refs
+        );
+        assert!(
+            !refs.contains(&"E".to_string()),
+            "generic type param E should be filtered: {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "concrete type Widget should be extracted: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_filters_method_type_params() {
+        let result = parse_java(
+            r#"
+public class Util {
+    public <T> T convert(T input) { return input; }
+    public Widget build() { return null; }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"T".to_string()),
+            "method type param T should be filtered: {:?}",
+            refs
+        );
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_no_primitives() {
+        let result = parse_java(
+            r#"
+public class Primitives {
+    private int x;
+    private boolean flag;
+    private double value;
+    private void process() {}
+    private Widget widget;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        // Primitives use integral_type, boolean_type, etc., not type_identifier
+        assert!(
+            !refs.iter().any(|r| r == "int" || r == "boolean" || r == "double" || r == "void"),
+            "primitives should not appear as type refs: {:?}",
+            refs
+        );
+        assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
+    }
+
+    #[test]
+    fn test_type_ref_skips_lowercase_identifiers() {
+        // type_identifier nodes that are lowercase are likely not class names
+        let result = parse_java(
+            r#"
+public class Foo {
+    private Widget widget;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(refs.contains(&"Widget".to_string()));
+        // "widget" is an identifier, not a type_identifier
+    }
+
+    #[test]
+    fn test_type_ref_deduplication() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    private Widget a;
+    private Widget b;
+    public Widget getWidget() { return null; }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        let widget_count = refs.iter().filter(|r| r.as_str() == "Widget").count();
+        assert_eq!(
+            widget_count, 1,
+            "Widget should appear once (deduplicated): {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_skips_explicitly_imported() {
+        let result = parse_java(
+            r#"
+import com.example.Widget;
+public class Foo {
+    private Widget widget;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"Widget".to_string()),
+            "Widget is explicitly imported, should not be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    // =========================================================================
+    // Inner class exports
+    // =========================================================================
+
+    #[test]
+    fn test_inner_class_public_exported() {
+        let result = parse_java(
+            r#"
+public class Outer {
+    public static class Inner {}
+}
+"#,
+        );
+        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        assert!(names.contains(&"Outer"), "exports: {:?}", names);
+        assert!(
+            names.contains(&"Inner"),
+            "public static inner class should be exported: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_inner_class_private_not_exported() {
+        let result = parse_java(
+            r#"
+public class Outer {
+    private static class Secret {}
+}
+"#,
+        );
+        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        assert!(names.contains(&"Outer"));
+        assert!(
+            !names.contains(&"Secret"),
+            "private inner class should not be exported: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_inner_class_in_private_parent_not_exported() {
+        let result = parse_java(
+            r#"
+class PackagePrivate {
+    public static class Inner {}
+}
+"#,
+        );
+        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        assert!(
+            !names.contains(&"Inner"),
+            "public inner in package-private parent should not be exported: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_inner_interface_exported() {
+        let result = parse_java(
+            r#"
+public class Outer {
+    public interface Callback {}
+}
+"#,
+        );
+        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        assert!(
+            names.contains(&"Callback"),
+            "public inner interface should be exported: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_inner_enum_exported() {
+        let result = parse_java(
+            r#"
+public class Outer {
+    public enum Status { ACTIVE, INACTIVE }
+}
+"#,
+        );
+        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        assert!(
+            names.contains(&"Status"),
+            "public inner enum should be exported: {:?}",
+            names
+        );
+    }
+
+    // =========================================================================
+    // Annotation collection
+    // =========================================================================
+
+    #[test]
+    fn test_annotation_imports_top_level() {
+        let result = parse_java(
+            r#"
+@SpringBootApplication
+public class App {}
+"#,
+        );
+        let anns = annotation_names(&result);
+        assert!(
+            anns.contains(&"SpringBootApplication".to_string()),
+            "annotations: {:?}",
+            anns
+        );
+    }
+
+    #[test]
+    fn test_annotation_imports_on_method_inside_class() {
+        let result = parse_java(
+            r#"
+public class TestClass {
+    @Test
+    public void testMethod() {}
+}
+"#,
+        );
+        let anns = annotation_names(&result);
+        assert!(
+            anns.contains(&"Test".to_string()),
+            "@Test on method should produce @annotation: import: {:?}",
+            anns
+        );
+    }
+
+    #[test]
+    fn test_annotation_imports_not_for_deeply_nested() {
+        let result = parse_java(
+            r#"
+public class Outer {
+    public static class Inner {
+        @Deprecated
+        public void method() {}
+    }
+}
+"#,
+        );
+        let anns = annotation_names(&result);
+        // Annotations at depth 2+ should not be emitted
+        assert!(
+            !anns.contains(&"Deprecated".to_string()),
+            "deeply nested annotation should not produce @annotation: import: {:?}",
+            anns
+        );
+    }
+
+    #[test]
+    fn test_annotation_multiple() {
+        let result = parse_java(
+            r#"
+@Configuration
+@EnableAutoConfiguration
+public class Config {}
+"#,
+        );
+        let anns = annotation_names(&result);
+        assert!(anns.contains(&"Configuration".to_string()), "anns: {:?}", anns);
+        assert!(
+            anns.contains(&"EnableAutoConfiguration".to_string()),
+            "anns: {:?}",
+            anns
+        );
+    }
+
+    // =========================================================================
+    // Qualified name separator
+    // =========================================================================
+
+    #[test]
+    fn test_qualified_name_dot_separator() {
+        let result = parse_java(
+            r#"
+package com.example;
+public class Outer {
+    public class Inner {
+        public void method() {}
+    }
+}
+"#,
+        );
+        let inner = result.symbols.iter().find(|s| s.name == "Inner").unwrap();
+        assert_eq!(
+            inner.qualified_name, "com.example.Outer.Inner",
+            "inner class should use dot separator"
+        );
+        let method = result.symbols.iter().find(|s| s.name == "method").unwrap();
+        assert_eq!(
+            method.qualified_name, "com.example.Outer.Inner.method",
+            "method in inner class should use dot separator"
+        );
+    }
+
+    #[test]
+    fn test_type_ref_is_type_only() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    private Widget widget;
+}
+"#,
+        );
+        let type_ref_imports: Vec<_> = result
+            .imports
+            .iter()
+            .filter(|i| i.source_path.starts_with("@type-ref:"))
+            .collect();
+        assert!(!type_ref_imports.is_empty());
+        for import in &type_ref_imports {
+            assert!(import.is_type_only, "type-ref imports should be type_only");
         }
     }
 }

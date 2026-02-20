@@ -61,12 +61,13 @@ fn test_java_index_discovers_all_files() {
     let config = statik::discovery::DiscoveryConfig::default();
     let result = statik::cli::index::run_index(tmp.path(), &config).unwrap();
 
-    // We have: User, Role, Auditable, AuditableUser, UserService, NotificationService,
-    //          StringUtils, UserController, AdminController, UserRepository,
-    //          UnusedHelper, CycleA, CycleB, Application
+    // We have: User, Role, Auditable, AuditableUser, UserSummary, UserService,
+    //          NotificationService, ReportService, StringUtils, UserController,
+    //          AdminController, UserRepository, UnusedHelper, CycleA, CycleB,
+    //          Application, UserVerification
     assert_eq!(
-        result.files_indexed, 14,
-        "Expected 14 Java files, got {}",
+        result.files_indexed, 17,
+        "Expected 17 Java files, got {}",
         result.files_indexed
     );
     assert!(
@@ -431,8 +432,8 @@ fn test_java_summary_command() {
     let total_files = json["files"]["total"].as_u64().unwrap();
 
     assert_eq!(
-        total_files, 14,
-        "Summary should report 14 Java files, got {}",
+        total_files, 17,
+        "Summary should report 17 Java files, got {}",
         total_files
     );
 
@@ -715,8 +716,8 @@ fn test_java_summary_language_breakdown() {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         assert_eq!(
-            java_count, 14,
-            "Should report 14 Java files in language breakdown, got {}",
+            java_count, 17,
+            "Should report 17 Java files in language breakdown, got {}",
             java_count
         );
     }
@@ -1060,5 +1061,255 @@ max_fan_out = 100
         violations.iter().any(|v| v["rule_id"] == "no-controller-to-db"),
         "Should detect boundary violation, got {:?}",
         violations
+    );
+}
+
+// =============================================================================
+// SAME-PACKAGE IMPLICIT DEPENDENCIES
+// =============================================================================
+
+#[test]
+fn test_java_same_package_deps() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // UserSummary uses User and Role from the same package without any imports
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/model/UserSummary.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    assert!(
+        import_paths.iter().any(|p| p.contains("User.java")),
+        "UserSummary should depend on User.java via same-package type ref, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Role.java")),
+        "UserSummary should depend on Role.java via same-package type ref, got {:?}",
+        import_paths
+    );
+}
+
+#[test]
+fn test_java_same_package_dead_code_not_false_positive() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_files = json["dead_files"].as_array().unwrap();
+    let dead_paths: Vec<&str> = dead_files
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // UserSummary uses User and Role via same-package refs; they should not be dead
+    assert!(
+        !dead_paths.iter().any(|p| p.ends_with("model/User.java")),
+        "User.java should not be dead (used via same-package ref), dead: {:?}",
+        dead_paths
+    );
+    assert!(
+        !dead_paths.iter().any(|p| p.ends_with("model/Role.java")),
+        "Role.java should not be dead (used via same-package ref), dead: {:?}",
+        dead_paths
+    );
+}
+
+// =============================================================================
+// WILDCARD IMPORT RESOLUTION
+// =============================================================================
+
+#[test]
+fn test_java_wildcard_import_creates_edges() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // ReportService has `import com.example.model.*`
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/service/ReportService.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    // Wildcard import should create edges to all files in com.example.model
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/User.java")),
+        "Wildcard import should include User.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/Role.java")),
+        "Wildcard import should include Role.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/Auditable.java")),
+        "Wildcard import should include Auditable.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/AuditableUser.java")),
+        "Wildcard import should include AuditableUser.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("model/UserSummary.java")),
+        "Wildcard import should include UserSummary.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
+// ANNOTATION-BASED ENTRY POINTS
+// =============================================================================
+
+#[test]
+fn test_java_annotation_entry_point_spring() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_files = json["dead_files"].as_array().unwrap();
+    let dead_paths: Vec<&str> = dead_files
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // Application.java has @SpringBootApplication -> entry point
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("Application.java")),
+        "Application.java should not be dead (@SpringBootApplication entry point), dead: {:?}",
+        dead_paths
+    );
+}
+
+#[test]
+fn test_java_annotation_entry_point_test() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_files = json["dead_files"].as_array().unwrap();
+    let dead_paths: Vec<&str> = dead_files
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // UserVerification has @Test annotations -> entry point despite non-standard name
+    assert!(
+        !dead_paths
+            .iter()
+            .any(|p| p.contains("UserVerification.java")),
+        "UserVerification.java should not be dead (@Test entry point), dead: {:?}",
+        dead_paths
+    );
+}
+
+// =============================================================================
+// INNER CLASS EXPORTS
+// =============================================================================
+
+#[test]
+fn test_java_inner_class_exported() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_exports(
+        tmp.path(),
+        "src/main/java/com/example/service/NotificationService.java",
+        &OutputFormat::Json,
+        true,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let exports = json["exports"].as_array().unwrap();
+    let names: Vec<&str> = exports
+        .iter()
+        .filter_map(|e| e["name"].as_str())
+        .collect();
+
+    assert!(
+        names.contains(&"NotificationService"),
+        "Should export NotificationService, got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"Config"),
+        "Should export public static inner class Config, got {:?}",
+        names
+    );
+}
+
+// =============================================================================
+// SAME-PACKAGE CYCLE DETECTION
+// =============================================================================
+
+#[test]
+fn test_java_same_package_cycles_still_detected() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let cycles = json["cycles"].as_array().unwrap();
+
+    let all_cycle_paths: Vec<&str> = cycles
+        .iter()
+        .flat_map(|c| {
+            c["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|f| f["path"].as_str())
+        })
+        .collect();
+
+    // CycleA and CycleB should still be detected as a cycle (explicit imports)
+    assert!(
+        all_cycle_paths.iter().any(|p| p.contains("CycleA.java")),
+        "CycleA.java should be in a cycle, got {:?}",
+        all_cycle_paths
+    );
+    assert!(
+        all_cycle_paths.iter().any(|p| p.contains("CycleB.java")),
+        "CycleB.java should be in a cycle, got {:?}",
+        all_cycle_paths
     );
 }
