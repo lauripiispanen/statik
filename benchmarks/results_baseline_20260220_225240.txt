@@ -1,0 +1,194 @@
+============================================================
+Statik Benchmark Results
+============================================================
+Date:     2026-02-20 20:52:40 UTC
+Label:    baseline
+Binary:   /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik
+Platform: Darwin arm64
+Warmup:   3
+Runs:     10
+============================================================
+
+==========================================
+Project: small (301 files)
+==========================================
+
+--- index (cold) ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik index .
+  Time (mean ± σ):      40.5 ms ±   2.7 ms    [User: 45.6 ms, System: 15.8 ms]
+  Range (min … max):    38.7 ms …  47.9 ms    10 runs
+ 
+  Warning: The first benchmarking run for this command was significantly slower than the rest (47.9 ms). This could be caused by (filesystem) caches that were not filled until after the first run. You are already using both the '--warmup' option as well as the '--prepare' option. Consider re-running the benchmark on a quiet system. Maybe it was a random outlier. Alternatively, consider increasing the warmup count.
+ 
+
+--- deps ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index
+  Time (mean ± σ):      11.9 ms ±   0.5 ms    [User: 8.8 ms, System: 2.6 ms]
+  Range (min … max):    11.2 ms …  12.4 ms    10 runs
+ 
+
+--- deps --transitive ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index --transitive
+  Time (mean ± σ):      12.4 ms ±   0.7 ms    [User: 9.0 ms, System: 2.7 ms]
+  Range (min … max):    11.5 ms …  14.1 ms    10 runs
+ 
+
+--- dead-code ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik dead-code --no-index
+  Time (mean ± σ):      12.5 ms ±   0.6 ms    [User: 9.5 ms, System: 2.5 ms]
+  Range (min … max):    11.8 ms …  13.4 ms    10 runs
+ 
+
+--- cycles ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik cycles --no-index
+  Time (mean ± σ):      12.5 ms ±   0.9 ms    [User: 9.1 ms, System: 2.8 ms]
+  Range (min … max):    11.5 ms …  14.4 ms    10 runs
+ 
+
+--- impact ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik impact src/index.ts --no-index
+  Time (mean ± σ):      12.5 ms ±   0.5 ms    [User: 9.0 ms, System: 2.8 ms]
+  Range (min … max):    11.6 ms …  13.2 ms    10 runs
+ 
+
+--- summary ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik summary --no-index
+  Time (mean ± σ):      13.2 ms ±   0.6 ms    [User: 9.8 ms, System: 2.8 ms]
+  Range (min … max):    12.0 ms …  14.1 ms    10 runs
+ 
+
+--- lint ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik lint --no-index
+  Time (mean ± σ):      12.6 ms ±   0.6 ms    [User: 9.1 ms, System: 2.8 ms]
+  Range (min … max):    11.7 ms …  13.8 ms    10 runs
+ 
+
+--- exports ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik exports src/index.ts --no-index
+  Time (mean ± σ):      12.4 ms ±   0.3 ms    [User: 9.0 ms, System: 2.8 ms]
+  Range (min … max):    12.1 ms …  12.9 ms    10 runs
+ 
+
+==========================================
+Project: medium (1001 files)
+==========================================
+
+--- index (cold) ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik index .
+  Time (mean ± σ):     120.6 ms ±   7.3 ms    [User: 141.7 ms, System: 63.3 ms]
+  Range (min … max):   116.7 ms … 141.1 ms    10 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs.
+ 
+
+--- deps ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index
+  Time (mean ± σ):      31.2 ms ±   0.8 ms    [User: 24.7 ms, System: 6.0 ms]
+  Range (min … max):    30.5 ms …  33.2 ms    10 runs
+ 
+
+--- deps --transitive ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index --transitive
+  Time (mean ± σ):      32.2 ms ±   0.8 ms    [User: 25.5 ms, System: 6.1 ms]
+  Range (min … max):    31.5 ms …  33.6 ms    10 runs
+ 
+
+--- dead-code ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik dead-code --no-index
+  Time (mean ± σ):      37.9 ms ±   1.3 ms    [User: 29.8 ms, System: 7.2 ms]
+  Range (min … max):    34.7 ms …  40.1 ms    10 runs
+ 
+
+--- cycles ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik cycles --no-index
+  Time (mean ± σ):      32.6 ms ±   1.4 ms    [User: 25.7 ms, System: 6.2 ms]
+  Range (min … max):    31.3 ms …  35.3 ms    10 runs
+ 
+
+--- impact ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik impact src/index.ts --no-index
+  Time (mean ± σ):      33.2 ms ±   1.9 ms    [User: 25.9 ms, System: 6.6 ms]
+  Range (min … max):    30.7 ms …  35.5 ms    10 runs
+ 
+
+--- summary ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik summary --no-index
+  Time (mean ± σ):      35.3 ms ±   1.6 ms    [User: 28.3 ms, System: 6.3 ms]
+  Range (min … max):    33.7 ms …  37.6 ms    10 runs
+ 
+
+--- lint ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik lint --no-index
+  Time (mean ± σ):      32.4 ms ±   1.3 ms    [User: 25.6 ms, System: 6.2 ms]
+  Range (min … max):    31.0 ms …  34.5 ms    10 runs
+ 
+  Warning: Ignoring non-zero exit code.
+ 
+
+--- exports ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik exports src/index.ts --no-index
+  Time (mean ± σ):      31.8 ms ±   0.8 ms    [User: 25.0 ms, System: 6.1 ms]
+  Range (min … max):    30.6 ms …  32.9 ms    10 runs
+ 
+
+==========================================
+Project: large (3001 files)
+==========================================
+
+--- index (cold) ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik index .
+  Time (mean ± σ):     355.6 ms ±   2.4 ms    [User: 433.5 ms, System: 122.7 ms]
+  Range (min … max):   352.2 ms … 359.2 ms    10 runs
+ 
+
+--- deps ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index
+  Time (mean ± σ):      98.2 ms ±   2.0 ms    [User: 79.6 ms, System: 17.6 ms]
+  Range (min … max):    94.1 ms … 101.5 ms    10 runs
+ 
+
+--- deps --transitive ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik deps src/index.ts --no-index --transitive
+  Time (mean ± σ):      95.3 ms ±   2.7 ms    [User: 78.1 ms, System: 16.7 ms]
+  Range (min … max):    90.6 ms … 100.4 ms    10 runs
+ 
+
+--- dead-code ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik dead-code --no-index
+  Time (mean ± σ):     127.3 ms ±  19.6 ms    [User: 97.0 ms, System: 20.9 ms]
+  Range (min … max):   111.3 ms … 158.6 ms    10 runs
+ 
+
+--- cycles ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik cycles --no-index
+  Time (mean ± σ):     110.3 ms ±  17.4 ms    [User: 82.8 ms, System: 19.9 ms]
+  Range (min … max):    92.9 ms … 144.2 ms    10 runs
+ 
+
+--- impact ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik impact src/index.ts --no-index
+  Time (mean ± σ):      91.5 ms ±   1.5 ms    [User: 74.2 ms, System: 16.2 ms]
+  Range (min … max):    89.5 ms …  94.5 ms    10 runs
+ 
+
+--- summary ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik summary --no-index
+  Time (mean ± σ):     106.4 ms ±   1.7 ms    [User: 88.9 ms, System: 16.4 ms]
+  Range (min … max):   104.1 ms … 110.1 ms    10 runs
+ 
+
+--- lint ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik lint --no-index
+  Time (mean ± σ):      93.1 ms ±   1.0 ms    [User: 75.5 ms, System: 16.4 ms]
+  Range (min … max):    91.9 ms …  94.5 ms    10 runs
+ 
+  Warning: Ignoring non-zero exit code.
+ 
+
+--- exports ---
+Benchmark 1: /Users/lauripiispanen/work/statik/.claude/worktrees/phase1-phase4/target/release/statik exports src/index.ts --no-index
+  Time (mean ± σ):      92.2 ms ±   1.9 ms    [User: 74.7 ms, System: 16.3 ms]
+  Range (min … max):    89.1 ms …  95.0 ms    10 runs
+ 
+
+============================================================
