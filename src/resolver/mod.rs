@@ -27,6 +27,8 @@ pub enum ResolutionCaveat {
     AmbiguousIndex,
     /// Resolved via tsconfig path alias; the mapping may be ambiguous.
     PathAlias,
+    /// Both `foo.rs` and `foo/mod.rs` exist (Rust E0761); picked `foo.rs`.
+    AmbiguousModule,
 }
 
 /// Reasons why an import could not be resolved.

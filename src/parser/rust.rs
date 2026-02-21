@@ -198,6 +198,8 @@ impl<'a> Extractor<'a> {
     fn extract_use(&mut self, node: Node) {
         let vis = self.extract_visibility(node);
         let is_pub = vis == Visibility::Public;
+        let decl_span = self.node_span(node);
+        let decl_line_span = self.node_line_span(node);
 
         // Find the argument child of the use_declaration
         let mut cursor = node.walk();
@@ -205,13 +207,20 @@ impl<'a> Extractor<'a> {
             match child.kind() {
                 "use" | "visibility_modifier" | ";" => {}
                 _ => {
-                    self.walk_use_tree(child, &[], is_pub);
+                    self.walk_use_tree(child, &[], is_pub, decl_span, decl_line_span);
                 }
             }
         }
     }
 
-    fn walk_use_tree(&mut self, node: Node, prefix: &[String], is_pub: bool) {
+    fn walk_use_tree(
+        &mut self,
+        node: Node,
+        prefix: &[String],
+        is_pub: bool,
+        decl_span: Span,
+        decl_line_span: LineSpan,
+    ) {
         match node.kind() {
             "scoped_identifier" => {
                 let full_path = self.node_text(node).to_string();
@@ -220,7 +229,7 @@ impl<'a> Extractor<'a> {
                     .next()
                     .unwrap_or(&full_path)
                     .to_string();
-                self.add_import(&full_path, &name, None, false);
+                self.add_import(&full_path, &name, None, false, decl_span, decl_line_span);
                 if is_pub {
                     self.add_reexport(&full_path, &name);
                 }
@@ -232,7 +241,7 @@ impl<'a> Extractor<'a> {
                 } else {
                     format!("{}::{}", prefix.join("::"), name)
                 };
-                self.add_import(&full_path, &name, None, false);
+                self.add_import(&full_path, &name, None, false, decl_span, decl_line_span);
                 if is_pub {
                     self.add_reexport(&full_path, &name);
                 }
@@ -261,7 +270,14 @@ impl<'a> Extractor<'a> {
                         .unwrap_or(&full_path)
                         .to_string();
                     let alias = alias_node.map(|n| self.node_text(n).to_string());
-                    self.add_import(&full_path, &name, alias.as_deref(), false);
+                    self.add_import(
+                        &full_path,
+                        &name,
+                        alias.as_deref(),
+                        false,
+                        decl_span,
+                        decl_line_span,
+                    );
                     if is_pub {
                         let export_name = alias.as_deref().unwrap_or(&name);
                         self.add_reexport(&full_path, export_name);
@@ -278,7 +294,7 @@ impl<'a> Extractor<'a> {
                 } else {
                     format!("{}::{}", prefix.join("::"), path)
                 };
-                self.add_import(&full_path, "*", None, true);
+                self.add_import(&full_path, "*", None, true, decl_span, decl_line_span);
                 if is_pub {
                     self.add_reexport(&full_path, "*");
                 }
@@ -305,7 +321,7 @@ impl<'a> Extractor<'a> {
                     }
                 }
                 if let Some(list_node) = use_list_node {
-                    self.walk_use_tree(list_node, &path_parts, is_pub);
+                    self.walk_use_tree(list_node, &path_parts, is_pub, decl_span, decl_line_span);
                 }
             }
             "use_list" => {
@@ -316,13 +332,20 @@ impl<'a> Extractor<'a> {
                         "self" => {
                             let full_path = prefix.join("::");
                             let name = prefix.last().map(|s| s.as_str()).unwrap_or("self");
-                            self.add_import(&full_path, name, None, false);
+                            self.add_import(
+                                &full_path,
+                                name,
+                                None,
+                                false,
+                                decl_span,
+                                decl_line_span,
+                            );
                             if is_pub {
                                 self.add_reexport(&full_path, name);
                             }
                         }
                         _ => {
-                            self.walk_use_tree(child, prefix, is_pub);
+                            self.walk_use_tree(child, prefix, is_pub, decl_span, decl_line_span);
                         }
                     }
                 }
@@ -334,7 +357,7 @@ impl<'a> Extractor<'a> {
                     format!("{}::self", prefix.join("::"))
                 };
                 let name = prefix.last().map(|s| s.as_str()).unwrap_or("self");
-                self.add_import(&full_path, name, None, false);
+                self.add_import(&full_path, name, None, false, decl_span, decl_line_span);
                 if is_pub {
                     self.add_reexport(&full_path, name);
                 }
@@ -342,7 +365,7 @@ impl<'a> Extractor<'a> {
             _ => {
                 let mut inner_cursor = node.walk();
                 for child in node.children(&mut inner_cursor) {
-                    self.walk_use_tree(child, prefix, is_pub);
+                    self.walk_use_tree(child, prefix, is_pub, decl_span, decl_line_span);
                 }
             }
         }
@@ -354,12 +377,9 @@ impl<'a> Extractor<'a> {
         imported_name: &str,
         local_name: Option<&str>,
         is_namespace: bool,
+        span: Span,
+        line_span: LineSpan,
     ) {
-        let span = Span { start: 0, end: 0 };
-        let line_span = LineSpan {
-            start: Position { line: 0, column: 0 },
-            end: Position { line: 0, column: 0 },
-        };
         self.imports.push(ImportRecord {
             file: self.file_id,
             source_path: source_path.to_string(),
@@ -423,7 +443,16 @@ impl<'a> Extractor<'a> {
             .map(|n| self.node_text(n).to_string());
         if let Some(name) = crate_name {
             let source_path = format!("extern::{}", name);
-            self.add_import(&source_path, &name, alias_name.as_deref(), false);
+            let span = self.node_span(node);
+            let line_span = self.node_line_span(node);
+            self.add_import(
+                &source_path,
+                &name,
+                alias_name.as_deref(),
+                false,
+                span,
+                line_span,
+            );
         }
     }
 
@@ -436,20 +465,16 @@ impl<'a> Extractor<'a> {
         };
 
         let vis = self.extract_visibility(node);
-        // If inside an impl block, it's a method
-        let kind = if self.current_parent().is_some()
-            && self
-                .symbols
-                .iter()
-                .find(|s| Some(s.id) == self.current_parent())
-                .is_some_and(|s| {
-                    s.kind == SymbolKind::Struct
-                        || s.kind == SymbolKind::Enum
-                        || s.kind == SymbolKind::Interface
-                }) {
-            SymbolKind::Method
-        } else if self.current_parent().is_some() {
-            // Inside impl block for a type we know about
+        // Classify as Method only when parent is a type (Struct/Enum/Trait),
+        // not when inside a mod block
+        let kind = if self
+            .current_parent()
+            .and_then(|pid| self.symbols.iter().find(|s| s.id == pid))
+            .is_some_and(|s| {
+                s.kind == SymbolKind::Struct
+                    || s.kind == SymbolKind::Enum
+                    || s.kind == SymbolKind::Interface
+            }) {
             SymbolKind::Method
         } else {
             SymbolKind::Function
@@ -1841,5 +1866,54 @@ impl Foo {
     fn test_pub_in_path_visibility() {
         let result = parse_rust("pub(in crate::model) fn restricted() {}");
         assert_eq!(result.symbols[0].visibility, Visibility::Protected);
+    }
+
+    #[test]
+    fn test_use_import_spans_nonzero() {
+        let result = parse_rust("use crate::foo::Bar;");
+        assert_eq!(result.imports.len(), 1);
+        let import = &result.imports[0];
+        assert!(
+            import.span.start < import.span.end,
+            "import span should be non-zero: {:?}",
+            import.span
+        );
+        assert!(
+            import.line_span.start.line > 0,
+            "import line_span start line should be > 0: {:?}",
+            import.line_span
+        );
+    }
+
+    #[test]
+    fn test_use_grouped_import_spans_nonzero() {
+        let result = parse_rust("use crate::foo::{Bar, Baz};");
+        assert_eq!(result.imports.len(), 2);
+        for import in &result.imports {
+            assert!(
+                import.span.start < import.span.end,
+                "grouped import span should be non-zero for {}: {:?}",
+                import.imported_name,
+                import.span
+            );
+        }
+    }
+
+    #[test]
+    fn test_function_in_mod_is_function_not_method() {
+        let result = parse_rust(
+            r#"
+mod inner {
+    pub fn helper() {}
+}
+"#,
+        );
+
+        let helper = result.symbols.iter().find(|s| s.name == "helper").unwrap();
+        assert_eq!(
+            helper.kind,
+            SymbolKind::Function,
+            "function inside mod block should be Function, not Method"
+        );
     }
 }

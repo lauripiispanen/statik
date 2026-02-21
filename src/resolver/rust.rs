@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::{Resolution, Resolver, UnresolvedReason};
+use super::{Resolution, ResolutionCaveat, Resolver, UnresolvedReason};
 
 const RUST_STDLIB_CRATES: &[&str] = &["std", "core", "alloc", "proc_macro", "test"];
 
@@ -9,16 +9,20 @@ pub struct RustResolver {
     known_files: HashSet<PathBuf>,
     /// Crate root files (lib.rs, main.rs, src/bin/*.rs)
     crate_roots: Vec<PathBuf>,
+    /// Known dependency crate names from Cargo.toml
+    known_crates: HashSet<String>,
 }
 
 impl RustResolver {
     pub fn new(project_root: PathBuf, known_files: Vec<PathBuf>) -> Self {
         let known_set: HashSet<PathBuf> = known_files.iter().cloned().collect();
         let crate_roots = Self::detect_crate_roots(&project_root, &known_set);
+        let known_crates = Self::read_cargo_dependencies(&project_root);
 
         RustResolver {
             known_files: known_set,
             crate_roots,
+            known_crates,
         }
     }
 
@@ -72,15 +76,22 @@ impl RustResolver {
             }
         };
 
-        // Try 2018 style: foo.rs
+        // Check both 2018 style (foo.rs) and 2015 style (foo/mod.rs)
         let rs_file = parent_dir.join(format!("{}.rs", mod_name));
-        if self.known_files.contains(&rs_file) {
+        let mod_file = parent_dir.join(mod_name).join("mod.rs");
+        let has_rs = self.known_files.contains(&rs_file);
+        let has_mod = self.known_files.contains(&mod_file);
+
+        if has_rs && has_mod {
+            // Both exist: this is Rust error E0761. Pick foo.rs but flag as ambiguous.
+            return Resolution::ResolvedWithCaveat(rs_file, ResolutionCaveat::AmbiguousModule);
+        }
+
+        if has_rs {
             return Resolution::Resolved(rs_file);
         }
 
-        // Try 2015 style: foo/mod.rs
-        let mod_file = parent_dir.join(mod_name).join("mod.rs");
-        if self.known_files.contains(&mod_file) {
+        if has_mod {
             return Resolution::Resolved(mod_file);
         }
 
@@ -103,7 +114,24 @@ impl RustResolver {
             let is_last = i == segments.len() - 1;
             let remaining = &segments[i + 1..];
 
-            // Try as directory with mod.rs first (prefer directory resolution for deeper paths)
+            // Try 2018 style first: segment.rs
+            let rs_file = current_dir.join(format!("{}.rs", segment));
+            if self.known_files.contains(&rs_file) {
+                if is_last {
+                    return Some(rs_file);
+                }
+                // Check if there's also a directory that can resolve deeper
+                let sub_dir = current_dir.join(segment);
+                if self.dir_exists_in_known_files(&sub_dir) {
+                    if let Some(deeper) = self.resolve_path_segments(&sub_dir, remaining) {
+                        return Some(deeper);
+                    }
+                }
+                // Remaining segments are symbols
+                return Some(rs_file);
+            }
+
+            // Try 2015 style: segment/mod.rs
             let mod_file = current_dir.join(segment).join("mod.rs");
             if self.known_files.contains(&mod_file) {
                 if is_last {
@@ -118,26 +146,9 @@ impl RustResolver {
                 return Some(mod_file);
             }
 
-            // Try as a file: segment.rs
-            let rs_file = current_dir.join(format!("{}.rs", segment));
-            if self.known_files.contains(&rs_file) {
-                if is_last {
-                    return Some(rs_file);
-                }
-                // Check if there's also a directory that can resolve deeper
-                let sub_dir = current_dir.join(segment);
-                if sub_dir.is_dir() {
-                    if let Some(deeper) = self.resolve_path_segments(&sub_dir, remaining) {
-                        return Some(deeper);
-                    }
-                }
-                // Remaining segments are symbols
-                return Some(rs_file);
-            }
-
             // Try as just a directory (no mod.rs, no .rs file)
             let dir = current_dir.join(segment);
-            if dir.is_dir() {
+            if self.dir_exists_in_known_files(&dir) {
                 current_dir = dir;
                 continue;
             }
@@ -174,9 +185,20 @@ impl RustResolver {
     }
 
     fn resolve_super_path(&self, path: &str, from_file: &Path) -> Resolution {
-        let stripped = path.strip_prefix("super::").unwrap_or(path);
+        // Count and strip all leading `super::` prefixes
+        let mut remaining = path;
+        let mut super_count = 0u32;
+        while let Some(rest) = remaining.strip_prefix("super::") {
+            super_count += 1;
+            remaining = rest;
+        }
+        // Handle bare `super` without trailing `::`
+        if remaining == "super" {
+            super_count += 1;
+            remaining = "";
+        }
 
-        // Go up one module level from current file
+        // Go up from current file's module directory
         let parent_dir = match from_file.parent() {
             Some(d) => d,
             None => {
@@ -186,17 +208,30 @@ impl RustResolver {
             }
         };
 
-        // Determine if we're in a mod.rs or a regular file
+        // Determine the starting module directory
         let file_name = from_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let module_dir = if file_name == "mod" {
-            // In foo/mod.rs, super is the parent of foo/
+        let mut module_dir = if file_name == "mod" || file_name == "lib" || file_name == "main" {
+            // In foo/mod.rs, the first super goes to parent of foo/
             parent_dir.parent().unwrap_or(parent_dir)
         } else {
-            // In foo.rs, super is the parent directory
+            // In foo.rs, the first super goes to the parent directory
             parent_dir
         };
 
-        let segments: Vec<&str> = stripped.split("::").collect();
+        // Apply additional super levels (we already handled the first one above)
+        for _ in 1..super_count {
+            module_dir = module_dir.parent().unwrap_or(module_dir);
+        }
+
+        if remaining.is_empty() {
+            // Bare `super` or `super::super` - resolve to the module directory itself
+            return Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
+                "super path '{}' resolves to a directory, not a file",
+                path
+            )));
+        }
+
+        let segments: Vec<&str> = remaining.split("::").collect();
         if let Some(resolved) = self.resolve_path_segments(module_dir, &segments) {
             return Resolution::Resolved(resolved);
         }
@@ -219,10 +254,19 @@ impl RustResolver {
             }
         };
 
-        let module_dir = parent_dir;
+        let file_stem = from_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+        // For mod.rs/lib.rs/main.rs, self:: refers to sibling modules in the same directory
+        // For leaf files like bar.rs, self:: refers to submodules in a bar/ directory
+        let module_dir = if file_stem == "mod" || file_stem == "lib" || file_stem == "main" {
+            parent_dir.to_path_buf()
+        } else {
+            // bar.rs -> look in bar/ directory for submodules
+            parent_dir.join(file_stem)
+        };
 
         let segments: Vec<&str> = stripped.split("::").collect();
-        if let Some(resolved) = self.resolve_path_segments(module_dir, &segments) {
+        if let Some(resolved) = self.resolve_path_segments(&module_dir, &segments) {
             return Resolution::Resolved(resolved);
         }
 
@@ -230,6 +274,38 @@ impl RustResolver {
             "self path '{}' not found",
             path
         )))
+    }
+
+    /// Read crate names from Cargo.toml [dependencies] and [dev-dependencies].
+    fn read_cargo_dependencies(project_root: &Path) -> HashSet<String> {
+        let cargo_toml = project_root.join("Cargo.toml");
+        let content = match std::fs::read_to_string(&cargo_toml) {
+            Ok(c) => c,
+            Err(_) => return HashSet::new(),
+        };
+        let table: toml::Table = match content.parse() {
+            Ok(t) => t,
+            Err(_) => return HashSet::new(),
+        };
+
+        let mut crates = HashSet::new();
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(toml::Value::Table(deps)) = table.get(section) {
+                for key in deps.keys() {
+                    // Cargo normalizes hyphens to underscores for crate names
+                    crates.insert(key.replace('-', "_"));
+                }
+            }
+        }
+        crates
+    }
+
+    /// Check if a directory exists by checking if any known file has it as a prefix.
+    /// Avoids filesystem syscalls by deriving from known_files.
+    fn dir_exists_in_known_files(&self, dir: &Path) -> bool {
+        self.known_files
+            .iter()
+            .any(|f| f.starts_with(dir) && f != dir)
     }
 
     fn is_stdlib_path(first_segment: &str) -> bool {
@@ -286,8 +362,16 @@ impl Resolver for RustResolver {
             }
         }
 
-        // Not found in project — classify as external
-        Resolution::External(first_segment.to_string())
+        // Check if the first segment is a known dependency crate
+        if self.known_crates.contains(first_segment) {
+            return Resolution::External(first_segment.to_string());
+        }
+
+        // Not found in project and not a known crate — report as unresolved
+        Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
+            "bare path '{}' not found in project and '{}' is not a known dependency",
+            import_source, first_segment
+        )))
     }
 }
 
@@ -300,6 +384,19 @@ mod tests {
     fn setup_rust_project() -> (TempDir, Vec<PathBuf>) {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
+
+        // Create a Cargo.toml with dependencies
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "test-project"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+"#,
+        )
+        .unwrap();
 
         // Create a Rust project structure
         let src = root.join("src");
@@ -332,7 +429,7 @@ mod tests {
 
         let result = resolver.resolve("crate::model", &from);
         match result {
-            Resolution::Resolved(path) => {
+            Resolution::Resolved(path) | Resolution::ResolvedWithCaveat(path, _) => {
                 // Should resolve to either model.rs or model/mod.rs
                 assert!(
                     path.ends_with("model.rs") || path.ends_with("model/mod.rs"),
@@ -365,8 +462,16 @@ mod tests {
         let resolver = RustResolver::new(dir.path().to_path_buf(), known);
         let from = dir.path().join("src/lib.rs");
 
+        // The test fixture has both model.rs and model/mod.rs, so we expect AmbiguousModule caveat
         let result = resolver.resolve("@mod:model", &from);
         match result {
+            Resolution::ResolvedWithCaveat(path, ResolutionCaveat::AmbiguousModule) => {
+                assert!(
+                    path.ends_with("model.rs"),
+                    "should prefer model.rs, got {:?}",
+                    path
+                );
+            }
             Resolution::Resolved(path) => {
                 assert!(
                     path.ends_with("model.rs") || path.ends_with("model/mod.rs"),
@@ -374,7 +479,7 @@ mod tests {
                     path
                 );
             }
-            other => panic!("expected Resolved, got {:?}", other),
+            other => panic!("expected Resolved or ResolvedWithCaveat, got {:?}", other),
         }
     }
 
@@ -426,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_unknown_external() {
+    fn test_resolve_known_dependency_external() {
         let (dir, known) = setup_rust_project();
         let resolver = RustResolver::new(dir.path().to_path_buf(), known);
         let from = dir.path().join("src/lib.rs");
@@ -436,6 +541,21 @@ mod tests {
             Resolution::External(name) => assert_eq!(name, "serde"),
             other => panic!("expected External, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_resolve_unknown_bare_path_is_unresolved() {
+        let (dir, known) = setup_rust_project();
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = dir.path().join("src/lib.rs");
+
+        // Typo: "mdoel" is not a known crate or in-project module
+        let result = resolver.resolve("mdoel::User", &from);
+        assert!(
+            matches!(result, Resolution::Unresolved(_)),
+            "typo in bare path should be Unresolved, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -525,7 +645,7 @@ mod tests {
         // Wildcard import resolves to the module file itself
         let result = resolver.resolve("crate::model", &from);
         match result {
-            Resolution::Resolved(path) => {
+            Resolution::Resolved(path) | Resolution::ResolvedWithCaveat(path, _) => {
                 assert!(
                     path.ends_with("model.rs") || path.ends_with("model/mod.rs"),
                     "got {:?}",
@@ -544,5 +664,94 @@ mod tests {
 
         let result = resolver.resolve("", &from);
         assert!(matches!(result, Resolution::Unresolved(_)));
+    }
+
+    #[test]
+    fn test_chained_super_resolution() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        fs::write(src.join("lib.rs"), "mod a;").unwrap();
+        fs::write(src.join("a/mod.rs"), "mod b;").unwrap();
+        fs::write(src.join("a/b/mod.rs"), "use super::super::c;").unwrap();
+        fs::write(src.join("c.rs"), "pub fn something() {}").unwrap();
+
+        let known = vec![
+            src.join("lib.rs"),
+            src.join("a/mod.rs"),
+            src.join("a/b/mod.rs"),
+            src.join("c.rs"),
+        ];
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = src.join("a/b/mod.rs");
+
+        // super::super::c from a/b/mod.rs -> go up to a/, then up to src/, resolve c.rs
+        let result = resolver.resolve("super::super::c", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(path.ends_with("c.rs"), "got {:?}", path);
+            }
+            other => panic!("expected Resolved for chained super, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_chained_super_from_regular_file() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        fs::write(src.join("lib.rs"), "mod a; mod c;").unwrap();
+        fs::write(src.join("a/mod.rs"), "mod b;").unwrap();
+        fs::write(src.join("a/b.rs"), "use super::super::c;").unwrap();
+        fs::write(src.join("c.rs"), "pub fn something() {}").unwrap();
+
+        let known = vec![
+            src.join("lib.rs"),
+            src.join("a/mod.rs"),
+            src.join("a/b.rs"),
+            src.join("c.rs"),
+        ];
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = src.join("a/b.rs");
+
+        // super::super::c from a/b.rs -> super goes to a/, super goes to src/, resolve c.rs
+        let result = resolver.resolve("super::super::c", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(path.ends_with("c.rs"), "got {:?}", path);
+            }
+            other => panic!("expected Resolved for chained super, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_self_path_from_leaf_file() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("parent")).unwrap();
+        fs::write(src.join("lib.rs"), "mod parent;").unwrap();
+        fs::write(src.join("parent.rs"), "use self::child;").unwrap();
+        fs::create_dir_all(src.join("parent")).unwrap();
+        fs::write(src.join("parent/child.rs"), "pub fn something() {}").unwrap();
+
+        let known = vec![
+            src.join("lib.rs"),
+            src.join("parent.rs"),
+            src.join("parent/child.rs"),
+        ];
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = src.join("parent.rs");
+
+        // self::child from parent.rs should look in parent/child.rs
+        let result = resolver.resolve("self::child", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(path.ends_with("parent/child.rs"), "got {:?}", path);
+            }
+            other => panic!(
+                "expected Resolved for self:: from leaf file, got {:?}",
+                other
+            ),
+        }
     }
 }
