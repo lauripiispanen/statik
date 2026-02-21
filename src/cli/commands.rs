@@ -11,7 +11,8 @@ use crate::db::Database;
 use crate::model::file_graph::{
     FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason,
 };
-use crate::model::{FileId, Language};
+use crate::model::graph::SymbolGraph;
+use crate::model::{FileId, Language, ParseResult, RefKind, SymbolKind};
 use crate::resolver::java::JavaResolver;
 use crate::resolver::typescript::TypeScriptResolver;
 use crate::resolver::{Resolution, Resolver};
@@ -40,19 +41,34 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let path_to_id: HashMap<PathBuf, FileId> =
         files.iter().map(|f| (f.path.clone(), f.id)).collect();
 
+    // Batch-load all imports and exports (3 queries total instead of 2N+1)
+    let all_imports = db.all_imports()?;
+    let all_exports = db.all_exports()?;
+
+    let mut imports_by_file: HashMap<FileId, Vec<crate::model::ImportRecord>> = HashMap::new();
+    for imp in all_imports {
+        imports_by_file.entry(imp.file).or_default().push(imp);
+    }
+
+    let mut exports_by_file: HashMap<FileId, Vec<crate::model::ExportRecord>> = HashMap::new();
+    for exp in all_exports {
+        exports_by_file.entry(exp.file).or_default().push(exp);
+    }
+
     // Pre-scan Java files for annotation-based entry points
     let mut annotation_entry_files: std::collections::HashSet<FileId> =
         std::collections::HashSet::new();
     for file in &files {
         if file.language == Language::Java {
-            let imports = db.get_imports_by_file(file.id)?;
-            for import in &imports {
-                if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                    if is_entry_point_annotation(ann)
-                        || ep_config.annotations.iter().any(|a| a == ann)
-                    {
-                        annotation_entry_files.insert(file.id);
-                        break;
+            if let Some(imports) = imports_by_file.get(&file.id) {
+                for import in imports {
+                    if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
+                        if is_entry_point_annotation(ann)
+                            || ep_config.annotations.iter().any(|a| a == ann)
+                        {
+                            annotation_entry_files.insert(file.id);
+                            break;
+                        }
                     }
                 }
             }
@@ -61,7 +77,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 
     // Add files to the graph
     for file in &files {
-        let exports = db.get_exports_by_file(file.id)?;
+        let exports = exports_by_file.remove(&file.id).unwrap_or_default();
         let rel_path = crate::linting::matcher::to_relative(&file.path, project_root);
         let is_entry = is_entry_point(&file.path)
             || annotation_entry_files.contains(&file.id)
@@ -84,7 +100,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 
     // Resolve imports and add edges
     for file in &files {
-        let imports = db.get_imports_by_file(file.id)?;
+        let imports = imports_by_file.remove(&file.id).unwrap_or_default();
 
         // Group imports by target file, tracking metadata per import
         let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
@@ -200,6 +216,55 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     Ok(graph)
 }
 
+/// Build a SymbolGraph from the database (symbols + resolved references).
+fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
+    let mut graph = SymbolGraph::new();
+
+    let all_symbols = db.all_symbols()?;
+    let all_refs = db.all_references()?;
+    let all_files = db.all_files()?;
+
+    for file in &all_files {
+        graph.add_file(file.clone());
+    }
+
+    // Build a set of valid symbol IDs for filtering unresolved references
+    let valid_ids: std::collections::HashSet<crate::model::SymbolId> =
+        all_symbols.iter().map(|s| s.id).collect();
+
+    // Group symbols and references by file for add_parse_result
+    let mut file_symbols: HashMap<FileId, Vec<crate::model::Symbol>> = HashMap::new();
+    for sym in all_symbols {
+        file_symbols.entry(sym.file).or_default().push(sym);
+    }
+
+    // Only keep references where both source and target are resolved
+    let mut file_refs: HashMap<FileId, Vec<crate::model::Reference>> = HashMap::new();
+    for r in all_refs {
+        if valid_ids.contains(&r.source) && valid_ids.contains(&r.target) {
+            file_refs.entry(r.file).or_default().push(r);
+        }
+    }
+
+    for file in &all_files {
+        let symbols = file_symbols.remove(&file.id).unwrap_or_default();
+        let references = file_refs.remove(&file.id).unwrap_or_default();
+        if !symbols.is_empty() || !references.is_empty() {
+            graph.add_parse_result(ParseResult {
+                file_id: file.id,
+                symbols,
+                references,
+                imports: vec![],
+                exports: vec![],
+                type_references: vec![],
+                annotations: vec![],
+            });
+        }
+    }
+
+    Ok(graph)
+}
+
 const ENTRY_POINT_ANNOTATIONS: &[&str] = &[
     "SpringBootApplication",
     "Test",
@@ -288,6 +353,15 @@ pub fn ensure_index(project_path: &Path, no_index: bool) -> Result<Database> {
     Database::open(&db_path)
 }
 
+/// Apply --runtime-only filtering if requested.
+fn maybe_filter_type_only(graph: FileGraph, runtime_only: bool) -> FileGraph {
+    if runtime_only {
+        graph.without_type_only_edges()
+    } else {
+        graph
+    }
+}
+
 /// Run the `deps` command.
 pub fn run_deps(
     project_path: &Path,
@@ -297,9 +371,11 @@ pub fn run_deps(
     max_depth: Option<usize>,
     format: &OutputFormat,
     no_index: bool,
+    runtime_only: bool,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
 
     let direction = match direction_str {
         "in" => Direction::ImportedBy,
@@ -336,9 +412,24 @@ pub fn run_dead_code(
     scope_str: &str,
     format: &OutputFormat,
     no_index: bool,
+    runtime_only: bool,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
+
+    if scope_str == "symbols" {
+        // Symbol-level dead code analysis
+        let file_graph = build_file_graph(&db, project_path)?;
+        let symbol_graph = build_symbol_graph(&db)?;
+        let result =
+            crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
+        return Ok(match format {
+            OutputFormat::Text => format_dead_symbols_text(&result),
+            _ => format_json(&result, format),
+        });
+    }
+
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
 
     let scope = match scope_str {
         "files" => DeadCodeScope::Files,
@@ -354,9 +445,15 @@ pub fn run_dead_code(
 }
 
 /// Run the `cycles` command.
-pub fn run_cycles(project_path: &Path, format: &OutputFormat, no_index: bool) -> Result<String> {
+pub fn run_cycles(
+    project_path: &Path,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
 
     let result = detect_cycles(&graph);
     Ok(match format {
@@ -372,9 +469,11 @@ pub fn run_impact(
     max_depth: Option<usize>,
     format: &OutputFormat,
     no_index: bool,
+    runtime_only: bool,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
 
     let abs_path = project_path.join(file_path);
     let target_id = graph
@@ -653,6 +752,405 @@ pub fn run_lint(
     Ok((output, has_errors))
 }
 
+/// Run the `diff` command.
+pub fn run_diff(
+    project_path: &Path,
+    before_path: &str,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    use crate::analysis::diff::compare_snapshots;
+
+    let db_before = Database::open(std::path::Path::new(before_path))
+        .context(format!("Failed to open baseline database: {}", before_path))?;
+    let db_after = ensure_index(project_path, no_index)?;
+
+    let result = compare_snapshots(&db_before, &db_after)?;
+
+    Ok(match format {
+        OutputFormat::Text => format_diff_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Run the `symbols` command.
+pub fn run_symbols(
+    project_path: &Path,
+    file: Option<&str>,
+    kind: Option<&str>,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+
+    let symbols = match (file, kind) {
+        (Some(f), _) => {
+            // Find file in DB by path suffix match
+            let all_files = db.all_files()?;
+            let file_record = all_files
+                .iter()
+                .find(|fr| {
+                    let abs = project_path.join(f);
+                    fr.path == abs || fr.path.ends_with(f)
+                })
+                .context(format!("File not found in index: {}", f))?;
+            db.get_symbols_by_file(file_record.id)?
+        }
+        (_, Some(k)) => {
+            let sk: SymbolKind = k
+                .parse()
+                .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+            db.find_symbols_by_kind(sk)?
+        }
+        _ => db.all_symbols()?,
+    };
+
+    #[derive(serde::Serialize)]
+    struct SymbolInfo {
+        name: String,
+        qualified_name: String,
+        kind: String,
+        file: String,
+        line: usize,
+        visibility: String,
+    }
+
+    // Build file ID -> path lookup
+    let all_files = db.all_files()?;
+    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+
+    let symbol_infos: Vec<SymbolInfo> = symbols
+        .iter()
+        .map(|s| {
+            let file_path = file_paths
+                .get(&s.file)
+                .map(|p| display_path(p))
+                .unwrap_or_else(|| format!("file:{}", s.file.0));
+            SymbolInfo {
+                name: s.name.clone(),
+                qualified_name: s.qualified_name.clone(),
+                kind: s.kind.as_str().to_string(),
+                file: file_path,
+                line: s.line_span.start.line,
+                visibility: s.visibility.as_str().to_string(),
+            }
+        })
+        .collect();
+
+    #[derive(serde::Serialize)]
+    struct SymbolsResult {
+        command: String,
+        symbols: Vec<SymbolInfo>,
+        count: usize,
+    }
+
+    let count = symbol_infos.len();
+    let result = SymbolsResult {
+        command: "symbols".to_string(),
+        symbols: symbol_infos,
+        count,
+    };
+
+    Ok(match format {
+        OutputFormat::Text => format_symbols_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+fn format_symbols_text(result: &impl serde::Serialize) -> String {
+    let value = serde_json::to_value(result).unwrap_or_default();
+    let mut out = String::new();
+
+    if let Some(symbols) = value.get("symbols").and_then(|v| v.as_array()) {
+        let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+        out.push_str(&format!("Symbols ({}):\n\n", count));
+        out.push_str(&format!(
+            "  {:<30} {:<12} {:<40} {:<6} {:<10}\n",
+            "Name", "Kind", "File", "Line", "Visibility"
+        ));
+        out.push_str(&format!("  {}\n", "-".repeat(100)));
+
+        for sym in symbols {
+            let name = sym.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+            let file = sym.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+            let line = sym.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let vis = sym.get("visibility").and_then(|v| v.as_str()).unwrap_or("?");
+            out.push_str(&format!(
+                "  {:<30} {:<12} {:<40} {:<6} {:<10}\n",
+                name, kind, file, line, vis
+            ));
+        }
+    }
+
+    out
+}
+
+/// Run the `references` command.
+pub fn run_references(
+    project_path: &Path,
+    symbol_name: &str,
+    kind_filter: Option<&str>,
+    file_filter: Option<&str>,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+
+    let all_refs = db.all_references()?;
+    let all_symbols = db.all_symbols()?;
+    let all_files = db.all_files()?;
+
+    // Build lookups
+    let symbol_map: HashMap<crate::model::SymbolId, &crate::model::Symbol> =
+        all_symbols.iter().map(|s| (s.id, s)).collect();
+    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+
+    // Find all symbols matching the name
+    let matching_symbols: Vec<crate::model::SymbolId> = all_symbols
+        .iter()
+        .filter(|s| s.name == symbol_name)
+        .map(|s| s.id)
+        .collect();
+
+    if matching_symbols.is_empty() {
+        anyhow::bail!("No symbol found with name: {}", symbol_name);
+    }
+
+    // Parse kind filter
+    let kind_filter: Option<RefKind> = kind_filter.map(|k| match k {
+        "call" => RefKind::Call,
+        "type_usage" => RefKind::TypeUsage,
+        "inheritance" => RefKind::Inheritance,
+        "import" => RefKind::Import,
+        "export" => RefKind::Export,
+        "field_access" => RefKind::FieldAccess,
+        "assignment" => RefKind::Assignment,
+        _ => RefKind::Call,
+    });
+
+    // Resolve file filter
+    let file_filter_id: Option<FileId> = file_filter.and_then(|f| {
+        all_files
+            .iter()
+            .find(|fr| {
+                let abs = project_path.join(f);
+                fr.path == abs || fr.path.ends_with(f)
+            })
+            .map(|fr| fr.id)
+    });
+
+    // Find all references where source or target matches
+    let matching_refs: Vec<_> = all_refs
+        .iter()
+        .filter(|r| {
+            let matches_symbol =
+                matching_symbols.contains(&r.source) || matching_symbols.contains(&r.target);
+            let matches_kind = kind_filter.map_or(true, |k| r.kind == k);
+            let matches_file = file_filter_id.map_or(true, |fid| r.file == fid);
+            matches_symbol && matches_kind && matches_file
+        })
+        .collect();
+
+    #[derive(serde::Serialize)]
+    struct RefInfo {
+        source: String,
+        target: String,
+        kind: String,
+        file: String,
+        line: usize,
+    }
+
+    let ref_infos: Vec<RefInfo> = matching_refs
+        .iter()
+        .map(|r| {
+            let source_name = symbol_map
+                .get(&r.source)
+                .map(|s| s.qualified_name.as_str())
+                .unwrap_or("?");
+            let target_name = symbol_map
+                .get(&r.target)
+                .map(|s| s.qualified_name.as_str())
+                .unwrap_or("?");
+            let file_path = file_paths
+                .get(&r.file)
+                .map(|p| display_path(p))
+                .unwrap_or_else(|| format!("file:{}", r.file.0));
+            RefInfo {
+                source: source_name.to_string(),
+                target: target_name.to_string(),
+                kind: r.kind.as_str().to_string(),
+                file: file_path,
+                line: r.line_span.start.line,
+            }
+        })
+        .collect();
+
+    #[derive(serde::Serialize)]
+    struct RefsResult {
+        command: String,
+        symbol: String,
+        references: Vec<RefInfo>,
+        count: usize,
+    }
+
+    let count = ref_infos.len();
+    let result = RefsResult {
+        command: "references".to_string(),
+        symbol: symbol_name.to_string(),
+        references: ref_infos,
+        count,
+    };
+
+    Ok(match format {
+        OutputFormat::Text => format_references_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+fn format_references_text(result: &impl serde::Serialize) -> String {
+    let value = serde_json::to_value(result).unwrap_or_default();
+    let mut out = String::new();
+
+    let symbol = value
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+    out.push_str(&format!("References for '{}' ({}):\n\n", symbol, count));
+
+    if let Some(refs) = value.get("references").and_then(|v| v.as_array()) {
+        if refs.is_empty() {
+            out.push_str("No references found.\n");
+        } else {
+            for r in refs {
+                let source = r.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                let target = r.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let file = r.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                let line = r.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                out.push_str(&format!(
+                    "  {} -> {} [{}] at {}:{}\n",
+                    source, target, kind, file, line
+                ));
+            }
+        }
+    }
+
+    out
+}
+
+/// Run the `callers` command.
+pub fn run_callers(
+    project_path: &Path,
+    symbol_name: &str,
+    file_filter: Option<&str>,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    // Callers is just references filtered to RefKind::Call, showing only incoming calls
+    let db = ensure_index(project_path, no_index)?;
+
+    let all_refs = db.all_references()?;
+    let all_symbols = db.all_symbols()?;
+    let all_files = db.all_files()?;
+
+    let symbol_map: HashMap<crate::model::SymbolId, &crate::model::Symbol> =
+        all_symbols.iter().map(|s| (s.id, s)).collect();
+    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+
+    // Find target symbols matching the name
+    let target_symbols: Vec<crate::model::SymbolId> = all_symbols
+        .iter()
+        .filter(|s| s.name == symbol_name)
+        .map(|s| s.id)
+        .collect();
+
+    if target_symbols.is_empty() {
+        anyhow::bail!("No symbol found with name: {}", symbol_name);
+    }
+
+    let file_filter_id: Option<FileId> = file_filter.and_then(|f| {
+        all_files
+            .iter()
+            .find(|fr| {
+                let abs = project_path.join(f);
+                fr.path == abs || fr.path.ends_with(f)
+            })
+            .map(|fr| fr.id)
+    });
+
+    // Find call references where target matches
+    let callers: Vec<_> = all_refs
+        .iter()
+        .filter(|r| {
+            r.kind == RefKind::Call
+                && target_symbols.contains(&r.target)
+                && file_filter_id.map_or(true, |fid| r.file == fid)
+        })
+        .collect();
+
+    #[derive(serde::Serialize)]
+    struct CallerInfo {
+        caller: String,
+        kind: String,
+        file: String,
+        line: usize,
+    }
+
+    let caller_infos: Vec<CallerInfo> = callers
+        .iter()
+        .map(|r| {
+            let caller_name = symbol_map
+                .get(&r.source)
+                .map(|s| s.qualified_name.as_str())
+                .unwrap_or("?");
+            let file_path = file_paths
+                .get(&r.file)
+                .map(|p| display_path(p))
+                .unwrap_or_else(|| format!("file:{}", r.file.0));
+            CallerInfo {
+                caller: caller_name.to_string(),
+                kind: "call".to_string(),
+                file: file_path,
+                line: r.line_span.start.line,
+            }
+        })
+        .collect();
+
+    #[derive(serde::Serialize)]
+    struct CallersResult {
+        command: String,
+        symbol: String,
+        callers: Vec<CallerInfo>,
+        count: usize,
+    }
+
+    let count = caller_infos.len();
+    let result = CallersResult {
+        command: "callers".to_string(),
+        symbol: symbol_name.to_string(),
+        callers: caller_infos,
+        count,
+    };
+
+    Ok(match format {
+        OutputFormat::Text => {
+            let mut out = String::new();
+            out.push_str(&format!("Callers of '{}' ({}):\n\n", symbol_name, count));
+            if result.callers.is_empty() {
+                out.push_str("No callers found.\n");
+            } else {
+                for c in &result.callers {
+                    out.push_str(&format!("  {} at {}:{}\n", c.caller, c.file, c.line));
+                }
+            }
+            out
+        }
+        _ => format_json(&result, format),
+    })
+}
+
 /// Format any serializable analysis result as JSON.
 fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
@@ -745,6 +1243,51 @@ fn format_dead_code_text(result: &crate::analysis::dead_code::DeadCodeResult) ->
         result.summary.dead_exports,
         result.summary.total_exports,
         result.summary.entry_points,
+    ));
+    out.push_str(&format!("Confidence: {}", result.confidence));
+
+    if !result.limitations.is_empty() {
+        out.push('\n');
+        for lim in &result.limitations {
+            out.push_str(&format!("  Warning: {}\n", lim.description));
+        }
+    }
+
+    out
+}
+
+fn format_dead_symbols_text(result: &crate::analysis::dead_code::DeadSymbolResult) -> String {
+    let mut out = String::new();
+
+    if result.dead_symbols.is_empty() {
+        out.push_str("No dead symbols found.\n\n");
+    } else {
+        out.push_str(&format!(
+            "Dead symbols ({}):\n\n",
+            result.dead_symbols.len()
+        ));
+        out.push_str(&format!(
+            "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
+            "Name", "Kind", "File", "Line", "Confidence"
+        ));
+        out.push_str(&format!("  {}\n", "-".repeat(98)));
+
+        for s in &result.dead_symbols {
+            out.push_str(&format!(
+                "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
+                s.name, s.kind, s.file, s.line, format!("{}", s.confidence),
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "Summary: {}/{} dead symbols, {} entry point symbols, {}/{} refs resolved\n",
+        result.summary.dead_symbols,
+        result.summary.total_symbols,
+        result.summary.entry_point_symbols,
+        result.summary.resolved_references,
+        result.summary.resolved_references + result.summary.unresolved_references,
     ));
     out.push_str(&format!("Confidence: {}", result.confidence));
 
@@ -1014,6 +1557,67 @@ fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
     out.push_str(&format!(
         "{} errors, {} warnings across {} rules\n",
         result.summary.errors, result.summary.warnings, result.summary.rules_evaluated,
+    ));
+
+    out
+}
+
+fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
+    use crate::analysis::diff::ChangeKind;
+
+    let mut out = String::new();
+
+    if result.changes.is_empty() {
+        out.push_str("No export changes detected.\n");
+    } else {
+        let breaking: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Breaking)
+            .collect();
+        let expanding: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Expanding)
+            .collect();
+
+        if !breaking.is_empty() {
+            out.push_str(&format!("Breaking changes ({}):\n", breaking.len()));
+            for c in &breaking {
+                out.push_str(&format!(
+                    "  - {}  {}  ({})\n",
+                    display_path(&c.file_path),
+                    c.export_name,
+                    c.detail,
+                ));
+            }
+            out.push('\n');
+        }
+
+        if !expanding.is_empty() {
+            out.push_str(&format!("New exports ({}):\n", expanding.len()));
+            for c in &expanding {
+                out.push_str(&format!(
+                    "  + {}  {}  ({})\n",
+                    display_path(&c.file_path),
+                    c.export_name,
+                    c.detail,
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    out.push_str(&format!(
+        "Summary: {} added, {} removed, {} changed, {} unchanged files\n",
+        result.summary.files_added,
+        result.summary.files_removed,
+        result.summary.files_changed,
+        result.summary.files_unchanged,
+    ));
+    out.push_str(&format!(
+        "  {} breaking, {} expanding changes",
+        result.summary.breaking_changes, result.summary.expanding_changes,
     ));
 
     out

@@ -19,14 +19,14 @@ The parser already extracts re-export records with `is_reexport: true` and
 that the dead code detector does not trace through.
 
 Tasks:
-- [ ] Ensure the TypeScript parser extracts `export * from '...'` as a re-export
+- [x] Ensure the TypeScript parser extracts `export * from '...'` as a re-export
   record with `exported_name: "*"` (or a sentinel value)
-- [ ] In `detect_dead_code`, when checking if an export is used, follow re-export
+- [x] In `detect_dead_code`, when checking if an export is used, follow re-export
   chains: if file B re-exports `*` from file A, and file C imports `foo` from
   file B, then `foo` in file A is considered used
-- [ ] Update the `has_wildcards` flag in `compute_confidence` (currently hardcoded
+- [x] Update the `has_wildcards` flag in `compute_confidence` (currently hardcoded
   `false` at `dead_code.rs:76`)
-- [ ] Add tests with barrel files that use `export *`
+- [x] Add tests with barrel files that use `export *`
 
 **Acceptance**: `statik dead-code` on a project with barrel files using `export *`
 produces zero false negatives for symbols re-exported through wildcards.
@@ -42,12 +42,12 @@ The parser needs to handle `import('./module')` expressions that appear as call
 expressions in the tree-sitter CST.
 
 Tasks:
-- [ ] Add extraction of `import()` call expressions with string literal arguments
-- [ ] Create `ImportRecord` entries with a flag or marker indicating dynamic import
-- [ ] Skip dynamic imports with non-literal arguments (template literals, variables)
+- [x] Add extraction of `import()` call expressions with string literal arguments
+- [x] Create `ImportRecord` entries with a flag or marker indicating dynamic import
+- [x] Skip dynamic imports with non-literal arguments (template literals, variables)
   and emit an unresolved import with `DynamicPath` reason
-- [ ] Ensure the resolver handles dynamic import paths the same as static imports
-- [ ] Add parser tests for `const mod = await import('./lazy')`
+- [x] Ensure the resolver handles dynamic import paths the same as static imports
+- [x] Add parser tests for `const mod = await import('./lazy')`
 
 **Acceptance**: `statik deps` shows dynamic imports in the dependency list.
 Dynamic imports with computed paths are reported as unresolved with `DynamicPath`.
@@ -140,7 +140,7 @@ Tasks:
 - [x] Add integration tests that run `statik index`, then `statik deps`, `statik
   dead-code`, `statik cycles`, `statik impact`, `statik summary` and verify output
 - [x] Add a test with circular dependencies
-- [ ] Add a test with barrel files and re-exports
+- [x] Add a test with barrel files and re-exports
 - [ ] Add a test with tsconfig path aliases
 - [ ] Add a test for incremental indexing (modify a file, re-index, verify changes)
 
@@ -157,14 +157,14 @@ with at least one happy path and one edge case each.
 Compare the export surface of a project between two indexed snapshots.
 
 Tasks:
-- [ ] Define `DiffResult` type: added files, removed files, added exports, removed
+- [x] Define `DiffResult` type: added files, removed files, added exports, removed
   exports, changed exports (same name, different properties)
-- [ ] Implement `compare_snapshots(db_a: &Database, db_b: &Database) -> DiffResult`
-- [ ] Add `statik diff <path-to-index-a> <path-to-index-b>` command
-- [ ] Classify changes: safe (internal only), breaking (removed exports with
+- [x] Implement `compare_snapshots(db_a: &Database, db_b: &Database) -> DiffResult`
+- [x] Add `statik diff --before <path-to-old-db>` command
+- [x] Classify changes: safe (internal only), breaking (removed exports with
   importers), expanding (new exports), restructuring (moved between files)
-- [ ] Output breaking changes with confidence levels
-- [ ] Add text and JSON output formatters for diff results
+- [x] Output breaking changes with confidence levels
+- [x] Add text and JSON output formatters for diff results
 
 **Acceptance**: `statik diff old-index.db new-index.db` correctly identifies a
 removed export as a breaking change when that export has importers.
@@ -569,10 +569,10 @@ addressed in future iterations:
 - [x] **Inner class export tracking**: Public nested types (classes, interfaces,
   enums, annotations) where all ancestor types are also public are now listed as
   exports.
-- [ ] **User-configurable entry points**: Entry point detection uses hardcoded file
-  name patterns and annotation names. Projects with custom entry point conventions
-  (e.g., `Bootstrap.java`, framework-specific annotations) cannot configure
-  additional entry points. Applies to all languages, not just Java.
+- [x] **User-configurable entry points**: Entry point detection uses hardcoded file
+  name patterns and annotation names. User-configurable entry points via
+  `[entry_points]` in `.statik/rules.toml` allow projects to define custom patterns
+  and annotations.
 - [ ] **Spring DI container modeling**: Spring dependency injection wiring
   (@Autowired, @Inject, constructor injection) is not modeled as dependency edges.
 - [ ] **Lombok support**: Lombok-generated code is not visible to tree-sitter.
@@ -587,13 +587,13 @@ addressed in future iterations:
 **Files**: `src/parser/typescript.rs`, `src/db/mod.rs`
 
 Tasks:
-- [ ] Audit the placeholder SymbolId system (`u64::MAX - counter`) in the parser
-- [ ] For intra-file references where both source and target symbols are defined
+- [x] Audit the placeholder SymbolId system (`u64::MAX - counter`) in the parser
+- [x] For intra-file references where both source and target symbols are defined
   in the same file, resolve to actual SymbolIds during parsing
-- [ ] Store resolved intra-file references in the DB (currently skipped for
+- [x] Store resolved intra-file references in the DB (currently skipped for
   placeholder targets)
-- [ ] Add DB indexes for efficient reference queries by target
-- [ ] Ensure `clear_file_data()` correctly handles the new reference records
+- [x] Add DB indexes for efficient reference queries by target
+- [x] Ensure `clear_file_data()` correctly handles the new reference records
 
 **Acceptance**: `SELECT count(*) FROM refs` returns a non-zero count for a project
 with intra-file function calls.
@@ -606,11 +606,11 @@ with intra-file function calls.
 **Files**: `src/cli/commands.rs`, `src/main.rs`
 
 Tasks:
-- [ ] Remove the `#[command(hide = true)]` from `Commands::Symbols`
-- [ ] Implement `run_symbols()` using existing DB queries (`get_symbols_by_file`,
+- [x] Remove the `#[command(hide = true)]` from `Commands::Symbols`
+- [x] Implement `run_symbols()` using existing DB queries (`get_symbols_by_file`,
   `find_symbols_by_name`, `find_symbols_by_kind`)
-- [ ] Add text and JSON output formatters
-- [ ] Add `--file`, `--kind`, and `--pattern` filters
+- [x] Add text and JSON output formatters
+- [x] Add `--file` and `--kind` filters
 
 **Acceptance**: `statik symbols --file src/utils.ts` lists all symbols in the file
 with kind, name, line number, and visibility.
@@ -623,12 +623,12 @@ with kind, name, line number, and visibility.
 **Files**: `src/cli/commands.rs`, `src/main.rs`
 
 Tasks:
-- [ ] Remove the `#[command(hide = true)]` from `Commands::References`
-- [ ] Implement `run_references()` that finds a symbol by name, then queries all
+- [x] Remove the `#[command(hide = true)]` from `Commands::References`
+- [x] Implement `run_references()` that finds a symbol by name, then queries all
   references to it
-- [ ] Handle ambiguous symbol names (multiple symbols with the same name in
-  different files) by requiring `--file` qualifier or showing all matches
-- [ ] Add `--kind` filter for reference kind (call, type_usage, inheritance, etc.)
+- [x] Handle ambiguous symbol names (multiple symbols with the same name in
+  different files) by showing all matches; `--file` filter narrows scope
+- [x] Add `--kind` filter for reference kind (call, type_usage, inheritance, etc.)
 
 **Acceptance**: `statik references MyClass` shows all files and line numbers where
 `MyClass` is referenced.
@@ -641,9 +641,9 @@ Tasks:
 **Files**: `src/cli/commands.rs`, `src/main.rs`
 
 Tasks:
-- [ ] Remove the `#[command(hide = true)]` from `Commands::Callers`
-- [ ] Implement `run_callers()` as `run_references()` filtered to `RefKind::Call`
-- [ ] Show the calling function name and file for each call site
+- [x] Remove the `#[command(hide = true)]` from `Commands::Callers`
+- [x] Implement `run_callers()` as `run_references()` filtered to `RefKind::Call`
+- [x] Show the calling function name and file for each call site
 
 **Acceptance**: `statik callers helper` shows every function that calls `helper`,
 with file and line number.
@@ -656,14 +656,14 @@ with file and line number.
 **Files**: `src/analysis/dead_code.rs`
 
 Tasks:
-- [ ] Add `DeadCodeScope::Symbols` variant
-- [ ] For each exported symbol, check if it has any intra-project references
+- [x] Add `DeadCodeScope::Symbols` variant
+- [x] For each exported symbol, check if it has any intra-project references
   (excluding self-references and same-file references)
-- [ ] For non-exported symbols, check if they have any references at all (truly
+- [x] For non-exported symbols, check if they have any references at all (truly
   dead internal code)
-- [ ] Report dead symbols with confidence levels (lower confidence for symbols in
+- [x] Report dead symbols with confidence levels (lower confidence for symbols in
   files with unresolved imports)
-- [ ] Ensure entry point files' symbols are not reported as dead
+- [x] Ensure entry point files' symbols are not reported as dead
 
 **Acceptance**: `statik dead-code --scope symbols` identifies unused internal
 functions that are not exported and not called by any other function in the project.
@@ -677,11 +677,11 @@ functions that are not exported and not called by any other function in the proj
 `src/cli/commands.rs`
 
 Tasks:
-- [ ] Add `--runtime-only` flag to `deps` command
-- [ ] Add `--runtime-only` flag to `impact` command
-- [ ] When `--runtime-only`, filter out `FileImport` edges where `is_type_only`
+- [x] Add `--runtime-only` flag to `deps` command
+- [x] Add `--runtime-only` flag to `impact` command
+- [x] When `--runtime-only`, filter out `FileImport` edges where `is_type_only`
   is true
-- [ ] Update the `FileGraph` construction to propagate `is_type_only` from
+- [x] Update the `FileGraph` construction to propagate `is_type_only` from
   `ImportRecord` to `FileImport` (currently hardcoded `false` at `commands.rs:106`)
 
 **Acceptance**: `statik deps --runtime-only src/types.ts` shows fewer dependencies

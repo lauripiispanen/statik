@@ -101,6 +101,12 @@ pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexR
         db.delete_file(*file_id)?;
     }
 
+    // Build FileId -> DiscoveredFile lookup (avoids O(N²) linear scans)
+    let files_to_parse_map: HashMap<FileId, &crate::discovery::DiscoveredFile> = files_to_parse
+        .iter()
+        .map(|(id, df)| (*id, df))
+        .collect();
+
     let mut total_symbols = 0;
     let mut total_references = 0;
     let mut parse_errors = Vec::new();
@@ -112,11 +118,7 @@ pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexR
                 db.clear_file_data(*file_id)?;
 
                 // Upsert file record
-                let df = files_to_parse
-                    .iter()
-                    .find(|(id, _)| id == file_id)
-                    .map(|(_, df)| df)
-                    .unwrap();
+                let df = files_to_parse_map[file_id];
 
                 let file_record = FileRecord {
                     id: *file_id,

@@ -51,6 +51,7 @@ impl LanguageParser for TypeScriptParser {
 
         let mut extractor = Extractor::new(file_id, source, &tree);
         extractor.extract();
+        extractor.resolve_intra_file_refs();
 
         Ok(ParseResult {
             file_id,
@@ -81,6 +82,8 @@ struct Extractor<'a> {
     next_ref_id: u64,
     /// Stack of parent symbol IDs for tracking nesting.
     parent_stack: Vec<SymbolId>,
+    /// Target names parallel to `references`, used for intra-file resolution post-pass.
+    ref_target_names: Vec<String>,
 }
 
 impl<'a> Extractor<'a> {
@@ -96,6 +99,7 @@ impl<'a> Extractor<'a> {
             next_symbol_id: file_id.0 * 100_000 + 1,
             next_ref_id: file_id.0 * 100_000 + 1,
             parent_stack: Vec::new(),
+            ref_target_names: Vec::new(),
         }
     }
 
@@ -207,7 +211,9 @@ impl<'a> Extractor<'a> {
                 self.extract_export(node);
             }
             "call_expression" => {
-                self.extract_call_reference(node);
+                if !self.try_extract_dynamic_import(node) {
+                    self.extract_call_reference(node);
+                }
                 // Still visit children for nested calls
                 self.visit_children(node);
             }
@@ -839,6 +845,7 @@ impl<'a> Extractor<'a> {
                             is_namespace: true,
                             is_type_only,
                             is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                 }
@@ -863,6 +870,7 @@ impl<'a> Extractor<'a> {
                 is_namespace: false,
                 is_type_only: false,
                 is_side_effect: true,
+                is_dynamic: false,
             });
         }
     }
@@ -891,6 +899,7 @@ impl<'a> Extractor<'a> {
                         is_namespace: false,
                         is_type_only,
                         is_side_effect: false,
+                        is_dynamic: false,
                     });
                 }
                 "named_imports" => {
@@ -910,6 +919,7 @@ impl<'a> Extractor<'a> {
                             is_namespace: true,
                             is_type_only,
                             is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                 }
@@ -948,6 +958,7 @@ impl<'a> Extractor<'a> {
                         is_namespace: false,
                         is_type_only,
                         is_side_effect: false,
+                        is_dynamic: false,
                     });
                 }
             }
@@ -1003,7 +1014,22 @@ impl<'a> Extractor<'a> {
                             is_default: false,
                             is_reexport: true,
                             is_type_only: false,
-                            source_path: Some(source_path),
+                            source_path: Some(source_path.clone()),
+                        });
+                        // Also emit an ImportRecord so the re-export creates a
+                        // file-level dependency edge in build_file_graph()
+                        self.imports.push(ImportRecord {
+                            file: self.file_id,
+                            source_path,
+                            imported_name: "*".to_string(),
+                            local_name: String::new(),
+                            span: self.node_span(node),
+                            line_span: self.node_line_span(node),
+                            is_default: false,
+                            is_namespace: true,
+                            is_type_only: false,
+                            is_side_effect: false,
+                            is_dynamic: false,
                         });
                     }
                     return;
@@ -1097,15 +1123,35 @@ impl<'a> Extractor<'a> {
                     };
                     self.symbols.push(symbol);
 
+                    let is_reexport = source_path.is_some();
                     self.exports.push(ExportRecord {
                         file: self.file_id,
                         symbol: id,
-                        exported_name,
+                        exported_name: exported_name.clone(),
                         is_default: false,
-                        is_reexport: source_path.is_some(),
+                        is_reexport,
                         is_type_only: false,
                         source_path: source_path.clone(),
                     });
+
+                    // For re-exports (export { foo } from './module'), also emit
+                    // an ImportRecord so the re-export creates a file-level
+                    // dependency edge in build_file_graph()
+                    if let Some(ref src) = source_path {
+                        self.imports.push(ImportRecord {
+                            file: self.file_id,
+                            source_path: src.clone(),
+                            imported_name: local_name,
+                            local_name: exported_name,
+                            span: self.node_span(child),
+                            line_span: self.node_line_span(child),
+                            is_default: false,
+                            is_namespace: false,
+                            is_type_only: false,
+                            is_side_effect: false,
+                            is_dynamic: false,
+                        });
+                    }
                 }
             }
         }
@@ -1170,6 +1216,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn add_inheritance_ref(&mut self, source: SymbolId, target_node: Node) {
+        let target_name = self.node_text(target_node).to_string();
         let ref_id = self.alloc_ref_id();
         let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
         self.references.push(Reference {
@@ -1181,6 +1228,61 @@ impl<'a> Extractor<'a> {
             span: self.node_span(target_node),
             line_span: self.node_line_span(target_node),
         });
+        self.ref_target_names.push(target_name);
+    }
+
+    /// Try to extract a dynamic import expression: `import('./module')`.
+    /// Returns true if this call expression was a dynamic import, false otherwise.
+    fn try_extract_dynamic_import(&mut self, node: Node) -> bool {
+        let func_node = match node.child_by_field_name("function") {
+            Some(n) => n,
+            None => return false,
+        };
+
+        // Dynamic imports appear as call_expression with function = "import"
+        if func_node.kind() != "import" {
+            return false;
+        }
+
+        // Get the arguments
+        let args_node = match node.child_by_field_name("arguments") {
+            Some(n) => n,
+            None => return false,
+        };
+
+        // The first argument should be a string literal
+        let mut cursor = args_node.walk();
+        let first_arg = args_node
+            .children(&mut cursor)
+            .find(|c| !matches!(c.kind(), "(" | ")" | ","));
+
+        if let Some(arg) = first_arg {
+            if arg.kind() == "string" {
+                // String literal argument: import('./module')
+                let source_path = self
+                    .node_text(arg)
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
+                self.imports.push(ImportRecord {
+                    file: self.file_id,
+                    source_path,
+                    imported_name: "*".to_string(),
+                    local_name: String::new(),
+                    span: self.node_span(node),
+                    line_span: self.node_line_span(node),
+                    is_default: false,
+                    is_namespace: true,
+                    is_type_only: false,
+                    is_side_effect: false,
+                    is_dynamic: true,
+                });
+            }
+            // Non-literal arguments (template strings, variables) -- we can't
+            // resolve these statically, so just skip them. The call_expression
+            // will still be visited for call references.
+        }
+
+        true
     }
 
     fn extract_call_reference(&mut self, node: Node) {
@@ -1189,6 +1291,18 @@ impl<'a> Extractor<'a> {
             return;
         }
         let func_node = func_node.unwrap();
+
+        // Extract the target name for intra-file resolution.
+        // For member_expression (obj.method), use the rightmost identifier.
+        // For plain identifier (foo), use the whole text.
+        let target_name = if func_node.kind() == "member_expression" {
+            func_node
+                .child_by_field_name("property")
+                .map(|n| self.node_text(n).to_string())
+                .unwrap_or_else(|| self.node_text(func_node).to_string())
+        } else {
+            self.node_text(func_node).to_string()
+        };
 
         // Only record call references if we have a parent context
         if let Some(source_id) = self.current_parent() {
@@ -1203,6 +1317,7 @@ impl<'a> Extractor<'a> {
                 span: self.node_span(func_node),
                 line_span: self.node_line_span(func_node),
             });
+            self.ref_target_names.push(target_name);
         }
     }
 
@@ -1210,6 +1325,7 @@ impl<'a> Extractor<'a> {
         // new ClassName(...)
         let constructor = node.child_by_field_name("constructor");
         if let Some(ctor_node) = constructor {
+            let target_name = self.node_text(ctor_node).to_string();
             if let Some(source_id) = self.current_parent() {
                 let ref_id = self.alloc_ref_id();
                 let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
@@ -1222,6 +1338,41 @@ impl<'a> Extractor<'a> {
                     span: self.node_span(ctor_node),
                     line_span: self.node_line_span(ctor_node),
                 });
+                self.ref_target_names.push(target_name);
+            }
+        }
+    }
+
+    /// Post-pass: resolve placeholder reference targets to actual symbols defined in this file.
+    /// Only resolves when exactly one symbol matches the target name (conservative).
+    fn resolve_intra_file_refs(&mut self) {
+        use std::collections::HashMap;
+
+        // Build name -> symbol ID lookup. If a name maps to multiple symbols, mark as ambiguous.
+        let mut name_to_id: HashMap<&str, Option<SymbolId>> = HashMap::new();
+        for symbol in &self.symbols {
+            match name_to_id.get(symbol.name.as_str()) {
+                None => {
+                    name_to_id.insert(&symbol.name, Some(symbol.id));
+                }
+                Some(Some(_)) => {
+                    // Ambiguous: multiple symbols with same name
+                    name_to_id.insert(&symbol.name, None);
+                }
+                Some(None) => {
+                    // Already marked ambiguous
+                }
+            }
+        }
+
+        // Resolve each reference that still has a placeholder target
+        for (i, reference) in self.references.iter_mut().enumerate() {
+            if reference.target.0 >= u64::MAX - 1_000_000 {
+                if let Some(target_name) = self.ref_target_names.get(i) {
+                    if let Some(Some(resolved_id)) = name_to_id.get(target_name.as_str()) {
+                        reference.target = *resolved_id;
+                    }
+                }
             }
         }
     }
@@ -1631,7 +1782,6 @@ class Foo {
     }
 
     #[test]
-    #[ignore] // TODO: dynamic imports not yet tracked as import records
     fn test_dynamic_import_expression() {
         let result = parse_ts(
             r#"
@@ -1645,6 +1795,9 @@ async function loadModule() {
             result.imports.iter().any(|i| i.source_path == "./lazy"),
             "dynamic import('./lazy') should generate an import record"
         );
+        let dynamic_import = result.imports.iter().find(|i| i.source_path == "./lazy").unwrap();
+        assert!(dynamic_import.is_dynamic, "should be marked as dynamic");
+        assert!(dynamic_import.is_namespace, "dynamic imports are namespace imports");
     }
 
     // --- Additional edge case tests added by test-reviewer ---
@@ -1968,5 +2121,174 @@ const CACHE_TTL = 3600;
 
         // CACHE_TTL is not exported
         assert!(!export_names.contains(&"CACHE_TTL"));
+    }
+
+    #[test]
+    fn test_wildcard_reexport_creates_import_record() {
+        let result = parse_ts("export * from './module';");
+        // Should create both an ExportRecord and an ImportRecord
+        assert_eq!(result.exports.len(), 1);
+        assert!(result.exports[0].is_reexport);
+
+        assert!(
+            result.imports.iter().any(|i| i.source_path == "./module" && i.imported_name == "*"),
+            "wildcard re-export should also create an ImportRecord for the dependency edge"
+        );
+    }
+
+    #[test]
+    fn test_named_reexport_creates_import_records() {
+        let result = parse_ts("export { foo, bar as baz } from './module';");
+        // Should create ExportRecords AND ImportRecords
+        assert_eq!(result.exports.len(), 2);
+
+        let import_names: Vec<&str> = result.imports.iter().map(|i| i.imported_name.as_str()).collect();
+        assert!(
+            import_names.contains(&"foo"),
+            "named re-export should create ImportRecord for 'foo'"
+        );
+        assert!(
+            import_names.contains(&"bar"),
+            "named re-export should create ImportRecord for 'bar' (original name)"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_import_non_literal_ignored() {
+        // Template literals and variables can't be resolved statically
+        let result = parse_ts(
+            r#"
+function load(name: string) {
+    return import(name);
+}
+"#,
+        );
+        // No import record should be created for variable arguments
+        assert!(
+            result.imports.is_empty(),
+            "dynamic import with variable argument should not create an import record"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_import_top_level() {
+        // Top-level dynamic import (not inside a function)
+        let result = parse_ts(r#"const p = import("./module");"#);
+        assert!(
+            result.imports.iter().any(|i| i.source_path == "./module" && i.is_dynamic),
+            "top-level dynamic import should be extracted"
+        );
+    }
+
+    #[test]
+    fn test_intra_file_call_reference_resolved() {
+        let result = parse_ts(
+            r#"
+            function helper() { return 42; }
+            function main() { helper(); }
+            "#,
+        );
+
+        // Should have symbols for helper and main
+        let helper_sym = result.symbols.iter().find(|s| s.name == "helper").unwrap();
+        let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
+
+        // Should have a resolved call reference from main to helper
+        let call_ref = result.references.iter().find(|r| {
+            r.source == main_sym.id && r.kind == RefKind::Call
+        });
+        assert!(call_ref.is_some(), "should have a call reference from main");
+        let call_ref = call_ref.unwrap();
+        assert_eq!(
+            call_ref.target, helper_sym.id,
+            "call reference target should be resolved to helper's symbol ID"
+        );
+    }
+
+    #[test]
+    fn test_intra_file_new_reference_resolved() {
+        let result = parse_ts(
+            r#"
+            class Foo { constructor() {} }
+            function main() { new Foo(); }
+            "#,
+        );
+
+        let foo_sym = result.symbols.iter().find(|s| s.name == "Foo").unwrap();
+
+        // Find the call reference for `new Foo()`
+        let new_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Call && r.target == foo_sym.id
+        });
+        assert!(
+            new_ref.is_some(),
+            "new Foo() should have a resolved call reference to Foo, refs: {:?}",
+            result.references.iter().map(|r| (r.source, r.target, r.kind)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_intra_file_inheritance_resolved() {
+        let result = parse_ts(
+            r#"
+            class Base {}
+            class Derived extends Base {}
+            "#,
+        );
+
+        let base_sym = result.symbols.iter().find(|s| s.name == "Base").unwrap();
+
+        let inherit_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Inheritance && r.target == base_sym.id
+        });
+        assert!(
+            inherit_ref.is_some(),
+            "Derived should have a resolved inheritance ref to Base"
+        );
+    }
+
+    #[test]
+    fn test_cross_file_reference_stays_placeholder() {
+        let result = parse_ts(
+            r#"
+            function main() { externalFn(); }
+            "#,
+        );
+
+        // externalFn is not defined in this file, so the reference should remain a placeholder
+        let call_ref = result.references.iter().find(|r| r.kind == RefKind::Call);
+        assert!(call_ref.is_some());
+        let call_ref = call_ref.unwrap();
+        assert!(
+            call_ref.target.0 >= u64::MAX - 1_000_000,
+            "cross-file reference should keep placeholder target, got {}",
+            call_ref.target.0
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_name_stays_placeholder() {
+        // Two symbols with the same name should cause the reference to stay unresolved
+        let result = parse_ts(
+            r#"
+            function helper() { return 1; }
+            const helper = 42;
+            function main() { helper(); }
+            "#,
+        );
+
+        // There should be a call reference from main
+        let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
+        let call_ref = result.references.iter().find(|r| {
+            r.source == main_sym.id && r.kind == RefKind::Call
+        });
+        assert!(call_ref.is_some());
+        let call_ref = call_ref.unwrap();
+        // With two symbols named "helper", the resolution should be conservative (unresolved)
+        assert!(
+            call_ref.target.0 >= u64::MAX - 1_000_000,
+            "ambiguous name should leave reference as placeholder, got {}",
+            call_ref.target.0
+        );
     }
 }

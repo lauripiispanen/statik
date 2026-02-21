@@ -86,6 +86,7 @@ fn test_deps_command_json() {
         None,
         &OutputFormat::Json,
         true,
+        false,
     )
     .unwrap();
 
@@ -135,6 +136,7 @@ fn test_deps_command_text() {
         None,
         &OutputFormat::Text,
         true,
+        false,
     )
     .unwrap();
 
@@ -154,7 +156,7 @@ fn test_dead_code_detects_orphan() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -177,7 +179,7 @@ fn test_dead_code_text_output() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false).unwrap();
 
     assert!(
         output.contains("orphan.ts"),
@@ -194,7 +196,7 @@ fn test_cycles_detects_circular_deps() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -228,7 +230,7 @@ fn test_cycles_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false).unwrap();
 
     assert!(
         output.contains("Circular dependencies"),
@@ -251,6 +253,7 @@ fn test_impact_analysis() {
         None,
         &OutputFormat::Json,
         true,
+        false,
     )
     .unwrap();
 
@@ -441,4 +444,144 @@ fn test_lint_severity_threshold_filters() {
         "Error-severity violations should pass warning threshold"
     );
     assert!(has_errors);
+}
+
+// --- Phase 1 Integration Tests ---
+
+#[test]
+fn test_barrel_file_deps_through_reexports() {
+    let tmp = setup_project();
+    index_project(tmp.path());
+
+    // Barrel file (barrel/index.ts) should have deps on helpers.ts and special.ts
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/barrel/index.ts",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    assert!(
+        import_paths.iter().any(|p| p.contains("helpers.ts")),
+        "barrel/index.ts should depend on helpers.ts via export *, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("special.ts")),
+        "barrel/index.ts should depend on special.ts via named re-export, got {:?}",
+        import_paths
+    );
+}
+
+#[test]
+fn test_barrel_file_dead_code_through_reexports() {
+    let tmp = setup_project();
+    index_project(tmp.path());
+
+    let output = commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_exports = json["dead_exports"].as_array().unwrap();
+    let dead_names: Vec<(&str, &str)> = dead_exports
+        .iter()
+        .filter_map(|e| {
+            Some((
+                e["export_name"].as_str()?,
+                e["path"].as_str()?,
+            ))
+        })
+        .collect();
+
+    // barrelHelper is used (imported by index.ts via barrel) -- should NOT be dead
+    assert!(
+        !dead_names.iter().any(|(name, path)| *name == "barrelHelper" && path.contains("helpers.ts")),
+        "barrelHelper should NOT be dead (used via barrel), dead exports: {:?}",
+        dead_names
+    );
+
+    // unusedBarrelFn is NOT imported by anyone -- should be dead
+    assert!(
+        dead_names.iter().any(|(name, path)| *name == "unusedBarrelFn" && path.contains("helpers.ts")),
+        "unusedBarrelFn SHOULD be dead, dead exports: {:?}",
+        dead_names
+    );
+}
+
+#[test]
+fn test_dynamic_import_creates_dependency() {
+    let tmp = setup_project();
+    index_project(tmp.path());
+
+    // index.ts should have a dependency on lazy.ts via import("./lazy")
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/index.ts",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["path"].as_str())
+        .collect();
+
+    assert!(
+        import_paths.iter().any(|p| p.contains("lazy.ts")),
+        "index.ts should depend on lazy.ts via dynamic import, got {:?}",
+        import_paths
+    );
+}
+
+#[test]
+fn test_incremental_index_only_reparses_changed() {
+    let tmp = setup_project();
+
+    let config = statik::discovery::DiscoveryConfig::default();
+
+    // First index
+    let result1 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    assert!(result1.files_indexed > 0);
+
+    // Second index without changes -- should find all files unchanged
+    let result2 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    assert_eq!(
+        result2.files_indexed, 0,
+        "No files should be re-indexed when nothing changed, got {} indexed",
+        result2.files_indexed
+    );
+    assert!(
+        result2.files_unchanged > 0,
+        "All files should be unchanged"
+    );
+
+    // Touch one file
+    let touched = tmp.path().join("src/orphan.ts");
+    let content = std::fs::read_to_string(&touched).unwrap();
+    std::fs::write(&touched, format!("{}\n// touched", content)).unwrap();
+
+    // Third index -- should only re-index the touched file
+    let result3 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    assert_eq!(
+        result3.files_indexed, 1,
+        "Only the touched file should be re-indexed, got {}",
+        result3.files_indexed
+    );
 }

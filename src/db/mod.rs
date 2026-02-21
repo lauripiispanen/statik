@@ -90,7 +90,8 @@ impl Database {
                 is_default INTEGER NOT NULL DEFAULT 0,
                 is_namespace INTEGER NOT NULL DEFAULT 0,
                 is_type_only INTEGER NOT NULL DEFAULT 0,
-                is_side_effect INTEGER NOT NULL DEFAULT 0
+                is_side_effect INTEGER NOT NULL DEFAULT 0,
+                is_dynamic INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS exports (
@@ -375,8 +376,8 @@ impl Database {
             .execute(
                 "INSERT INTO imports (file_id, source_path, imported_name, local_name,
                  span_start, span_end, line_start, col_start, line_end, col_end,
-                 is_default, is_namespace, is_type_only, is_side_effect)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 is_default, is_namespace, is_type_only, is_side_effect, is_dynamic)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     import.file.0,
                     import.source_path,
@@ -392,6 +393,7 @@ impl Database {
                     import.is_namespace as i32,
                     import.is_type_only as i32,
                     import.is_side_effect as i32,
+                    import.is_dynamic as i32,
                 ],
             )
             .context("failed to insert import")?;
@@ -402,7 +404,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT file_id, source_path, imported_name, local_name,
                     span_start, span_end, line_start, col_start, line_end, col_end,
-                    is_default, is_namespace, is_type_only, is_side_effect
+                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic
              FROM imports WHERE file_id = ?1",
         )?;
 
@@ -431,10 +433,52 @@ impl Database {
                     is_namespace: row.get::<_, i32>(11)? != 0,
                     is_type_only: row.get::<_, i32>(12)? != 0,
                     is_side_effect: row.get::<_, i32>(13)? != 0,
+                    is_dynamic: row.get::<_, i32>(14)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get imports by file")?;
+        Ok(imports)
+    }
+
+    pub fn all_imports(&self) -> Result<Vec<ImportRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_id, source_path, imported_name, local_name,
+                    span_start, span_end, line_start, col_start, line_end, col_end,
+                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic
+             FROM imports ORDER BY file_id",
+        )?;
+
+        let imports = stmt
+            .query_map([], |row| {
+                Ok(ImportRecord {
+                    file: FileId(row.get(0)?),
+                    source_path: row.get(1)?,
+                    imported_name: row.get(2)?,
+                    local_name: row.get(3)?,
+                    span: Span {
+                        start: row.get(4)?,
+                        end: row.get(5)?,
+                    },
+                    line_span: LineSpan {
+                        start: Position {
+                            line: row.get(6)?,
+                            column: row.get(7)?,
+                        },
+                        end: Position {
+                            line: row.get(8)?,
+                            column: row.get(9)?,
+                        },
+                    },
+                    is_default: row.get::<_, i32>(10)? != 0,
+                    is_namespace: row.get::<_, i32>(11)? != 0,
+                    is_type_only: row.get::<_, i32>(12)? != 0,
+                    is_side_effect: row.get::<_, i32>(13)? != 0,
+                    is_dynamic: row.get::<_, i32>(14)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get all imports")?;
         Ok(imports)
     }
 
@@ -480,6 +524,29 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get exports by file")?;
+        Ok(exports)
+    }
+
+    pub fn all_exports(&self) -> Result<Vec<ExportRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_id, symbol_id, exported_name, is_default, is_reexport, is_type_only, source_path
+             FROM exports ORDER BY file_id",
+        )?;
+
+        let exports = stmt
+            .query_map([], |row| {
+                Ok(ExportRecord {
+                    file: FileId(row.get(0)?),
+                    symbol: SymbolId(row.get(1)?),
+                    exported_name: row.get(2)?,
+                    is_default: row.get::<_, i32>(3)? != 0,
+                    is_reexport: row.get::<_, i32>(4)? != 0,
+                    is_type_only: row.get::<_, i32>(5)? != 0,
+                    source_path: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get all exports")?;
         Ok(exports)
     }
 
@@ -699,6 +766,7 @@ mod tests {
             is_namespace: false,
             is_type_only: false,
             is_side_effect: false,
+            is_dynamic: false,
         };
         db.insert_import(&import).unwrap();
 
@@ -757,6 +825,7 @@ mod tests {
             is_namespace: false,
             is_type_only: false,
             is_side_effect: false,
+            is_dynamic: false,
         };
         db.insert_import(&import).unwrap();
 

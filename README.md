@@ -85,6 +85,7 @@ statik deps src/utils/helpers.ts --direction out          # only show imports
 statik deps src/utils/helpers.ts --direction in           # only show importers
 statik deps src/utils/helpers.ts --transitive             # follow chains
 statik deps src/utils/helpers.ts --transitive --max-depth 3
+statik deps src/utils/helpers.ts --runtime-only           # exclude type-only imports
 ```
 
 | Flag | Description |
@@ -92,6 +93,7 @@ statik deps src/utils/helpers.ts --transitive --max-depth 3
 | `--transitive` | Follow dependency chains transitively |
 | `--direction in\|out\|both` | Direction of analysis (default: `both`) |
 | `--max-depth <N>` | Limit transitive depth |
+| `--runtime-only` | Exclude type-only imports from results |
 
 ### `statik exports <path>`
 
@@ -104,18 +106,23 @@ statik exports src/utils/math.ts --format json
 
 ### `statik dead-code`
 
-Find dead code: orphaned files (never imported from any entry point) and unused exports (exported symbols never imported anywhere).
+Find dead code: orphaned files (never imported from any entry point), unused exports (exported symbols never imported anywhere), and unused symbols (internal symbols with no references).
 
 ```
 statik dead-code
 statik dead-code --scope files       # only orphaned files
 statik dead-code --scope exports     # only unused exports
-statik dead-code --scope both        # both (default)
+statik dead-code --scope symbols     # unused internal symbols (no references)
+statik dead-code --scope both        # files + exports (default)
+statik dead-code --runtime-only      # ignore type-only imports
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--scope files\|exports\|both` | What to check for (default: `both`) |
+| `--scope files\|exports\|symbols\|both` | What to check for (default: `both`) |
+| `--runtime-only` | Exclude type-only imports from analysis |
+
+The `symbols` scope performs symbol-level dead code detection: it finds non-exported symbols that have no intra-project references. This is more granular than file-level or export-level analysis.
 
 Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`).
 
@@ -126,7 +133,12 @@ Detect circular dependencies in the file-level import graph. Reports cycles orde
 ```
 statik cycles
 statik cycles --format json
+statik cycles --runtime-only         # ignore type-only imports
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--runtime-only` | Exclude type-only imports from cycle detection |
 
 ### `statik impact <path>`
 
@@ -135,11 +147,13 @@ Blast radius analysis: if this file changes, what other files are affected? Perf
 ```
 statik impact src/models/user.ts
 statik impact src/models/user.ts --max-depth 2
+statik impact src/models/user.ts --runtime-only
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--max-depth <N>` | Limit how far to follow the dependency chain |
+| `--runtime-only` | Exclude type-only imports from impact analysis |
 
 ### `statik summary`
 
@@ -344,15 +358,66 @@ Recommended agent workflow:
 
 See the [JSON output example](#json---format-json) above for the full violation schema.
 
-### Deferred commands (v2)
+### `statik diff --before <path>`
 
-These commands require type-resolved analysis and are deferred to a future release with deep mode support:
+Compare the current project's export surface against a previous index snapshot. Detects added, removed, and changed exports across all files.
 
-| Command | Reason for deferral |
-|---------|-------------------|
-| `statik symbols` | LSP provides better symbol listing with type information |
-| `statik references <symbol>` | LSP provides better find-references |
-| `statik callers <symbol>` | Requires type resolution for accurate call graphs |
+```
+statik diff --before old-index.db
+statik diff --before old-index.db --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--before <path>` | Path to the baseline index database to compare against |
+
+The `--before` database is typically a copy of `.statik/index.db` from a previous point in time. The command compares the baseline against the current (or auto-indexed) project state.
+
+### `statik symbols`
+
+List symbols in the project with optional filters. Shows name, kind, file, line number, and visibility.
+
+```
+statik symbols
+statik symbols --file src/utils/helpers.ts
+statik symbols --kind function
+statik symbols --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--file <path>` | Show only symbols in a specific file |
+| `--kind <kind>` | Filter by symbol kind (`function`, `class`, `method`, `interface`, `type_alias`, `enum`, `variable`, `constant`, `annotation`, `package`) |
+
+### `statik references <symbol>`
+
+Find all references to a symbol by name. Shows source, target, reference kind, file, and line number.
+
+```
+statik references MyClass
+statik references helper --kind call
+statik references MyClass --file src/models/user.ts
+statik references MyClass --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--kind <kind>` | Filter by reference kind (`call`, `type_usage`, `inheritance`, `import`, `export`, `field_access`, `assignment`) |
+| `--file <path>` | Filter references to a specific file |
+
+### `statik callers <symbol>`
+
+Find all call sites of a symbol. This is equivalent to `statik references <symbol> --kind call`, but shows only incoming calls with the calling function name.
+
+```
+statik callers helper
+statik callers processData --file src/main.ts
+statik callers processData --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--file <path>` | Filter callers to a specific file |
 
 ## Global Flags
 
@@ -364,6 +429,7 @@ These commands require type-resolved analysis and are deferred to a future relea
 | `--exclude <glob>` | Exclude files matching this glob |
 | `--lang <language>` | Filter to a specific language (`typescript`, `javascript`, `java`) |
 | `--max-depth <N>` | Limit transitive depth for dependency/impact analysis |
+| `--runtime-only` | Exclude type-only imports, showing only runtime dependencies (applies to `deps`, `dead-code`, `cycles`, `impact`) |
 
 ## How It Works
 
@@ -407,10 +473,11 @@ Each language has a dedicated import resolver.
 - **Type aliases**
 - **Enums** (with variants)
 - **Variables and constants**
-- **Import statements** (named, default, namespace, re-exports)
-- **Export statements** (named, default, re-exports)
+- **Import statements** (named, default, namespace, re-exports, dynamic `import()`)
+- **Export statements** (named, default, re-exports including `export *` chains)
 - **Call references** (function calls and `new` expressions within function bodies)
 - **Inheritance references** (extends, implements)
+- **Intra-file references** (resolved to actual symbol IDs and stored in the database)
 
 **Java:**
 
@@ -453,9 +520,9 @@ statik uses tree-sitter for syntactic analysis, not semantic analysis. This mean
 
 - **No `node_modules` analysis** -- third-party packages are treated as external dependencies. Imports from packages like `react` or `lodash` are recorded but not followed into `node_modules/`.
 
-- **Barrel file accuracy** -- `export *` re-export chains are resolved but with reduced confidence. When a barrel file re-exports from another file that also uses `export *`, accuracy degrades.
+- **Barrel file accuracy** -- `export *` re-export chains are traced through to resolve symbol usage, but deep chains of `export *` through multiple barrel files may have reduced confidence.
 
-- **No dynamic import resolution** -- `import()` with computed paths (e.g., `import(\`./modules/${name}\`)`) cannot be resolved statically. These are flagged as unresolvable in the output.
+- **Dynamic imports with computed paths** -- `import()` with string literal arguments (e.g., `import('./lazy')`) is fully resolved and creates dependency edges. Dynamic imports with computed paths (e.g., `import(\`./modules/${name}\`)`) cannot be resolved statically and are flagged as unresolvable.
 
 - **Side-effect imports tracked but unnamed** -- Imports like `import './polyfill'` are recorded as dependencies (creating file-level edges in the graph), but since they import no named symbols, they do not contribute to export usage counts.
 

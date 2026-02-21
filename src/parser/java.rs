@@ -37,6 +37,7 @@ impl LanguageParser for JavaParser {
 
         let mut extractor = Extractor::new(file_id, source, &tree);
         extractor.extract();
+        extractor.resolve_intra_file_refs();
 
         // Build set of explicitly imported names to avoid duplicating them as type-refs
         let explicit_imports: HashSet<String> = extractor
@@ -72,6 +73,7 @@ impl LanguageParser for JavaParser {
                 is_namespace: false,
                 is_type_only: true,
                 is_side_effect: false,
+                is_dynamic: false,
             });
         }
 
@@ -88,6 +90,7 @@ impl LanguageParser for JavaParser {
                 is_namespace: false,
                 is_type_only: false,
                 is_side_effect: false,
+                is_dynamic: false,
             });
         }
 
@@ -129,6 +132,8 @@ struct Extractor<'a> {
     type_params: HashSet<String>,
     /// Annotation names on top-level declarations/methods for entry point detection.
     annotations: Vec<String>,
+    /// Target names parallel to `references`, used for intra-file resolution post-pass.
+    ref_target_names: Vec<String>,
 }
 
 impl<'a> Extractor<'a> {
@@ -148,6 +153,7 @@ impl<'a> Extractor<'a> {
             type_refs: HashSet::new(),
             type_params: HashSet::new(),
             annotations: Vec::new(),
+            ref_target_names: Vec::new(),
         }
     }
 
@@ -416,6 +422,7 @@ impl<'a> Extractor<'a> {
 
     fn emit_annotation_ref(&mut self, annotation_node: Node, source: SymbolId) {
         if let Some(name_n) = annotation_node.child_by_field_name("name") {
+            let target_name = self.node_text(name_n).to_string();
             let ref_id = self.alloc_ref_id();
             let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
             self.references.push(Reference {
@@ -427,6 +434,7 @@ impl<'a> Extractor<'a> {
                 span: self.node_span(name_n),
                 line_span: self.node_line_span(name_n),
             });
+            self.ref_target_names.push(target_name);
         }
     }
 
@@ -481,6 +489,7 @@ impl<'a> Extractor<'a> {
             is_namespace: is_wildcard,
             is_type_only: false, // Java has no type-only import distinction
             is_side_effect: false,
+            is_dynamic: false,
         });
     }
 
@@ -1063,6 +1072,7 @@ impl<'a> Extractor<'a> {
     }
 
     fn add_inheritance_ref(&mut self, source: SymbolId, target_node: Node) {
+        let target_name = self.node_text(target_node).to_string();
         let ref_id = self.alloc_ref_id();
         let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
         self.references.push(Reference {
@@ -1074,6 +1084,7 @@ impl<'a> Extractor<'a> {
             span: self.node_span(target_node),
             line_span: self.node_line_span(target_node),
         });
+        self.ref_target_names.push(target_name);
     }
 
     fn extract_call_reference(&mut self, node: Node) {
@@ -1081,6 +1092,7 @@ impl<'a> Extractor<'a> {
         if name_node.is_none() {
             return;
         }
+        let target_name = self.node_text(name_node.unwrap()).to_string();
 
         if let Some(source_id) = self.current_parent() {
             let ref_id = self.alloc_ref_id();
@@ -1094,11 +1106,17 @@ impl<'a> Extractor<'a> {
                 span: self.node_span(node),
                 line_span: self.node_line_span(node),
             });
+            self.ref_target_names.push(target_name);
         }
     }
 
     fn extract_new_reference(&mut self, node: Node) {
         // `new ClassName(...)` - the type child is the class being constructed
+        let target_name = node
+            .child_by_field_name("type")
+            .map(|n| self.node_text(n).to_string())
+            .unwrap_or_else(|| self.node_text(node).to_string());
+
         if let Some(source_id) = self.current_parent() {
             let ref_id = self.alloc_ref_id();
             let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
@@ -1111,9 +1129,37 @@ impl<'a> Extractor<'a> {
                 span: self.node_span(node),
                 line_span: self.node_line_span(node),
             });
+            self.ref_target_names.push(target_name);
         }
     }
 
+    /// Post-pass: resolve placeholder reference targets to actual symbols defined in this file.
+    fn resolve_intra_file_refs(&mut self) {
+        use std::collections::HashMap;
+
+        let mut name_to_id: HashMap<&str, Option<SymbolId>> = HashMap::new();
+        for symbol in &self.symbols {
+            match name_to_id.get(symbol.name.as_str()) {
+                None => {
+                    name_to_id.insert(&symbol.name, Some(symbol.id));
+                }
+                Some(Some(_)) => {
+                    name_to_id.insert(&symbol.name, None);
+                }
+                Some(None) => {}
+            }
+        }
+
+        for (i, reference) in self.references.iter_mut().enumerate() {
+            if reference.target.0 >= u64::MAX - 1_000_000 {
+                if let Some(target_name) = self.ref_target_names.get(i) {
+                    if let Some(Some(resolved_id)) = name_to_id.get(target_name.as_str()) {
+                        reference.target = *resolved_id;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2450,6 +2496,55 @@ public class Foo {
             refs.contains(&"User".to_string()),
             "User from new expression should be extracted: {:?}",
             refs
+        );
+    }
+
+    #[test]
+    fn test_intra_file_inheritance_resolved() {
+        let result = parse_java(
+            r#"
+            package com.example;
+            public class Base {}
+            public class Derived extends Base {}
+            "#,
+        );
+
+        let base_sym = result.symbols.iter().find(|s| s.name == "Base").unwrap();
+
+        let inherit_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Inheritance && r.target == base_sym.id
+        });
+        assert!(
+            inherit_ref.is_some(),
+            "Derived should have a resolved inheritance ref to Base, refs: {:?}",
+            result
+                .references
+                .iter()
+                .map(|r| (r.source, r.target, r.kind))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_intra_file_call_reference_resolved() {
+        let result = parse_java(
+            r#"
+            package com.example;
+            public class MyClass {
+                void helper() {}
+                void main() { helper(); }
+            }
+            "#,
+        );
+
+        let helper_sym = result.symbols.iter().find(|s| s.name == "helper").unwrap();
+
+        let call_ref = result.references.iter().find(|r| {
+            r.kind == RefKind::Call && r.target == helper_sym.id
+        });
+        assert!(
+            call_ref.is_some(),
+            "main should have a resolved call ref to helper"
         );
     }
 }
