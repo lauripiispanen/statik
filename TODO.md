@@ -635,7 +635,30 @@ Tasks:
 - [x] Test module resolution (crate::, super::, self::)
 - [x] Test visibility and entry point detection
 
-### 3b.5 Known limitations for Rust v1 (follow-up work)
+### 3b.5 Dogfooding findings (HIGH PRIORITY)
+
+Issues discovered by running statik on its own codebase:
+
+- [ ] **`use crate_name::` paths not resolved**: `main.rs` does `use statik::cli::commands`
+  — importing via the crate name. The resolver only handles `crate::`, `super::`, `self::`
+  prefixes. It doesn't know that `statik` = `crate`. This causes most cross-module imports
+  to be unresolved (276/616 unresolved) and cascading false-positive dead exports (592).
+  **Fix**: Read crate name from `Cargo.toml` `[package].name`, treat `use crate_name::` as
+  equivalent to `use crate::`. Complexity: M.
+- [ ] **`pub mod` re-export chains not followed**: `cli/mod.rs` does `pub mod commands;`
+  making items available via `cli::commands`. But consumers import via `use statik::cli::commands`,
+  which hits the crate_name gap above. Fixing crate_name resolution fixes this transitively.
+- [ ] **False cycles from `mod.rs` barrel files**: The `graph.rs <-> file_graph.rs <-> mod.rs`
+  cycle is caused by `mod.rs` re-exporting both modules. This is standard Rust module
+  structure, not a real dependency cycle. **Fix**: Filter cycles where all edges are `@mod:`
+  structural containment edges, or distinguish `mod` edges from `use` edges in cycle
+  detection. Complexity: S.
+- [ ] **Dead export false-positive cascade**: `commands.rs` exports 13 `pub fn`s, all
+  consumed by `main.rs` via `commands::run_deps()` etc. But since `main.rs -> commands.rs`
+  edge is missing (crate_name gap), all 13 show as unused. Fixing crate_name resolution
+  fixes this transitively.
+
+### 3b.6 Known limitations for Rust v1 (deferred)
 
 Items deferred to future iterations:
 - [ ] **Cargo workspace cross-crate resolution**: Cross-crate imports within a

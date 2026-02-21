@@ -1,0 +1,159 @@
+# =============================================================================
+# statik Architecture Enforcement Rules
+# =============================================================================
+#
+# This file encodes the intended module layering of the statik codebase.
+# Run `statik lint` to check for violations.
+#
+# Module dependency diagram (arrows mean "may depend on"):
+#
+#   cli (orchestration) --> analysis, linting, db, parser, resolver, discovery, model
+#   linting             --> analysis, model
+#   analysis            --> model  (known exception: diff.rs uses db)
+#   parser              --> model
+#   resolver            --> (self-contained, own types only)
+#   db                  --> model
+#   discovery           --> model
+#   model               --> (nothing -- leaf module)
+#
+# KNOWN LIMITATION: statik's Rust resolver has known gaps with `use crate_name::`
+# and `use super::` paths. Some imports may be falsely resolved to wrong files,
+# producing spurious violations. Always verify violations against actual source
+# code before treating them as real architecture issues.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Model is a leaf: must not depend on any other internal module
+# ---------------------------------------------------------------------------
+# KNOWN FALSE POSITIVES (2): file_graph.rs has `use crate::resolver::...`
+# inside a #[cfg(test)] integration test. These are test-only imports, not
+# production dependencies. statik's tree-sitter parser cannot distinguish
+# #[cfg(test)] blocks from production code, so these appear as violations.
+[[rules]]
+id = "model-is-leaf"
+severity = "error"
+description = "model/ must not depend on any other internal module"
+rationale = "model/ contains core data types (Symbol, FileGraph, etc.) and must remain a leaf dependency with no upward references"
+fix_direction = "Move the dependency out of model/, or extract the needed type into model/"
+
+[rules.boundary]
+from = ["src/model/**"]
+deny = ["src/parser/**", "src/resolver/**", "src/db/**", "src/cli/**", "src/analysis/**", "src/linting/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 2. Parser depends only on model
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "parser-isolation"
+severity = "error"
+description = "parser/ must not depend on cli, db, analysis, resolver, linting, or discovery"
+rationale = "Parsers extract symbols from source code using tree-sitter. They only need model types for the output (ParseResult, Symbol, etc.)"
+fix_direction = "Parser code should only use types from model/. Move shared logic to model/ or introduce a new shared module."
+
+[rules.boundary]
+from = ["src/parser/**"]
+deny = ["src/cli/**", "src/db/**", "src/analysis/**", "src/resolver/**", "src/linting/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 3. Resolver is self-contained
+# ---------------------------------------------------------------------------
+# The resolver module defines its own Resolver trait and Resolution types.
+# It does not depend on the model module (its types are independent).
+# It must not depend on any other internal module.
+[[rules]]
+id = "resolver-isolation"
+severity = "error"
+description = "resolver/ must not depend on cli, db, analysis, parser, linting, or discovery"
+rationale = "Resolvers map import paths to files. They define their own trait (Resolver) and types (Resolution) and are fully self-contained."
+fix_direction = "Resolver code should remain self-contained."
+
+[rules.boundary]
+from = ["src/resolver/**"]
+deny = ["src/cli/**", "src/db/**", "src/analysis/**", "src/parser/**", "src/linting/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 4. DB depends only on model
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "db-isolation"
+severity = "error"
+description = "db/ must not depend on cli, analysis, parser, resolver, linting, or discovery"
+rationale = "The database layer persists model types to SQLite. It should not know about parsing, resolution, or analysis."
+fix_direction = "DB code should only use types from model/."
+
+[rules.boundary]
+from = ["src/db/**"]
+deny = ["src/cli/**", "src/analysis/**", "src/parser/**", "src/resolver/**", "src/linting/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 5. Discovery depends only on model
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "discovery-isolation"
+severity = "error"
+description = "discovery/ must not depend on cli, db, analysis, parser, resolver, or linting"
+rationale = "File discovery walks the filesystem and detects languages. It only needs model::Language."
+fix_direction = "Discovery code should only use types from model/."
+
+[rules.boundary]
+from = ["src/discovery/**"]
+deny = ["src/cli/**", "src/db/**", "src/analysis/**", "src/parser/**", "src/resolver/**", "src/linting/**"]
+
+# ---------------------------------------------------------------------------
+# 6. Analysis depends on model only
+# ---------------------------------------------------------------------------
+# NOTE: analysis/diff.rs currently depends on db::Database to compare two
+# index snapshots. This is a known design compromise -- diff needs to read
+# from two databases to produce its result. Ideally, the CLI layer would
+# extract the data and pass it to a pure analysis function.
+[[rules]]
+id = "analysis-isolation"
+severity = "error"
+description = "analysis/ must not depend on cli, parser, resolver, linting, or discovery"
+rationale = "Analysis algorithms operate on the in-memory FileGraph/SymbolGraph. They should not know about parsing, resolution, or CLI concerns."
+fix_direction = "Analysis code should only use types from model/ (diff.rs exception: db is allowed)."
+
+[rules.boundary]
+from = ["src/analysis/**"]
+deny = ["src/cli/**", "src/parser/**", "src/resolver/**", "src/linting/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 7. Linting depends on model and analysis only
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "linting-isolation"
+severity = "error"
+description = "linting/ must not depend on cli, db, parser, resolver, or discovery"
+rationale = "Linting evaluates rules against FileGraph (from model) and uses Confidence (from analysis). It should not touch persistence, parsing, or resolution."
+fix_direction = "Linting code should only use types from model/ and analysis/."
+
+[rules.boundary]
+from = ["src/linting/**"]
+deny = ["src/cli/**", "src/db/**", "src/parser/**", "src/resolver/**", "src/discovery/**"]
+
+# ---------------------------------------------------------------------------
+# 8. Fan-out limit: no single non-CLI file should import too many modules
+# ---------------------------------------------------------------------------
+# cli/ is excluded since it is the orchestration layer and legitimately
+# depends on all other modules.
+[[rules]]
+id = "no-god-modules"
+severity = "warning"
+description = "Source files should not have excessive fan-out"
+rationale = "Files with many dependencies are hard to understand and maintain. Consider splitting them."
+fix_direction = "Split this file into smaller, focused modules"
+
+[rules.fan_limit]
+pattern = ["src/**", "!src/cli/**", "!src/main.rs"]
+max_fan_out = 15
+
+# ---------------------------------------------------------------------------
+# Entry point configuration for Rust dead-code analysis
+# ---------------------------------------------------------------------------
+# The built-in heuristics already detect main.rs, lib.rs, src/bin/,
+# tests/, examples/, benches/, and build.rs. Add any additional patterns
+# here if needed.
+
+[entry_points]
+patterns = []
+annotations = []

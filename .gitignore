@@ -1,5 +1,6 @@
 /target/
 .statik/
+!.statik/rules.toml
 .claude/
 *.db
 .DS_Store
