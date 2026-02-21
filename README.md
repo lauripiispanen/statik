@@ -1,6 +1,6 @@
 # statik
 
-Static code analysis for dependency graphs, dead code detection, and circular dependency detection in TypeScript/JavaScript and Java projects.
+Static code analysis for dependency graphs, dead code detection, and circular dependency detection in TypeScript/JavaScript, Java, and Rust projects.
 
 statik fills a gap between simple text search and full Language Server Protocol (LSP) features. Where LSP gives you go-to-definition and find-references for individual symbols, statik provides **graph-level analysis**: dependency chains between files, dead code detection, circular dependency detection, and refactoring blast radius. These are complementary capabilities -- statik does not replace LSP.
 
@@ -22,7 +22,7 @@ The binary is at `target/release/statik`.
 statik index /path/to/your/typescript-project
 ```
 
-This scans all supported source files (TypeScript, JavaScript, Java), extracts symbols and import/export relationships, and stores the result in `.statik/index.db` at the project root.
+This scans all supported source files (TypeScript, JavaScript, Java, Rust), extracts symbols and import/export relationships, and stores the result in `.statik/index.db` at the project root.
 
 ```
 Indexed 87 files: 1423 symbols, 312 references (245ms)
@@ -124,7 +124,7 @@ statik dead-code --runtime-only      # ignore type-only imports
 
 The `symbols` scope performs symbol-level dead code detection: it finds non-exported symbols that have no intra-project references. This is more granular than file-level or export-level analysis.
 
-Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`).
+Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`). For Rust, entry points include `lib.rs`, `main.rs`, files in `src/bin/`, `tests/`, `examples/`, `benches/`, and `build.rs`.
 
 ### `statik cycles`
 
@@ -427,7 +427,7 @@ statik callers processData --format json
 | `--no-index` | Skip auto-indexing, use existing index only |
 | `--include <glob>` | Include only files matching this glob |
 | `--exclude <glob>` | Exclude files matching this glob |
-| `--lang <language>` | Filter to a specific language (`typescript`, `javascript`, `java`) |
+| `--lang <language>` | Filter to a specific language (`typescript`, `javascript`, `java`, `rust`) |
 | `--max-depth <N>` | Limit transitive depth for dependency/impact analysis |
 | `--runtime-only` | Exclude type-only imports, showing only runtime dependencies (applies to `deps`, `dead-code`, `cycles`, `impact`) |
 
@@ -463,6 +463,14 @@ Each language has a dedicated import resolver.
 - **Static import resolution** -- static imports like `import static com.example.Foo.bar` resolve to the containing class file
 - **External package detection** -- imports from `java.*`, `javax.*`, `jakarta.*`, and common third-party packages (Spring, JUnit, etc.) are classified as external
 
+**Rust** imports are resolved using:
+
+- **Module tree resolution** -- `mod foo;` declarations are resolved to `foo.rs` (2018 style) or `foo/mod.rs` (2015 style)
+- **Crate-relative paths** -- `use crate::foo::Bar` is resolved by walking the module tree from the crate root (`src/lib.rs` or `src/main.rs`)
+- **Relative paths** -- `use super::Bar` and `use self::Bar` are resolved relative to the current module
+- **External crate detection** -- imports from `std`, `core`, `alloc`, and crates not found in the project module tree are classified as external
+- **Crate root detection** -- automatically detects `src/lib.rs`, `src/main.rs`, and binary targets in `src/bin/`
+
 ### What gets extracted
 
 **TypeScript/JavaScript:**
@@ -495,6 +503,26 @@ Each language has a dedicated import resolver.
 - **Annotation-based entry point detection** (`@SpringBootApplication`, `@Test`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@ParameterizedTest`, `@RepeatedTest`, `@Endpoint`, `@WebServlet`)
 - **Call references** (method calls and `new` expressions)
 - **Inheritance references** (extends, implements)
+
+**Rust:**
+
+- **Functions** (top-level and methods within `impl` blocks)
+- **Structs**
+- **Enums** (with variants)
+- **Traits** (with method declarations)
+- **Type aliases**
+- **Constants and statics**
+- **Modules** (both inline `mod foo { }` and external `mod foo;`)
+- **Macro definitions** (`macro_rules!`)
+- **Use declarations** (simple, grouped `{A, B}`, wildcard `*`, aliased `as`, nested)
+- **Module declarations** (`mod foo;`) create structural dependency edges to the module file
+- **`pub use` re-exports**
+- **`extern crate` declarations**
+- **Visibility tracking** (`pub` -> Public, `pub(crate)`/`pub(super)` -> Protected, no modifier -> Private)
+- **Call references** (function calls, method calls, struct expressions)
+- **Inheritance references** (`impl Trait for Type`)
+- **Type references** (`type_identifier` nodes)
+- **Intra-file reference resolution**
 
 ### Storage
 

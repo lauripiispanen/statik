@@ -14,6 +14,7 @@ use crate::model::file_graph::{
 use crate::model::graph::SymbolGraph;
 use crate::model::{FileId, Language, ParseResult, RefKind, SymbolKind};
 use crate::resolver::java::JavaResolver;
+use crate::resolver::rust::RustResolver;
 use crate::resolver::typescript::TypeScriptResolver;
 use crate::resolver::{Resolution, Resolver};
 
@@ -37,7 +38,8 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Collect all known file paths for resolvers
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
-    let java_resolver = JavaResolver::new(project_root.to_path_buf(), known_paths);
+    let java_resolver = JavaResolver::new(project_root.to_path_buf(), known_paths.clone());
+    let rust_resolver = RustResolver::new(project_root.to_path_buf(), known_paths);
 
     // Build path -> FileId lookup
     let path_to_id: HashMap<PathBuf, FileId> =
@@ -152,6 +154,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 } else {
                     match lang {
                         Language::Java => java_resolver.resolve(&import.source_path, &file.path),
+                        Language::Rust => rust_resolver.resolve(&import.source_path, &file.path),
                         _ => ts_resolver.resolve(&import.source_path, &file.path),
                     }
                 };
@@ -323,6 +326,33 @@ fn is_entry_point(path: &Path) -> bool {
         }
         // Spring Boot entry point
         if file_name == "Application" {
+            return true;
+        }
+    }
+
+    // Rust-specific entry points
+    if ext == "rs" {
+        if file_name == "lib" {
+            return true;
+        }
+        // Files in src/bin/ are binary entry points
+        if path.components().any(|c| c.as_os_str() == "bin") {
+            return true;
+        }
+        // Integration test directory
+        if path.components().any(|c| c.as_os_str() == "tests") {
+            return true;
+        }
+        // Examples
+        if path.components().any(|c| c.as_os_str() == "examples") {
+            return true;
+        }
+        // Benchmark files
+        if path.components().any(|c| c.as_os_str() == "benches") {
+            return true;
+        }
+        // Build script
+        if file_name == "build" {
             return true;
         }
     }

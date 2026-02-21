@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::model::{FileId, Language, ParseResult};
 
 pub mod java;
+pub mod rust;
 pub mod typescript;
 
 /// Trait for language-specific symbol extractors.
@@ -35,6 +36,7 @@ impl ParserRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(typescript::TypeScriptParser::new()));
         registry.register(Box::new(java::JavaParser::new()));
+        registry.register(Box::new(rust::RustParser::new()));
         registry
     }
 
