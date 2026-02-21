@@ -312,10 +312,10 @@ fn propagate_through_reexports(graph: &FileGraph, imported_names: &mut HashSet<(
                 }
             } else {
                 // Named: if the name is imported from the barrel, propagate it
-                if imported_names.contains(&(*barrel_id, reexport_name.clone())) {
-                    if imported_names.insert((*target_id, reexport_name.clone())) {
-                        changed = true;
-                    }
+                if imported_names.contains(&(*barrel_id, reexport_name.clone()))
+                    && imported_names.insert((*target_id, reexport_name.clone()))
+                {
+                    changed = true;
                 }
             }
         }

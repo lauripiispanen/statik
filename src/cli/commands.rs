@@ -85,7 +85,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             || annotation_entry_files.contains(&file.id)
             || custom_pattern_matcher
                 .as_ref()
-                .map_or(false, |m| m.matches(rel_path));
+                .is_some_and(|m| m.matches(rel_path));
 
         graph.add_file(FileInfo {
             id: file.id,
@@ -367,6 +367,7 @@ fn maybe_filter_type_only(graph: FileGraph, runtime_only: bool) -> FileGraph {
 }
 
 /// Run the `deps` command.
+#[allow(clippy::too_many_arguments)]
 pub fn run_deps(
     project_path: &Path,
     file_path: &str,
@@ -952,8 +953,8 @@ pub fn run_references(
         .filter(|r| {
             let matches_symbol =
                 matching_symbols.contains(&r.source) || matching_symbols.contains(&r.target);
-            let matches_kind = kind_filter.map_or(true, |k| r.kind == k);
-            let matches_file = file_filter_id.map_or(true, |fid| r.file == fid);
+            let matches_kind = kind_filter.is_none_or(|k| r.kind == k);
+            let matches_file = file_filter_id.is_none_or(|fid| r.file == fid);
             matches_symbol && matches_kind && matches_file
         })
         .collect();
@@ -1090,7 +1091,7 @@ pub fn run_callers(
         .filter(|r| {
             r.kind == RefKind::Call
                 && target_symbols.contains(&r.target)
-                && file_filter_id.map_or(true, |fid| r.file == fid)
+                && file_filter_id.is_none_or(|fid| r.file == fid)
         })
         .collect();
 

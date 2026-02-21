@@ -204,7 +204,7 @@ impl<'a> Extractor<'a> {
             self.symbols
                 .iter()
                 .find(|s| s.id == pid)
-                .map_or(false, |s| s.visibility == Visibility::Public)
+                .is_some_and(|s| s.visibility == Visibility::Public)
         })
     }
 
@@ -252,7 +252,7 @@ impl<'a> Extractor<'a> {
         if !text.is_empty()
             && text != "var"
             && !self.type_params.contains(text)
-            && text.chars().next().map_or(false, |c| c.is_uppercase())
+            && text.chars().next().is_some_and(|c| c.is_uppercase())
         {
             self.type_refs.insert(text.to_string());
         }
