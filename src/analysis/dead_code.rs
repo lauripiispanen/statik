@@ -278,27 +278,19 @@ fn propagate_through_reexports(
             // Find the import edge from this file that corresponds to this re-export
             if let Some(edges) = graph.imports.get(file_id) {
                 for edge in edges {
-                    if export.exported_name == "*" {
-                        // Wildcard re-export: any name imported from this barrel
-                        // should propagate to the target
+                    if export.exported_name == "*"
+                        && edge.imported_names.iter().any(|n| n == "*")
+                    {
+                        // Wildcard re-export: only match edges created by re-exports
+                        // (which have "*" in imported_names), not unrelated imports
                         reexport_targets.push((*file_id, edge.to, "*".to_string()));
-                    } else {
-                        // Named re-export: check if this edge carries the right name
-                        if edge.imported_names.contains(&export.exported_name)
-                            || edge.to != *file_id
-                        {
-                            // For named re-exports, we need to match the export to
-                            // its import edge. The import edge goes to the source file.
-                            // We match by checking if the name appears in the edge's
-                            // imported_names.
-                            if edge.imported_names.contains(&export.exported_name) {
-                                reexport_targets.push((
-                                    *file_id,
-                                    edge.to,
-                                    export.exported_name.clone(),
-                                ));
-                            }
-                        }
+                    } else if edge.imported_names.contains(&export.exported_name) {
+                        // Named re-export: match the export to its import edge
+                        reexport_targets.push((
+                            *file_id,
+                            edge.to,
+                            export.exported_name.clone(),
+                        ));
                     }
                 }
             }

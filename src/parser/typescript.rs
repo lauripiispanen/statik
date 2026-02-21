@@ -1252,11 +1252,9 @@ impl<'a> Extractor<'a> {
 
         // The first argument should be a string literal
         let mut cursor = args_node.walk();
-        let first_arg = args_node.children(&mut cursor).find(|c| {
-            c.kind() == "string" || c.kind() == "template_string" || c.kind() != ","
-                && c.kind() != "("
-                && c.kind() != ")"
-        });
+        let first_arg = args_node
+            .children(&mut cursor)
+            .find(|c| !matches!(c.kind(), "(" | ")" | ","));
 
         if let Some(arg) = first_arg {
             if arg.kind() == "string" {
