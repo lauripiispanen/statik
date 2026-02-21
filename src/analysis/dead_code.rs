@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::model::file_graph::FileGraph;
-use crate::model::FileId;
+use crate::model::graph::SymbolGraph;
+use crate::model::{FileId, SymbolId, SymbolKind, Visibility};
 
 use super::{compute_confidence, Confidence, Limitation};
 
@@ -14,6 +15,7 @@ pub enum DeadCodeScope {
     Files,
     Exports,
     Both,
+    Symbols,
 }
 
 /// A dead file: a file that is never imported from any entry point.
@@ -33,6 +35,36 @@ pub struct DeadExport {
     pub line: usize,
     pub confidence: Confidence,
     pub kind: String,
+}
+
+/// A dead symbol: a symbol not reachable from any entry point via intra-file references.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadSymbol {
+    pub symbol_id: SymbolId,
+    pub name: String,
+    pub qualified_name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: usize,
+    pub confidence: Confidence,
+}
+
+/// Result of symbol-level dead code analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadSymbolResult {
+    pub dead_symbols: Vec<DeadSymbol>,
+    pub confidence: Confidence,
+    pub limitations: Vec<Limitation>,
+    pub summary: DeadSymbolSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadSymbolSummary {
+    pub total_symbols: usize,
+    pub dead_symbols: usize,
+    pub entry_point_symbols: usize,
+    pub resolved_references: usize,
+    pub unresolved_references: usize,
 }
 
 /// Result of dead code analysis.
@@ -82,11 +114,9 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
     // BFS to find all reachable files from entry points
     let reachable = bfs_reachable(graph, &entry_points);
 
-    let files_with_unresolvable = graph
-        .files
-        .keys()
-        .filter(|f| graph.has_unresolved_imports(**f))
-        .count();
+    // Pre-compute set of files with unresolved imports (avoids O(N*M) linear scans)
+    let unresolved_file_set = graph.files_with_unresolved_imports();
+    let files_with_unresolvable = unresolved_file_set.len();
 
     // Dead file detection
     if scope == DeadCodeScope::Files || scope == DeadCodeScope::Both {
@@ -104,7 +134,7 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
                 // Determine confidence for this specific finding
                 let file_confidence = if unresolved_count == 0 {
                     Confidence::Certain
-                } else if graph.has_unresolved_imports(*file_id) {
+                } else if unresolved_file_set.contains(file_id) {
                     // This file itself has unresolved imports, so something
                     // might be importing it that we can't see
                     Confidence::Medium
@@ -311,6 +341,141 @@ fn propagate_through_reexports(
 
 /// BFS from entry points, following import edges forward.
 /// Returns the set of all files reachable from any entry point.
+/// Detect dead symbols using the symbol-level reference graph.
+///
+/// Entry point symbols are exported symbols from entry point files.
+/// BFS through intra-file references from entry points.
+/// Unreachable symbols (excluding Import/Export/Package synthetic kinds) are dead.
+pub fn detect_dead_symbols(
+    symbol_graph: &SymbolGraph,
+    file_graph: &FileGraph,
+) -> DeadSymbolResult {
+    // Determine entry point file IDs from the file graph
+    let entry_file_ids: HashSet<FileId> = file_graph.entry_points().into_iter().collect();
+
+    // Entry point symbols: exported symbols in entry point files, plus all
+    // symbols in entry point files that are public (conservative approach)
+    let mut entry_symbols: Vec<SymbolId> = Vec::new();
+
+    for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
+        if entry_file_ids.contains(&file_id) {
+            // All public symbols in entry point files are entry points
+            for &sym_id in symbol_ids {
+                if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
+                    if symbol.visibility == Visibility::Public {
+                        entry_symbols.push(sym_id);
+                    }
+                }
+            }
+        } else {
+            // For non-entry-point files, exported symbols that are imported by entry files
+            // are entry points. But for simplicity, any exported public symbol connected
+            // through the file graph is an entry.
+            // We use exported symbols as seeds.
+            if let Some(exports) = symbol_graph.exports.get(&file_id) {
+                for export in exports {
+                    entry_symbols.push(export.symbol);
+                }
+            }
+        }
+    }
+
+    // Use the symbol graph's reachable_from to find all reachable symbols
+    let reachable = symbol_graph.reachable_from(&entry_symbols);
+
+    // Count resolved vs unresolved references
+    let total_refs = symbol_graph.references.len();
+    let resolved_refs = symbol_graph
+        .references
+        .iter()
+        .filter(|r| r.target.0 < u64::MAX - 1_000_000)
+        .count();
+    let unresolved_refs = total_refs - resolved_refs;
+
+    // Find dead symbols: not reachable from any entry point
+    // Exclude synthetic kinds (Import, Export, Package) that are not user-defined code
+    let skip_kinds = [
+        SymbolKind::Import,
+        SymbolKind::Export,
+        SymbolKind::Package,
+    ];
+
+    let mut dead_symbols = Vec::new();
+    let file_paths: std::collections::HashMap<FileId, &PathBuf> = symbol_graph
+        .files
+        .iter()
+        .map(|(id, f)| (*id, &f.path))
+        .collect();
+
+    for symbol in symbol_graph.symbols.values() {
+        if skip_kinds.contains(&symbol.kind) {
+            continue;
+        }
+        if !reachable.contains(&symbol.id) {
+            let file_path = file_paths
+                .get(&symbol.file)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| format!("file:{}", symbol.file.0));
+
+            dead_symbols.push(DeadSymbol {
+                symbol_id: symbol.id,
+                name: symbol.name.clone(),
+                qualified_name: symbol.qualified_name.clone(),
+                kind: symbol.kind.as_str().to_string(),
+                file: file_path,
+                line: symbol.line_span.start.line,
+                confidence: if unresolved_refs == 0 {
+                    Confidence::High
+                } else {
+                    Confidence::Medium
+                },
+            });
+        }
+    }
+
+    // Sort by file then name
+    dead_symbols.sort_by(|a, b| a.file.cmp(&b.file).then(a.name.cmp(&b.name)));
+
+    let total_symbols = symbol_graph
+        .symbols
+        .values()
+        .filter(|s| !skip_kinds.contains(&s.kind))
+        .count();
+
+    let confidence = if unresolved_refs == 0 {
+        Confidence::High
+    } else {
+        // Unresolved references are expected (cross-file refs not yet tracked).
+        // Medium confidence: results are directionally correct but may have
+        // false positives for symbols called from other files.
+        Confidence::Medium
+    };
+
+    let mut limitations = Vec::new();
+    if unresolved_refs > 0 {
+        limitations.push(Limitation {
+            description: format!(
+                "{}/{} references unresolved (cross-file references not yet tracked)",
+                unresolved_refs, total_refs
+            ),
+            count: unresolved_refs,
+        });
+    }
+
+    DeadSymbolResult {
+        summary: DeadSymbolSummary {
+            total_symbols,
+            dead_symbols: dead_symbols.len(),
+            entry_point_symbols: entry_symbols.len(),
+            resolved_references: resolved_refs,
+            unresolved_references: unresolved_refs,
+        },
+        dead_symbols,
+        confidence,
+        limitations,
+    }
+}
+
 fn bfs_reachable(graph: &FileGraph, entry_points: &[FileId]) -> HashSet<FileId> {
     let mut visited = HashSet::new();
     let mut queue: VecDeque<FileId> = entry_points.iter().copied().collect();
@@ -333,7 +498,9 @@ fn bfs_reachable(graph: &FileGraph, entry_points: &[FileId]) -> HashSet<FileId> 
 mod tests {
     use super::*;
     use crate::model::file_graph::{FileImport, FileInfo};
-    use crate::model::Language;
+    use crate::model::{
+        FileRecord, Language, LineSpan, Position, RefKind, Reference, ReferenceId, Span, Symbol,
+    };
 
     fn make_file(id: u64, path: &str, is_entry: bool) -> FileInfo {
         FileInfo {
@@ -830,5 +997,411 @@ mod tests {
         let result = detect_dead_code(&graph, DeadCodeScope::Both);
         // With wildcards and no unresolved, confidence should be High (not Certain)
         assert_eq!(result.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn test_detect_dead_symbols_basic() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        // File 1 is entry point with two symbols: main (public) and helper (public)
+        // main calls helper. dead_fn is never called.
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+
+        let result = ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                Symbol {
+                    id: SymbolId(1),
+                    name: "main".to_string(),
+                    qualified_name: "main".to_string(),
+                    kind: SymbolKind::Function,
+                    file: FileId(1),
+                    span: Span { start: 0, end: 10 },
+                    line_span: LineSpan {
+                        start: Position { line: 1, column: 0 },
+                        end: Position { line: 1, column: 10 },
+                    },
+                    parent: None,
+                    visibility: Visibility::Public,
+                    signature: None,
+                },
+                Symbol {
+                    id: SymbolId(2),
+                    name: "helper".to_string(),
+                    qualified_name: "helper".to_string(),
+                    kind: SymbolKind::Function,
+                    file: FileId(1),
+                    span: Span { start: 20, end: 30 },
+                    line_span: LineSpan {
+                        start: Position { line: 2, column: 0 },
+                        end: Position { line: 2, column: 10 },
+                    },
+                    parent: None,
+                    visibility: Visibility::Public,
+                    signature: None,
+                },
+                Symbol {
+                    id: SymbolId(3),
+                    name: "dead_fn".to_string(),
+                    qualified_name: "dead_fn".to_string(),
+                    kind: SymbolKind::Function,
+                    file: FileId(1),
+                    span: Span { start: 40, end: 50 },
+                    line_span: LineSpan {
+                        start: Position { line: 3, column: 0 },
+                        end: Position { line: 3, column: 10 },
+                    },
+                    parent: None,
+                    visibility: Visibility::Private,
+                    signature: None,
+                },
+            ],
+            references: vec![Reference {
+                id: ReferenceId(1),
+                source: SymbolId(1),
+                target: SymbolId(2),
+                kind: RefKind::Call,
+                file: FileId(1),
+                span: Span { start: 5, end: 15 },
+                line_span: LineSpan {
+                    start: Position { line: 1, column: 5 },
+                    end: Position { line: 1, column: 15 },
+                },
+            }],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        };
+
+        sym_graph.add_file(FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/index.ts"),
+            mtime: 0,
+            language: Language::TypeScript,
+        });
+        sym_graph.add_parse_result(result);
+
+        let dead_result = detect_dead_symbols(&sym_graph, &file_graph);
+
+        // dead_fn should be dead (private, never referenced)
+        let dead_names: Vec<&str> = dead_result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            dead_names.contains(&"dead_fn"),
+            "dead_fn should be dead, got: {:?}",
+            dead_names
+        );
+
+        // main and helper should NOT be dead
+        assert!(
+            !dead_names.contains(&"main"),
+            "main should NOT be dead"
+        );
+        assert!(
+            !dead_names.contains(&"helper"),
+            "helper should NOT be dead (called by main)"
+        );
+    }
+
+    fn make_sym(
+        id: u64,
+        name: &str,
+        kind: SymbolKind,
+        file: u64,
+        vis: Visibility,
+    ) -> Symbol {
+        Symbol {
+            id: SymbolId(id),
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind,
+            file: FileId(file),
+            span: Span { start: 0, end: 10 },
+            line_span: LineSpan {
+                start: Position { line: id as usize, column: 0 },
+                end: Position { line: id as usize, column: 10 },
+            },
+            parent: None,
+            visibility: vis,
+            signature: None,
+        }
+    }
+
+    fn make_ref(id: u64, source: u64, target: u64, kind: RefKind, file: u64) -> Reference {
+        Reference {
+            id: ReferenceId(id),
+            source: SymbolId(source),
+            target: SymbolId(target),
+            kind,
+            file: FileId(file),
+            span: Span { start: 0, end: 5 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position { line: 1, column: 5 },
+            },
+        }
+    }
+
+    fn make_file_record(id: u64, path: &str) -> FileRecord {
+        FileRecord {
+            id: FileId(id),
+            path: PathBuf::from(path),
+            mtime: 0,
+            language: Language::TypeScript,
+        }
+    }
+
+    #[test]
+    fn test_dead_symbols_empty_graph() {
+        use crate::model::graph::SymbolGraph;
+
+        let sym_graph = SymbolGraph::new();
+        let file_graph = FileGraph::new();
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        assert!(result.dead_symbols.is_empty());
+        assert_eq!(result.summary.total_symbols, 0);
+        assert_eq!(result.summary.entry_point_symbols, 0);
+    }
+
+    #[test]
+    fn test_dead_symbols_multi_file_private_unreachable() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        // File 1 (entry): public fn main
+        // File 2 (non-entry): exported fn api_handler, private fn internal_helper (called by api_handler),
+        //                      private fn dead_internal (never called)
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        file_graph.add_file(make_file(2, "src/utils.ts", false));
+        file_graph.add_import(make_edge(1, 2, &["api_handler"]));
+
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+        sym_graph.add_file(make_file_record(2, "src/utils.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        // File 2: exported symbol acts as entry point for symbol-level analysis
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(2),
+            symbols: vec![
+                make_sym(10, "api_handler", SymbolKind::Function, 2, Visibility::Public),
+                make_sym(11, "internal_helper", SymbolKind::Function, 2, Visibility::Private),
+                make_sym(12, "dead_internal", SymbolKind::Function, 2, Visibility::Private),
+            ],
+            references: vec![
+                make_ref(1, 10, 11, RefKind::Call, 2), // api_handler calls internal_helper
+            ],
+            imports: vec![],
+            exports: vec![ExportRecord {
+                file: FileId(2),
+                symbol: SymbolId(10),
+                exported_name: "api_handler".to_string(),
+                is_default: false,
+                is_reexport: false,
+                is_type_only: false,
+                source_path: None,
+            }],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            dead_names.contains(&"dead_internal"),
+            "dead_internal should be dead (private, never called), dead: {:?}",
+            dead_names
+        );
+        assert!(
+            !dead_names.contains(&"api_handler"),
+            "api_handler should NOT be dead (exported)"
+        );
+        assert!(
+            !dead_names.contains(&"internal_helper"),
+            "internal_helper should NOT be dead (called by api_handler)"
+        );
+    }
+
+    #[test]
+    fn test_dead_symbols_skips_synthetic_kinds() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "importSym", SymbolKind::Import, 1, Visibility::Public),
+                make_sym(3, "exportSym", SymbolKind::Export, 1, Visibility::Public),
+                make_sym(4, "pkgSym", SymbolKind::Package, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Synthetic kinds should not appear in dead symbols list at all
+        assert!(!dead_names.contains(&"importSym"));
+        assert!(!dead_names.contains(&"exportSym"));
+        assert!(!dead_names.contains(&"pkgSym"));
+        // total_symbols should exclude synthetic kinds
+        assert_eq!(result.summary.total_symbols, 1); // only main
+    }
+
+    #[test]
+    fn test_dead_symbols_transitive_reachability() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // main -> a -> b -> c (chain), d is isolated
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "a", SymbolKind::Function, 1, Visibility::Private),
+                make_sym(3, "b", SymbolKind::Function, 1, Visibility::Private),
+                make_sym(4, "c", SymbolKind::Function, 1, Visibility::Private),
+                make_sym(5, "d", SymbolKind::Function, 1, Visibility::Private),
+            ],
+            references: vec![
+                make_ref(1, 1, 2, RefKind::Call, 1),
+                make_ref(2, 2, 3, RefKind::Call, 1),
+                make_ref(3, 3, 4, RefKind::Call, 1),
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert_eq!(dead_names, vec!["d"], "only d should be dead, got: {:?}", dead_names);
+    }
+
+    #[test]
+    fn test_dead_symbols_confidence_with_unresolved() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Create a reference with a placeholder target (unresolved)
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "maybe_dead", SymbolKind::Function, 1, Visibility::Private),
+            ],
+            references: vec![
+                // Unresolved reference: target has a placeholder ID
+                Reference {
+                    id: ReferenceId(1),
+                    source: SymbolId(1),
+                    target: SymbolId(u64::MAX),
+                    kind: RefKind::Call,
+                    file: FileId(1),
+                    span: Span { start: 0, end: 5 },
+                    line_span: LineSpan {
+                        start: Position { line: 1, column: 0 },
+                        end: Position { line: 1, column: 5 },
+                    },
+                },
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+
+        // With unresolved references, confidence should be Medium
+        assert_eq!(result.confidence, Confidence::Medium);
+        assert_eq!(result.summary.unresolved_references, 1);
+        assert!(!result.limitations.is_empty());
+    }
+
+    #[test]
+    fn test_dead_symbols_inheritance_reachability() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // main uses UserClass, UserClass extends BaseClass
+        // BaseClass should be reachable via inheritance
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "UserClass", SymbolKind::Class, 1, Visibility::Public),
+                make_sym(3, "BaseClass", SymbolKind::Class, 1, Visibility::Private),
+                make_sym(4, "UnusedClass", SymbolKind::Class, 1, Visibility::Private),
+            ],
+            references: vec![
+                make_ref(1, 1, 2, RefKind::Call, 1),          // main -> UserClass
+                make_ref(2, 2, 3, RefKind::Inheritance, 1),    // UserClass extends BaseClass
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(!dead_names.contains(&"BaseClass"), "BaseClass reached via inheritance");
+        assert!(dead_names.contains(&"UnusedClass"), "UnusedClass should be dead");
     }
 }

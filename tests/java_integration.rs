@@ -473,6 +473,22 @@ fn test_java_lint_boundary_violation() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
+    // Create rules.toml with a boundary rule: controllers must not import from db
+    std::fs::create_dir_all(tmp.path().join(".statik")).unwrap();
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "no-controller-to-db"
+severity = "error"
+description = "Controllers must not import directly from db layer"
+
+[rules.boundary]
+from = ["src/main/java/com/example/controller/**"]
+deny = ["src/main/java/com/example/db/**"]
+"#,
+    )
+    .unwrap();
+
     let (output, has_errors) = commands::run_lint(
         tmp.path(),
         None,
@@ -512,6 +528,22 @@ fn test_java_lint_boundary_violation() {
 fn test_java_lint_text_output() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
+
+    // Create rules.toml with a boundary rule for text output test
+    std::fs::create_dir_all(tmp.path().join(".statik")).unwrap();
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"[[rules]]
+id = "no-controller-to-db"
+severity = "error"
+description = "Controllers must not import directly from db layer"
+
+[rules.boundary]
+from = ["src/main/java/com/example/controller/**"]
+deny = ["src/main/java/com/example/db/**"]
+"#,
+    )
+    .unwrap();
 
     let (output, _) = commands::run_lint(
         tmp.path(),

@@ -217,6 +217,11 @@ impl FileGraph {
         self.unresolved.iter().filter(|u| u.file == file).count()
     }
 
+    /// Pre-compute the set of files that have unresolved imports.
+    pub fn files_with_unresolved_imports(&self) -> std::collections::HashSet<FileId> {
+        self.unresolved.iter().map(|u| u.file).collect()
+    }
+
     /// Build the graph from extracted data.
     ///
     /// Takes parsed imports and resolves them to file-level edges.

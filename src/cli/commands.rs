@@ -11,7 +11,8 @@ use crate::db::Database;
 use crate::model::file_graph::{
     FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason,
 };
-use crate::model::{FileId, Language, RefKind, SymbolKind};
+use crate::model::graph::SymbolGraph;
+use crate::model::{FileId, Language, ParseResult, RefKind, SymbolKind};
 use crate::resolver::java::JavaResolver;
 use crate::resolver::typescript::TypeScriptResolver;
 use crate::resolver::{Resolution, Resolver};
@@ -40,19 +41,34 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let path_to_id: HashMap<PathBuf, FileId> =
         files.iter().map(|f| (f.path.clone(), f.id)).collect();
 
+    // Batch-load all imports and exports (3 queries total instead of 2N+1)
+    let all_imports = db.all_imports()?;
+    let all_exports = db.all_exports()?;
+
+    let mut imports_by_file: HashMap<FileId, Vec<crate::model::ImportRecord>> = HashMap::new();
+    for imp in all_imports {
+        imports_by_file.entry(imp.file).or_default().push(imp);
+    }
+
+    let mut exports_by_file: HashMap<FileId, Vec<crate::model::ExportRecord>> = HashMap::new();
+    for exp in all_exports {
+        exports_by_file.entry(exp.file).or_default().push(exp);
+    }
+
     // Pre-scan Java files for annotation-based entry points
     let mut annotation_entry_files: std::collections::HashSet<FileId> =
         std::collections::HashSet::new();
     for file in &files {
         if file.language == Language::Java {
-            let imports = db.get_imports_by_file(file.id)?;
-            for import in &imports {
-                if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                    if is_entry_point_annotation(ann)
-                        || ep_config.annotations.iter().any(|a| a == ann)
-                    {
-                        annotation_entry_files.insert(file.id);
-                        break;
+            if let Some(imports) = imports_by_file.get(&file.id) {
+                for import in imports {
+                    if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
+                        if is_entry_point_annotation(ann)
+                            || ep_config.annotations.iter().any(|a| a == ann)
+                        {
+                            annotation_entry_files.insert(file.id);
+                            break;
+                        }
                     }
                 }
             }
@@ -61,7 +77,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 
     // Add files to the graph
     for file in &files {
-        let exports = db.get_exports_by_file(file.id)?;
+        let exports = exports_by_file.remove(&file.id).unwrap_or_default();
         let rel_path = crate::linting::matcher::to_relative(&file.path, project_root);
         let is_entry = is_entry_point(&file.path)
             || annotation_entry_files.contains(&file.id)
@@ -84,7 +100,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 
     // Resolve imports and add edges
     for file in &files {
-        let imports = db.get_imports_by_file(file.id)?;
+        let imports = imports_by_file.remove(&file.id).unwrap_or_default();
 
         // Group imports by target file, tracking metadata per import
         let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
@@ -193,6 +209,55 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 imported_names: names,
                 is_type_only,
                 line,
+            });
+        }
+    }
+
+    Ok(graph)
+}
+
+/// Build a SymbolGraph from the database (symbols + resolved references).
+fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
+    let mut graph = SymbolGraph::new();
+
+    let all_symbols = db.all_symbols()?;
+    let all_refs = db.all_references()?;
+    let all_files = db.all_files()?;
+
+    for file in &all_files {
+        graph.add_file(file.clone());
+    }
+
+    // Build a set of valid symbol IDs for filtering unresolved references
+    let valid_ids: std::collections::HashSet<crate::model::SymbolId> =
+        all_symbols.iter().map(|s| s.id).collect();
+
+    // Group symbols and references by file for add_parse_result
+    let mut file_symbols: HashMap<FileId, Vec<crate::model::Symbol>> = HashMap::new();
+    for sym in all_symbols {
+        file_symbols.entry(sym.file).or_default().push(sym);
+    }
+
+    // Only keep references where both source and target are resolved
+    let mut file_refs: HashMap<FileId, Vec<crate::model::Reference>> = HashMap::new();
+    for r in all_refs {
+        if valid_ids.contains(&r.source) && valid_ids.contains(&r.target) {
+            file_refs.entry(r.file).or_default().push(r);
+        }
+    }
+
+    for file in &all_files {
+        let symbols = file_symbols.remove(&file.id).unwrap_or_default();
+        let references = file_refs.remove(&file.id).unwrap_or_default();
+        if !symbols.is_empty() || !references.is_empty() {
+            graph.add_parse_result(ParseResult {
+                file_id: file.id,
+                symbols,
+                references,
+                imports: vec![],
+                exports: vec![],
+                type_references: vec![],
+                annotations: vec![],
             });
         }
     }
@@ -350,6 +415,19 @@ pub fn run_dead_code(
     runtime_only: bool,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
+
+    if scope_str == "symbols" {
+        // Symbol-level dead code analysis
+        let file_graph = build_file_graph(&db, project_path)?;
+        let symbol_graph = build_symbol_graph(&db)?;
+        let result =
+            crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
+        return Ok(match format {
+            OutputFormat::Text => format_dead_symbols_text(&result),
+            _ => format_json(&result, format),
+        });
+    }
+
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
 
@@ -1165,6 +1243,51 @@ fn format_dead_code_text(result: &crate::analysis::dead_code::DeadCodeResult) ->
         result.summary.dead_exports,
         result.summary.total_exports,
         result.summary.entry_points,
+    ));
+    out.push_str(&format!("Confidence: {}", result.confidence));
+
+    if !result.limitations.is_empty() {
+        out.push('\n');
+        for lim in &result.limitations {
+            out.push_str(&format!("  Warning: {}\n", lim.description));
+        }
+    }
+
+    out
+}
+
+fn format_dead_symbols_text(result: &crate::analysis::dead_code::DeadSymbolResult) -> String {
+    let mut out = String::new();
+
+    if result.dead_symbols.is_empty() {
+        out.push_str("No dead symbols found.\n\n");
+    } else {
+        out.push_str(&format!(
+            "Dead symbols ({}):\n\n",
+            result.dead_symbols.len()
+        ));
+        out.push_str(&format!(
+            "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
+            "Name", "Kind", "File", "Line", "Confidence"
+        ));
+        out.push_str(&format!("  {}\n", "-".repeat(98)));
+
+        for s in &result.dead_symbols {
+            out.push_str(&format!(
+                "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
+                s.name, s.kind, s.file, s.line, format!("{}", s.confidence),
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(&format!(
+        "Summary: {}/{} dead symbols, {} entry point symbols, {}/{} refs resolved\n",
+        result.summary.dead_symbols,
+        result.summary.total_symbols,
+        result.summary.entry_point_symbols,
+        result.summary.resolved_references,
+        result.summary.resolved_references + result.summary.unresolved_references,
     ));
     out.push_str(&format!("Confidence: {}", result.confidence));
 
