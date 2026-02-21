@@ -1,4 +1,6 @@
 /target/
 .statik/
+.claude/
 *.db
 .DS_Store
+team_prompt.md
