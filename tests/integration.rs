@@ -572,7 +572,9 @@ fn test_incremental_index_only_reparses_changed() {
         "All files should be unchanged"
     );
 
-    // Touch one file
+    // Touch one file -- sleep to ensure mtime changes (some filesystems
+    // have 1-second granularity)
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let touched = tmp.path().join("src/orphan.ts");
     let content = std::fs::read_to_string(&touched).unwrap();
     std::fs::write(&touched, format!("{}\n// touched", content)).unwrap();
