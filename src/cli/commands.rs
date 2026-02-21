@@ -107,13 +107,16 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let imports = imports_by_file.remove(&file.id).unwrap_or_default();
 
         // Group imports by target file, tracking metadata per import
-        let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize)>> = HashMap::new();
+        // Tuple: (name, is_type_only, line, is_mod_declaration)
+        let mut edges_by_target: HashMap<FileId, Vec<(String, bool, usize, bool)>> = HashMap::new();
 
         for import in &imports {
             // Skip annotation marker imports (handled during entry point detection)
             if import.source_path.starts_with("@annotation:") {
                 continue;
             }
+
+            let is_mod = import.source_path.starts_with("@mod:");
 
             let lang = file_language
                 .get(&file.id)
@@ -145,6 +148,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                                         "*".to_string(),
                                         import.is_type_only,
                                         import.line_span.start.line,
+                                        false,
                                     ));
                                 }
                             }
@@ -167,6 +171,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                             import.imported_name.clone(),
                             import.is_type_only,
                             import.line_span.start.line,
+                            is_mod,
                         ));
                     }
                 }
@@ -205,16 +210,19 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
 
         // Create edges
         for (target_id, imports_meta) in edges_by_target {
-            let names: Vec<String> = imports_meta.iter().map(|(n, _, _)| n.clone()).collect();
+            let names: Vec<String> = imports_meta.iter().map(|(n, _, _, _)| n.clone()).collect();
             // Edge is type-only only if ALL grouped imports are type-only
-            let is_type_only = imports_meta.iter().all(|(_, t, _)| *t);
+            let is_type_only = imports_meta.iter().all(|(_, t, _, _)| *t);
+            // Edge is mod-declaration if ANY grouped import is a mod declaration
+            let is_mod_declaration = imports_meta.iter().any(|(_, _, _, m)| *m);
             // Use the earliest line number
-            let line = imports_meta.iter().map(|(_, _, l)| *l).min().unwrap_or(0);
+            let line = imports_meta.iter().map(|(_, _, l, _)| *l).min().unwrap_or(0);
             graph.add_import(FileImport {
                 from: file.id,
                 to: target_id,
                 imported_names: names,
                 is_type_only,
+                is_mod_declaration,
                 line,
             });
         }
@@ -396,6 +404,23 @@ fn maybe_filter_type_only(graph: FileGraph, runtime_only: bool) -> FileGraph {
     }
 }
 
+/// Apply --path glob filtering if requested.
+fn maybe_filter_paths(
+    graph: FileGraph,
+    path_glob: Option<&str>,
+    project_root: &Path,
+) -> Result<FileGraph> {
+    match path_glob {
+        Some(pattern) => {
+            let glob = globset::Glob::new(pattern)
+                .with_context(|| format!("Invalid glob pattern: {}", pattern))?
+                .compile_matcher();
+            Ok(graph.filter_to_paths(&glob, project_root))
+        }
+        None => Ok(graph),
+    }
+}
+
 /// Run the `deps` command.
 #[allow(clippy::too_many_arguments)]
 pub fn run_deps(
@@ -407,10 +432,12 @@ pub fn run_deps(
     format: &OutputFormat,
     no_index: bool,
     runtime_only: bool,
+    path_glob: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let direction = match direction_str {
         "in" => Direction::ImportedBy,
@@ -441,6 +468,117 @@ pub fn run_deps(
     })
 }
 
+/// Run the `deps --between` command: list all edges where source matches from_glob
+/// and target matches to_glob.
+#[allow(clippy::too_many_arguments)]
+pub fn run_deps_between(
+    project_path: &Path,
+    from_glob: &str,
+    to_glob: &str,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    let from_matcher = globset::Glob::new(from_glob)
+        .with_context(|| format!("Invalid from glob: {}", from_glob))?
+        .compile_matcher();
+    let to_matcher = globset::Glob::new(to_glob)
+        .with_context(|| format!("Invalid to glob: {}", to_glob))?
+        .compile_matcher();
+
+    #[derive(serde::Serialize)]
+    struct BetweenEdge {
+        from: String,
+        to: String,
+        imported_names: Vec<String>,
+        is_type_only: bool,
+        line: usize,
+    }
+
+    #[derive(serde::Serialize)]
+    struct BetweenResult {
+        command: String,
+        from_glob: String,
+        to_glob: String,
+        edges: Vec<BetweenEdge>,
+        count: usize,
+    }
+
+    let mut edges = Vec::new();
+    for file_edges in graph.imports.values() {
+        for edge in file_edges {
+            let from_info = match graph.files.get(&edge.from) {
+                Some(f) => f,
+                None => continue,
+            };
+            let to_info = match graph.files.get(&edge.to) {
+                Some(f) => f,
+                None => continue,
+            };
+            let from_rel = from_info
+                .path
+                .strip_prefix(project_path)
+                .unwrap_or(&from_info.path);
+            let to_rel = to_info
+                .path
+                .strip_prefix(project_path)
+                .unwrap_or(&to_info.path);
+            if from_matcher.is_match(from_rel) && to_matcher.is_match(to_rel) {
+                edges.push(BetweenEdge {
+                    from: display_path(&from_info.path),
+                    to: display_path(&to_info.path),
+                    imported_names: edge.imported_names.clone(),
+                    is_type_only: edge.is_type_only,
+                    line: edge.line,
+                });
+            }
+        }
+    }
+
+    let count = edges.len();
+    let result = BetweenResult {
+        command: "deps-between".to_string(),
+        from_glob: from_glob.to_string(),
+        to_glob: to_glob.to_string(),
+        edges,
+        count,
+    };
+
+    Ok(match format {
+        OutputFormat::Text => {
+            let mut out = String::new();
+            out.push_str(&format!(
+                "Dependencies from '{}' to '{}' ({}):\n\n",
+                from_glob, to_glob, count
+            ));
+            if result.edges.is_empty() {
+                out.push_str("No matching edges found.\n");
+            } else {
+                for e in &result.edges {
+                    let names = if e.imported_names.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", e.imported_names.join(", "))
+                    };
+                    let type_label = if e.is_type_only { " [type-only]" } else { "" };
+                    out.push_str(&format!(
+                        "  {} -> {}{}{}\n",
+                        e.from, e.to, names, type_label
+                    ));
+                }
+            }
+            out
+        }
+        _ => format_json(&result, format),
+    })
+}
+
 /// Run the `dead-code` command.
 pub fn run_dead_code(
     project_path: &Path,
@@ -448,12 +586,14 @@ pub fn run_dead_code(
     format: &OutputFormat,
     no_index: bool,
     runtime_only: bool,
+    path_glob: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
 
     if scope_str == "symbols" {
         // Symbol-level dead code analysis
         let file_graph = build_file_graph(&db, project_path)?;
+        let file_graph = maybe_filter_paths(file_graph, path_glob, project_path)?;
         let symbol_graph = build_symbol_graph(&db)?;
         let result = crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
         return Ok(match format {
@@ -464,6 +604,7 @@ pub fn run_dead_code(
 
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let scope = match scope_str {
         "files" => DeadCodeScope::Files,
@@ -484,10 +625,13 @@ pub fn run_cycles(
     format: &OutputFormat,
     no_index: bool,
     runtime_only: bool,
+    path_glob: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = graph.without_mod_declaration_edges();
 
     let result = detect_cycles(&graph);
     Ok(match format {
@@ -497,6 +641,7 @@ pub fn run_cycles(
 }
 
 /// Run the `impact` command.
+#[allow(clippy::too_many_arguments)]
 pub fn run_impact(
     project_path: &Path,
     file_path: &str,
@@ -504,10 +649,12 @@ pub fn run_impact(
     format: &OutputFormat,
     no_index: bool,
     runtime_only: bool,
+    path_glob: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let abs_path = project_path.join(file_path);
     let target_id = graph
@@ -536,9 +683,11 @@ pub fn run_exports(
     file_path: &str,
     format: &OutputFormat,
     no_index: bool,
+    path_glob: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let abs_path = project_path.join(file_path);
     let target_id = graph
@@ -556,11 +705,26 @@ pub fn run_exports(
 
     // Check which exports are used
     let mut used_exports = std::collections::HashSet::new();
+    let target_file_stem = file_info
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     for edges in graph.imports.values() {
         for edge in edges {
             if edge.to == target_id {
                 for name in &edge.imported_names {
                     used_exports.insert(name.clone());
+                }
+                // Rust module-path import: if imported name matches the file stem,
+                // all exports are considered used (e.g. `use crate::cli::commands`)
+                if file_info.language == Language::Rust
+                    && !target_file_stem.is_empty()
+                    && edge.imported_names.iter().any(|n| n == target_file_stem)
+                {
+                    for exp in &file_info.exports {
+                        used_exports.insert(exp.exported_name.clone());
+                    }
                 }
             }
         }
@@ -625,12 +789,24 @@ pub fn run_exports(
 }
 
 /// Run the `summary` command.
-pub fn run_summary(project_path: &Path, format: &OutputFormat, no_index: bool) -> Result<String> {
+pub fn run_summary(
+    project_path: &Path,
+    format: &OutputFormat,
+    no_index: bool,
+    path_glob: Option<&str>,
+    by_directory: bool,
+) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    if by_directory {
+        return run_summary_by_directory(&graph, project_path, format);
+    }
 
     let dead = detect_dead_code(&graph, DeadCodeScope::Both);
-    let cycles = detect_cycles(&graph);
+    let graph_no_mod = graph.without_mod_declaration_edges();
+    let cycles = detect_cycles(&graph_no_mod);
 
     // Count files by language
     let mut by_language: HashMap<String, usize> = HashMap::new();
@@ -709,7 +885,162 @@ pub fn run_summary(project_path: &Path, format: &OutputFormat, no_index: bool) -
     })
 }
 
+/// Run the `summary --by-directory` command: aggregate stats per directory.
+fn run_summary_by_directory(
+    graph: &crate::model::file_graph::FileGraph,
+    project_root: &Path,
+    format: &OutputFormat,
+) -> Result<String> {
+    use std::collections::HashSet;
+
+    let dead = detect_dead_code(graph, DeadCodeScope::Both);
+
+    // Build set of dead export keys for quick lookup
+    let dead_export_keys: HashSet<(FileId, String)> = dead
+        .dead_exports
+        .iter()
+        .map(|e| (e.file_id, e.export_name.clone()))
+        .collect();
+
+    // Build file -> directory mapping using relative paths
+    let file_dir: HashMap<FileId, String> = graph
+        .files
+        .iter()
+        .map(|(id, info)| {
+            let rel = info.path.strip_prefix(project_root).unwrap_or(&info.path);
+            let dir = rel
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            (*id, if dir.is_empty() { ".".to_string() } else { dir })
+        })
+        .collect();
+
+    // Aggregate per directory
+    #[derive(Default)]
+    struct DirStats {
+        files: usize,
+        exports: usize,
+        dead_exports: usize,
+        fan_out_sum: usize,
+        fan_in_sum: usize,
+    }
+
+    let mut dir_stats: HashMap<String, DirStats> = HashMap::new();
+
+    for (file_id, info) in &graph.files {
+        let dir = file_dir.get(file_id).unwrap();
+        let stats = dir_stats.entry(dir.clone()).or_default();
+        stats.files += 1;
+        stats.exports += info.exports.len();
+
+        // Count dead exports for this file
+        for exp in &info.exports {
+            if dead_export_keys.contains(&(*file_id, exp.exported_name.clone())) {
+                stats.dead_exports += 1;
+            }
+        }
+
+        // Fan-out: number of distinct files this file imports
+        let fan_out = graph.direct_imports(*file_id).len();
+        stats.fan_out_sum += fan_out;
+
+        // Fan-in: number of distinct files that import this file
+        let fan_in = graph.direct_importers(*file_id).len();
+        stats.fan_in_sum += fan_in;
+    }
+
+    #[derive(serde::Serialize)]
+    struct DirSummaryEntry {
+        directory: String,
+        files: usize,
+        exports: usize,
+        dead_exports: usize,
+        avg_fan_out: f64,
+        avg_fan_in: f64,
+    }
+
+    let mut directories: Vec<DirSummaryEntry> = dir_stats
+        .into_iter()
+        .map(|(dir, stats)| {
+            let avg_fan_out = if stats.files > 0 {
+                (stats.fan_out_sum as f64 / stats.files as f64 * 100.0).round() / 100.0
+            } else {
+                0.0
+            };
+            let avg_fan_in = if stats.files > 0 {
+                (stats.fan_in_sum as f64 / stats.files as f64 * 100.0).round() / 100.0
+            } else {
+                0.0
+            };
+            DirSummaryEntry {
+                directory: dir,
+                files: stats.files,
+                exports: stats.exports,
+                dead_exports: stats.dead_exports,
+                avg_fan_out,
+                avg_fan_in,
+            }
+        })
+        .collect();
+
+    directories.sort_by(|a, b| a.directory.cmp(&b.directory));
+
+    #[derive(serde::Serialize)]
+    struct DirSummaryResult {
+        command: String,
+        directories: Vec<DirSummaryEntry>,
+        count: usize,
+    }
+
+    let count = directories.len();
+    let result = DirSummaryResult {
+        command: "summary".to_string(),
+        directories,
+        count,
+    };
+
+    Ok(match format {
+        OutputFormat::Text => format_dir_summary_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+fn format_dir_summary_text(result: &impl serde::Serialize) -> String {
+    let value = serde_json::to_value(result).unwrap_or_default();
+    let mut out = String::new();
+    out.push_str("Directory Summary\n");
+    out.push_str(&format!("{}\n\n", "=".repeat(40)));
+
+    if let Some(dirs) = value.get("directories").and_then(|v| v.as_array()) {
+        out.push_str(&format!(
+            "  {:<40} {:>5} {:>7} {:>12} {:>10} {:>9}\n",
+            "Directory", "Files", "Exports", "Dead Exports", "Avg Fan-Out", "Avg Fan-In"
+        ));
+        out.push_str(&format!("  {}\n", "-".repeat(85)));
+
+        for d in dirs {
+            let dir = d.get("directory").and_then(|v| v.as_str()).unwrap_or("?");
+            let files = d.get("files").and_then(|v| v.as_u64()).unwrap_or(0);
+            let exports = d.get("exports").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dead = d.get("dead_exports").and_then(|v| v.as_u64()).unwrap_or(0);
+            let fan_out = d.get("avg_fan_out").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let fan_in = d.get("avg_fan_in").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            out.push_str(&format!(
+                "  {:<40} {:>5} {:>7} {:>12} {:>10.2} {:>9.2}\n",
+                dir, files, exports, dead, fan_out, fan_in
+            ));
+        }
+
+        let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+        out.push_str(&format!("\n{} directories\n", count));
+    }
+
+    out
+}
+
 /// Run the `lint` command. Returns (output_string, has_errors).
+#[allow(clippy::too_many_arguments)]
 pub fn run_lint(
     project_path: &Path,
     config_path: Option<&str>,
@@ -717,7 +1048,10 @@ pub fn run_lint(
     severity_threshold: &str,
     format: &OutputFormat,
     no_index: bool,
+    path_glob: Option<&str>,
+    freeze: bool,
 ) -> Result<(String, bool)> {
+    use crate::linting::baseline::Baseline;
     use crate::linting::config::{find_config_path, load_config, Severity};
     use crate::linting::rules::evaluate_rules;
 
@@ -745,6 +1079,7 @@ pub fn run_lint(
 
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let mut result = evaluate_rules(&config, &graph, project_path)?;
 
@@ -754,6 +1089,29 @@ pub fn run_lint(
         Severity::Warning => v.severity == Severity::Error || v.severity == Severity::Warning,
         Severity::Info => true,
     });
+
+    if freeze {
+        // Save current violations as the baseline
+        let baseline = Baseline::from_violations(&result.violations);
+        baseline.save(project_path)?;
+        eprintln!(
+            "Baseline saved with {} violations to .statik/lint-baseline.json",
+            result.violations.len()
+        );
+    } else {
+        // Filter out known baseline violations
+        if let Some(baseline) = Baseline::load(project_path)? {
+            let total_before = result.violations.len();
+            result.violations = baseline.filter_known(result.violations);
+            let suppressed = total_before - result.violations.len();
+            if suppressed > 0 {
+                eprintln!(
+                    "{} baseline violations suppressed (use --update-baseline to refresh)",
+                    suppressed
+                );
+            }
+        }
+    }
 
     // Recompute summary after filtering
     let errors = result
@@ -1189,7 +1547,9 @@ pub fn run_callers(
 /// Format any serializable analysis result as JSON.
 fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
+        OutputFormat::Json | OutputFormat::Csv => {
+            serde_json::to_string_pretty(value).unwrap_or_default()
+        }
         OutputFormat::Compact => serde_json::to_string(value).unwrap_or_default(),
         OutputFormat::Text => unreachable!("text format should be handled by caller"),
     }
@@ -2044,5 +2404,113 @@ mod tests {
             "fan-limit violation should not show line 0"
         );
         assert!(text.contains("fix: Split this file into smaller modules"));
+    }
+
+    /// Regression test for bug #32: summary cycle count must match cycles command.
+    /// The summary command must filter mod-declaration edges before counting cycles,
+    /// just like run_cycles does.
+    #[test]
+    fn test_summary_cycle_count_matches_cycles_command() {
+        use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
+        use crate::model::{FileId, Language};
+
+        let mut graph = FileGraph::new();
+
+        // Create files: main -> a <-> b (real cycle), main -> c via mod declaration
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/main.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: true,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/a.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(3),
+            path: PathBuf::from("src/b.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(4),
+            path: PathBuf::from("src/c.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // main imports a (normal edge)
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["a".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        // a <-> b: real cycle
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["b".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 2,
+        });
+        graph.add_import(FileImport {
+            from: FileId(3),
+            to: FileId(2),
+            imported_names: vec!["a".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        // main -> c via mod declaration (should NOT count as cycle edge)
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(4),
+            imported_names: vec!["c".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 3,
+        });
+        // c -> main via mod declaration (would be false cycle without filtering)
+        graph.add_import(FileImport {
+            from: FileId(4),
+            to: FileId(1),
+            imported_names: vec!["main".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+
+        // Simulate what run_cycles does
+        let cycles_graph = graph.without_mod_declaration_edges();
+        let cycles_result = crate::analysis::cycles::detect_cycles(&cycles_graph);
+
+        // Simulate what run_summary does
+        let summary_graph = graph.without_mod_declaration_edges();
+        let summary_cycles = crate::analysis::cycles::detect_cycles(&summary_graph);
+
+        assert_eq!(
+            cycles_result.cycles.len(),
+            summary_cycles.cycles.len(),
+            "summary and cycles commands must report the same cycle count"
+        );
+        assert_eq!(
+            cycles_result.summary.files_in_cycles,
+            summary_cycles.summary.files_in_cycles,
+            "summary and cycles commands must report the same files_in_cycles count"
+        );
+        // The real cycle is a <-> b (1 cycle, 2 files)
+        assert_eq!(cycles_result.cycles.len(), 1);
+        assert_eq!(cycles_result.summary.files_in_cycles, 2);
     }
 }

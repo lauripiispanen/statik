@@ -92,6 +92,7 @@ fn test_rust_deps_mod_declarations() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -133,6 +134,7 @@ fn test_rust_deps_use_import() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -149,6 +151,40 @@ fn test_rust_deps_use_import() {
 }
 
 // =============================================================================
+// DEPS - verify crate name resolution (use crate_name::...)
+// =============================================================================
+
+#[test]
+fn test_rust_deps_crate_name_import() {
+    let tmp = setup_rust_project();
+    index_rust_project(tmp.path());
+
+    // main.rs has `use rust_project::User;` which should resolve via crate name
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main.rs",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
+
+    // `use rust_project::User` should resolve via crate name to lib.rs (where User is re-exported)
+    assert!(
+        !import_paths.is_empty(),
+        "main.rs should have resolved imports via crate name, got no imports"
+    );
+}
+
+// =============================================================================
 // EXPORTS - verify pub items are tracked as exports
 // =============================================================================
 
@@ -158,7 +194,7 @@ fn test_rust_exports_pub_struct() {
     index_rust_project(tmp.path());
 
     let output =
-        commands::run_exports(tmp.path(), "src/model/user.rs", &OutputFormat::Json, true).unwrap();
+        commands::run_exports(tmp.path(), "src/model/user.rs", &OutputFormat::Json, true, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
@@ -177,7 +213,7 @@ fn test_rust_exports_reexport() {
     index_rust_project(tmp.path());
 
     let output =
-        commands::run_exports(tmp.path(), "src/lib.rs", &OutputFormat::Json, true).unwrap();
+        commands::run_exports(tmp.path(), "src/lib.rs", &OutputFormat::Json, true, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
@@ -200,7 +236,7 @@ fn test_rust_dead_code_detects_orphan() {
     index_rust_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -223,7 +259,7 @@ fn test_rust_dead_code_excludes_entry_points() {
     index_rust_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -263,7 +299,7 @@ fn test_rust_cycles_detected() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -291,6 +327,13 @@ fn test_rust_cycles_detected() {
         "Cycle should involve b.rs, got {:?}",
         all_cycle_paths
     );
+
+    // mod.rs should NOT be in any cycle (mod declarations are not real dependencies)
+    assert!(
+        !all_cycle_paths.iter().any(|p| p.contains("cycle/mod.rs")),
+        "cycle/mod.rs should NOT be in cycle (mod declarations excluded), got {:?}",
+        all_cycle_paths
+    );
 }
 
 // =============================================================================
@@ -302,7 +345,7 @@ fn test_rust_summary_command() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true).unwrap();
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -344,6 +387,7 @@ fn test_rust_impact_analysis() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 

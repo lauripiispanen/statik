@@ -1,12 +1,15 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Top-level lint configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LintConfig {
     pub rules: Vec<RuleDefinition>,
+    #[serde(default)]
+    pub tags: HashMap<String, Vec<String>>,
 }
 
 /// A single lint rule definition.
@@ -30,6 +33,14 @@ pub enum RuleKind {
     Containment(ContainmentRuleConfig),
     ImportRestriction(ImportRestrictionRuleConfig),
     FanLimit(FanLimitRuleConfig),
+    CyclePolicy(CyclePolicyRuleConfig),
+    StabilityLimit(StabilityLimitRuleConfig),
+    NamingBoundary(NamingBoundaryRuleConfig),
+    RestrictedConsumer(RestrictedConsumerRuleConfig),
+    ExportLimit(ExportLimitRuleConfig),
+    CouplingWeight(CouplingWeightRuleConfig),
+    Cohesion(CohesionRuleConfig),
+    TagBoundary(TagBoundaryRuleConfig),
 }
 
 /// Configuration for a boundary rule.
@@ -81,6 +92,66 @@ pub struct FanLimitRuleConfig {
     pub max_fan_in: Option<u32>,
     #[serde(default)]
     pub max_fan_out: Option<u32>,
+}
+
+/// Configuration for a cycle policy rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CyclePolicyRuleConfig {
+    #[serde(default)]
+    pub max_cycle_length: usize,
+    #[serde(default)]
+    pub pattern: Option<Vec<String>>,
+}
+
+/// Configuration for a stability limit rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StabilityLimitRuleConfig {
+    pub pattern: Vec<String>,
+    pub max_instability: f64,
+}
+
+/// Configuration for a naming boundary rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamingBoundaryRuleConfig {
+    pub pattern: Vec<String>,
+    pub must_match: String,
+}
+
+/// Configuration for a restricted consumer rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestrictedConsumerRuleConfig {
+    pub target: Vec<String>,
+    pub allowed_consumers: Vec<String>,
+}
+
+/// Configuration for an export limit rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportLimitRuleConfig {
+    pub pattern: Vec<String>,
+    pub max_exports: u32,
+}
+
+/// Configuration for a coupling weight rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CouplingWeightRuleConfig {
+    pub pattern: Vec<String>,
+    pub max_names_per_edge: u32,
+}
+
+/// Configuration for a cohesion rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CohesionRuleConfig {
+    pub pattern: Vec<String>,
+    pub max_external_ratio: f64,
+}
+
+/// Configuration for a tag-based boundary rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagBoundaryRuleConfig {
+    pub from_tag: String,
+    pub deny_tags: Vec<String>,
+    #[serde(default)]
+    pub except_tags: Option<Vec<String>>,
 }
 
 /// Severity level for a lint rule.
@@ -720,6 +791,72 @@ rules = []
     }
 
     #[test]
+    fn test_parse_tag_boundary_rule() {
+        let toml = r#"
+[tags]
+api = ["src/api/**"]
+internal = ["src/internal/**"]
+shared = ["src/shared/**"]
+
+[[rules]]
+id = "no-api-to-internal"
+severity = "error"
+description = "API must not access internal modules"
+
+[rules.tag_boundary]
+from_tag = "api"
+deny_tags = ["internal"]
+except_tags = ["shared"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.tags.len(), 3);
+        assert_eq!(config.tags["api"], vec!["src/api/**"]);
+        assert_eq!(config.tags["internal"], vec!["src/internal/**"]);
+
+        match &config.rules[0].rule {
+            RuleKind::TagBoundary(t) => {
+                assert_eq!(t.from_tag, "api");
+                assert_eq!(t.deny_tags, vec!["internal"]);
+                assert_eq!(
+                    t.except_tags.as_deref(),
+                    Some(vec!["shared".to_string()].as_slice())
+                );
+            }
+            other => panic!("Expected TagBoundary rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_tag_boundary_no_except() {
+        let toml = r#"
+[tags]
+api = ["src/api/**"]
+db = ["src/db/**"]
+
+[[rules]]
+id = "no-api-to-db"
+severity = "warning"
+description = "API must not access DB directly"
+
+[rules.tag_boundary]
+from_tag = "api"
+deny_tags = ["db"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::TagBoundary(t) => {
+                assert_eq!(t.from_tag, "api");
+                assert_eq!(t.deny_tags, vec!["db"]);
+                assert!(t.except_tags.is_none());
+            }
+            other => panic!("Expected TagBoundary rule, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_load_entry_point_config_from_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let statik_dir = dir.path().join(".statik");
@@ -739,5 +876,199 @@ annotations = ["Scheduled"]
         let ep = load_entry_point_config(dir.path());
         assert_eq!(ep.patterns, vec!["**/Batch.java"]);
         assert_eq!(ep.annotations, vec!["Scheduled"]);
+    }
+
+    // =========================================================================
+    // Phase 2b rule config parsing
+    // =========================================================================
+
+    #[test]
+    fn test_parse_cycle_policy_rule() {
+        let toml = r#"
+[[rules]]
+id = "no-cycles"
+severity = "error"
+description = "No cycles allowed"
+
+[rules.cycle_policy]
+max_cycle_length = 0
+pattern = ["src/**"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::CyclePolicy(c) => {
+                assert_eq!(c.max_cycle_length, 0);
+                assert_eq!(c.pattern.as_deref(), Some(vec!["src/**".to_string()].as_slice()));
+            }
+            other => panic!("Expected CyclePolicy rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_cycle_policy_no_pattern() {
+        let toml = r#"
+[[rules]]
+id = "no-cycles"
+severity = "error"
+description = "No cycles allowed"
+
+[rules.cycle_policy]
+max_cycle_length = 3
+"#;
+
+        let config = parse_config(toml).unwrap();
+        match &config.rules[0].rule {
+            RuleKind::CyclePolicy(c) => {
+                assert_eq!(c.max_cycle_length, 3);
+                assert!(c.pattern.is_none());
+            }
+            other => panic!("Expected CyclePolicy rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_stability_limit_rule() {
+        let toml = r#"
+[[rules]]
+id = "stable-model"
+severity = "warning"
+description = "Model layer must be stable"
+
+[rules.stability_limit]
+pattern = ["src/model/**"]
+max_instability = 0.3
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::StabilityLimit(s) => {
+                assert_eq!(s.pattern, vec!["src/model/**"]);
+                assert!((s.max_instability - 0.3).abs() < f64::EPSILON);
+            }
+            other => panic!("Expected StabilityLimit rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_naming_boundary_rule() {
+        let toml = r#"
+[[rules]]
+id = "service-naming"
+severity = "warning"
+description = "Services must follow naming convention"
+
+[rules.naming_boundary]
+pattern = ["src/services/**"]
+must_match = ".*Service\\.(ts|rs)$"
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::NamingBoundary(n) => {
+                assert_eq!(n.pattern, vec!["src/services/**"]);
+                assert_eq!(n.must_match, r".*Service\.(ts|rs)$");
+            }
+            other => panic!("Expected NamingBoundary rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_restricted_consumer_rule() {
+        let toml = r#"
+[[rules]]
+id = "secrets-restricted"
+severity = "error"
+description = "Only auth can access secrets"
+
+[rules.restricted_consumer]
+target = ["src/core/secrets.ts"]
+allowed_consumers = ["src/auth/**"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::RestrictedConsumer(rc) => {
+                assert_eq!(rc.target, vec!["src/core/secrets.ts"]);
+                assert_eq!(rc.allowed_consumers, vec!["src/auth/**"]);
+            }
+            other => panic!("Expected RestrictedConsumer rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_export_limit_rule() {
+        let toml = r#"
+[[rules]]
+id = "export-limit"
+severity = "warning"
+description = "Too many exports"
+
+[rules.export_limit]
+pattern = ["src/**"]
+max_exports = 10
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::ExportLimit(el) => {
+                assert_eq!(el.pattern, vec!["src/**"]);
+                assert_eq!(el.max_exports, 10);
+            }
+            other => panic!("Expected ExportLimit rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_coupling_weight_rule() {
+        let toml = r#"
+[[rules]]
+id = "coupling"
+severity = "warning"
+description = "Too tightly coupled"
+
+[rules.coupling_weight]
+pattern = ["src/**"]
+max_names_per_edge = 5
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::CouplingWeight(cw) => {
+                assert_eq!(cw.pattern, vec!["src/**"]);
+                assert_eq!(cw.max_names_per_edge, 5);
+            }
+            other => panic!("Expected CouplingWeight rule, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_cohesion_rule() {
+        let toml = r#"
+[[rules]]
+id = "cohesion"
+severity = "warning"
+description = "Low module cohesion"
+
+[rules.cohesion]
+pattern = ["src/modules/**"]
+max_external_ratio = 0.6
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.rules.len(), 1);
+        match &config.rules[0].rule {
+            RuleKind::Cohesion(c) => {
+                assert_eq!(c.pattern, vec!["src/modules/**"]);
+                assert!((c.max_external_ratio - 0.6).abs() < f64::EPSILON);
+            }
+            other => panic!("Expected Cohesion rule, got {:?}", other),
+        }
     }
 }

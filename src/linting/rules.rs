@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::cycles::detect_cycles;
 use crate::analysis::Confidence;
 use crate::model::file_graph::FileGraph;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::config::{LintConfig, RuleKind, Severity};
 use super::matcher::{to_relative, FileMatcher};
@@ -51,6 +52,17 @@ pub fn evaluate_rules(
     project_root: &Path,
 ) -> Result<LintResult> {
     let mut all_violations = Vec::new();
+
+    // Pre-compute cycle detection once if any rule needs it (avoids O(V+E) per rule).
+    let has_cycle_rule = config
+        .rules
+        .iter()
+        .any(|r| matches!(&r.rule, RuleKind::CyclePolicy(_)));
+    let precomputed_cycles = if has_cycle_rule {
+        Some(detect_cycles(graph))
+    } else {
+        None
+    };
 
     for rule_def in &config.rules {
         match &rule_def.rule {
@@ -386,6 +398,385 @@ pub fn evaluate_rules(
                     }
                 }
             }
+            RuleKind::CyclePolicy(cycle_config) => {
+                let cycle_result = precomputed_cycles.as_ref().unwrap();
+                let pattern_matcher = match &cycle_config.pattern {
+                    Some(patterns) if !patterns.is_empty() => Some(FileMatcher::new(patterns)?),
+                    _ => None,
+                };
+
+                for cycle in &cycle_result.cycles {
+                    if cycle.length > cycle_config.max_cycle_length {
+                        if let Some(ref matcher) = pattern_matcher {
+                            let any_match = cycle.files.iter().any(|f| {
+                                let rel = to_relative(&f.path, project_root);
+                                matcher.matches(rel)
+                            });
+                            if !any_match {
+                                continue;
+                            }
+                        }
+
+                        let file_names: Vec<String> = cycle
+                            .files
+                            .iter()
+                            .map(|f| {
+                                to_relative(&f.path, project_root)
+                                    .display()
+                                    .to_string()
+                            })
+                            .collect();
+
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: format!(
+                                "{} (cycle of length {}: {})",
+                                rule_def.description,
+                                cycle.length,
+                                file_names.join(" -> "),
+                            ),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: to_relative(&cycle.files[0].path, project_root)
+                                .to_path_buf(),
+                            target_file: to_relative(&cycle.files[0].path, project_root)
+                                .to_path_buf(),
+                            imported_names: vec![],
+                            line: 0,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::StabilityLimit(stability_config) => {
+                let pattern_matcher = FileMatcher::new(&stability_config.pattern)?;
+
+                for (file_id, file_info) in graph.files.iter() {
+                    let file_rel = to_relative(&file_info.path, project_root);
+
+                    if !pattern_matcher.matches(file_rel) {
+                        continue;
+                    }
+
+                    let fan_out = graph
+                        .import_edges(*file_id)
+                        .map(|edges| edges.iter().map(|e| e.to).collect::<HashSet<_>>().len())
+                        .unwrap_or(0);
+                    let fan_in = graph
+                        .imported_by_edges(*file_id)
+                        .map(|edges| {
+                            edges.iter().map(|e| e.from).collect::<HashSet<_>>().len()
+                        })
+                        .unwrap_or(0);
+
+                    let total = fan_in + fan_out;
+                    if total == 0 {
+                        continue;
+                    }
+
+                    let instability = fan_out as f64 / total as f64;
+
+                    if instability > stability_config.max_instability {
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: format!(
+                                "{} (instability {:.2} exceeds limit {:.2})",
+                                rule_def.description,
+                                instability,
+                                stability_config.max_instability,
+                            ),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: file_rel.to_path_buf(),
+                            target_file: file_rel.to_path_buf(),
+                            imported_names: vec![],
+                            line: 0,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::NamingBoundary(naming_config) => {
+                let pattern_matcher = FileMatcher::new(&naming_config.pattern)?;
+                let name_regex = regex::Regex::new(&naming_config.must_match)?;
+
+                for file_info in graph.files.values() {
+                    let file_rel = to_relative(&file_info.path, project_root);
+
+                    if !pattern_matcher.matches(file_rel) {
+                        continue;
+                    }
+
+                    let file_name = file_rel.display().to_string();
+                    if !name_regex.is_match(&file_name) {
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: format!(
+                                "{} (file '{}' does not match '{}')",
+                                rule_def.description, file_name, naming_config.must_match,
+                            ),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: file_rel.to_path_buf(),
+                            target_file: file_rel.to_path_buf(),
+                            imported_names: vec![],
+                            line: 0,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::RestrictedConsumer(rc_config) => {
+                let target_matcher = FileMatcher::new(&rc_config.target)?;
+                let allowed_matcher = FileMatcher::new(&rc_config.allowed_consumers)?;
+
+                for (source_id, edges) in graph.imports.iter() {
+                    let source_info = match graph.files.get(source_id) {
+                        Some(info) => info,
+                        None => continue,
+                    };
+                    let source_rel = to_relative(&source_info.path, project_root);
+
+                    for edge in edges {
+                        let target_info = match graph.files.get(&edge.to) {
+                            Some(info) => info,
+                            None => continue,
+                        };
+                        let target_rel = to_relative(&target_info.path, project_root);
+
+                        if !target_matcher.matches(target_rel) {
+                            continue;
+                        }
+
+                        if allowed_matcher.matches(source_rel) {
+                            continue;
+                        }
+
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: rule_def.description.clone(),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: source_rel.to_path_buf(),
+                            target_file: target_rel.to_path_buf(),
+                            imported_names: edge.imported_names.clone(),
+                            line: edge.line,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::ExportLimit(export_config) => {
+                let pattern_matcher = FileMatcher::new(&export_config.pattern)?;
+
+                for file_info in graph.files.values() {
+                    let file_rel = to_relative(&file_info.path, project_root);
+
+                    if !pattern_matcher.matches(file_rel) {
+                        continue;
+                    }
+
+                    let count = file_info.exports.len();
+                    if count > export_config.max_exports as usize {
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: format!(
+                                "{} ({} exports exceeds limit {})",
+                                rule_def.description, count, export_config.max_exports,
+                            ),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: file_rel.to_path_buf(),
+                            target_file: file_rel.to_path_buf(),
+                            imported_names: vec![],
+                            line: 0,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::CouplingWeight(coupling_config) => {
+                let pattern_matcher = FileMatcher::new(&coupling_config.pattern)?;
+
+                for (source_id, edges) in graph.imports.iter() {
+                    let source_info = match graph.files.get(source_id) {
+                        Some(info) => info,
+                        None => continue,
+                    };
+                    let source_rel = to_relative(&source_info.path, project_root);
+
+                    if !pattern_matcher.matches(source_rel) {
+                        continue;
+                    }
+
+                    for edge in edges {
+                        let name_count = edge.imported_names.len();
+                        if name_count > coupling_config.max_names_per_edge as usize {
+                            let target_info = match graph.files.get(&edge.to) {
+                                Some(info) => info,
+                                None => continue,
+                            };
+                            let target_rel = to_relative(&target_info.path, project_root);
+
+                            all_violations.push(LintViolation {
+                                rule_id: rule_def.id.clone(),
+                                severity: rule_def.severity,
+                                description: format!(
+                                    "{} ({} imports exceeds limit {})",
+                                    rule_def.description,
+                                    name_count,
+                                    coupling_config.max_names_per_edge,
+                                ),
+                                rationale: rule_def.rationale.clone(),
+                                source_file: source_rel.to_path_buf(),
+                                target_file: target_rel.to_path_buf(),
+                                imported_names: edge.imported_names.clone(),
+                                line: edge.line,
+                                confidence: Confidence::Certain,
+                                fix_direction: rule_def.fix_direction.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            RuleKind::Cohesion(cohesion_config) => {
+                let pattern_matcher = FileMatcher::new(&cohesion_config.pattern)?;
+
+                let mut dir_files: HashMap<PathBuf, Vec<crate::model::FileId>> = HashMap::new();
+                for (file_id, file_info) in graph.files.iter() {
+                    let file_rel = to_relative(&file_info.path, project_root);
+                    if !pattern_matcher.matches(file_rel) {
+                        continue;
+                    }
+                    if let Some(parent) = file_rel.parent() {
+                        dir_files
+                            .entry(parent.to_path_buf())
+                            .or_default()
+                            .push(*file_id);
+                    }
+                }
+
+                for (dir_path, file_ids) in &dir_files {
+                    let file_set: HashSet<crate::model::FileId> =
+                        file_ids.iter().copied().collect();
+
+                    let mut internal_edges = 0usize;
+                    let mut total_edges = 0usize;
+
+                    for &fid in file_ids {
+                        if let Some(edges) = graph.import_edges(fid) {
+                            for edge in edges {
+                                total_edges += 1;
+                                if file_set.contains(&edge.to) {
+                                    internal_edges += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    if total_edges == 0 {
+                        continue;
+                    }
+
+                    let external_ratio =
+                        (total_edges - internal_edges) as f64 / total_edges as f64;
+
+                    if external_ratio > cohesion_config.max_external_ratio {
+                        all_violations.push(LintViolation {
+                            rule_id: rule_def.id.clone(),
+                            severity: rule_def.severity,
+                            description: format!(
+                                "{} (directory '{}' external ratio {:.2} exceeds limit {:.2})",
+                                rule_def.description,
+                                dir_path.display(),
+                                external_ratio,
+                                cohesion_config.max_external_ratio,
+                            ),
+                            rationale: rule_def.rationale.clone(),
+                            source_file: dir_path.clone(),
+                            target_file: dir_path.clone(),
+                            imported_names: vec![],
+                            line: 0,
+                            confidence: Confidence::Certain,
+                            fix_direction: rule_def.fix_direction.clone(),
+                        });
+                    }
+                }
+            }
+            RuleKind::TagBoundary(tag_config) => {
+                let from_patterns = match config.tags.get(&tag_config.from_tag) {
+                    Some(patterns) => patterns,
+                    None => continue,
+                };
+                let from_matcher = FileMatcher::new(from_patterns)?;
+
+                let mut deny_matchers: Vec<(&str, FileMatcher)> = Vec::new();
+                for deny_tag in &tag_config.deny_tags {
+                    if let Some(patterns) = config.tags.get(deny_tag) {
+                        deny_matchers.push((deny_tag.as_str(), FileMatcher::new(patterns)?));
+                    }
+                }
+
+                let except_matchers: Vec<FileMatcher> = tag_config
+                    .except_tags
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|tag| config.tags.get(tag))
+                    .map(|patterns| FileMatcher::new(patterns))
+                    .collect::<Result<Vec<_>>>()?;
+
+                for (source_id, edges) in graph.imports.iter() {
+                    let source_info = match graph.files.get(source_id) {
+                        Some(info) => info,
+                        None => continue,
+                    };
+                    let source_rel = to_relative(&source_info.path, project_root);
+
+                    if !from_matcher.matches(source_rel) {
+                        continue;
+                    }
+
+                    for edge in edges {
+                        let target_info = match graph.files.get(&edge.to) {
+                            Some(info) => info,
+                            None => continue,
+                        };
+                        let target_rel = to_relative(&target_info.path, project_root);
+
+                        if except_matchers.iter().any(|m| m.matches(target_rel)) {
+                            continue;
+                        }
+
+                        for (deny_tag, deny_matcher) in &deny_matchers {
+                            if deny_matcher.matches(target_rel) {
+                                all_violations.push(LintViolation {
+                                    rule_id: rule_def.id.clone(),
+                                    severity: rule_def.severity,
+                                    description: format!(
+                                        "{} (tag '{}' must not depend on tag '{}')",
+                                        rule_def.description,
+                                        tag_config.from_tag,
+                                        deny_tag,
+                                    ),
+                                    rationale: rule_def.rationale.clone(),
+                                    source_file: source_rel.to_path_buf(),
+                                    target_file: target_rel.to_path_buf(),
+                                    imported_names: edge.imported_names.clone(),
+                                    line: edge.line,
+                                    confidence: Confidence::Certain,
+                                    fix_direction: rule_def.fix_direction.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -435,8 +826,9 @@ fn severity_order(s: Severity) -> u8 {
 mod tests {
     use super::*;
     use crate::linting::config::{
-        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig, ImportRestrictionRuleConfig,
-        LayerDefinition, LayerRuleConfig, RuleDefinition,
+        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig,
+        ImportRestrictionRuleConfig, LayerDefinition, LayerRuleConfig, RuleDefinition,
+        TagBoundaryRuleConfig,
     };
     use crate::model::file_graph::{FileImport, FileInfo};
     use crate::model::{FileId, Language};
@@ -457,6 +849,7 @@ mod tests {
             to: FileId(to),
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
+            is_mod_declaration: false,
             line,
         }
     }
@@ -467,6 +860,7 @@ mod tests {
             to: FileId(to),
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: true,
+            is_mod_declaration: false,
             line,
         }
     }
@@ -505,6 +899,7 @@ mod tests {
                 &["src/ui/**"],
                 &["src/db/**"],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -537,6 +932,7 @@ mod tests {
                 &["src/ui/**"],
                 &["src/db/**"],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -563,6 +959,7 @@ mod tests {
                     except: Some(vec!["src/db/types.ts".to_string()]),
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -585,6 +982,7 @@ mod tests {
                 &["src/ui/**"],
                 &["src/db/**"],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -598,7 +996,7 @@ mod tests {
         graph.add_file(make_file(2, "src/db/connection.ts"));
         graph.add_import(make_edge(1, 2, &["x"], 1));
 
-        let config = LintConfig { rules: vec![] };
+        let config = LintConfig { rules: vec![], ..Default::default() };
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
         assert!(result.violations.is_empty());
         assert_eq!(result.rules_evaluated, 0);
@@ -618,6 +1016,7 @@ mod tests {
                 &[],
                 &["src/db/**"],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -648,6 +1047,7 @@ mod tests {
                     &["src/api/**"],
                 ),
             ],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -682,6 +1082,7 @@ mod tests {
                     &["src/db/**"],
                 ),
             ],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -711,6 +1112,7 @@ mod tests {
                     except: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -764,6 +1166,7 @@ mod tests {
                     ("data", &["src/db/**"]),
                 ],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -793,6 +1196,7 @@ mod tests {
                     ("data", &["src/db/**"]),
                 ],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -812,6 +1216,7 @@ mod tests {
                 Severity::Error,
                 &[("presentation", &["src/ui/**"]), ("data", &["src/db/**"])],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -832,6 +1237,7 @@ mod tests {
                 Severity::Error,
                 &[("presentation", &["src/ui/**"]), ("data", &["src/db/**"])],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -856,6 +1262,7 @@ mod tests {
                     ("data", &["src/db/**"]),
                 ],
             )],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -885,6 +1292,7 @@ mod tests {
                     public_api: vec!["src/auth/index.ts".to_string()],
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -915,6 +1323,7 @@ mod tests {
                     public_api: vec!["src/auth/index.ts".to_string()],
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -941,6 +1350,7 @@ mod tests {
                     public_api: vec!["src/auth/index.ts".to_string()],
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -971,6 +1381,7 @@ mod tests {
                     allowed_names: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1000,6 +1411,7 @@ mod tests {
                     allowed_names: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1027,6 +1439,7 @@ mod tests {
                     allowed_names: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1055,6 +1468,7 @@ mod tests {
                     allowed_names: Some(vec!["Engine".to_string()]),
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1083,6 +1497,7 @@ mod tests {
                     allowed_names: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1115,6 +1530,7 @@ mod tests {
                     max_fan_out: Some(2),
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1147,6 +1563,7 @@ mod tests {
                     max_fan_out: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1175,6 +1592,7 @@ mod tests {
                     max_fan_out: Some(5),
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1205,6 +1623,7 @@ mod tests {
                     max_fan_out: Some(1),
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1236,6 +1655,7 @@ mod tests {
                     ("shared-ui", &["src/shared/ui/**"]),
                 ],
             )],
+            ..Default::default()
         };
 
         // Widget.ts should be assigned to "shared" (layer 0, first match),
@@ -1289,6 +1709,7 @@ mod tests {
                     allowed_names: None,
                 }),
             }],
+            ..Default::default()
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1310,6 +1731,177 @@ mod tests {
         assert!(
             descriptions.iter().any(|d| d.contains("forbidden imports")),
             "Expected a forbidden-name violation"
+        );
+    }
+
+    // ---- Tag boundary rule tests ----
+
+    #[test]
+    fn test_tag_boundary_violation() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/api/handler.ts"));
+        graph.add_file(make_file(2, "src/internal/secrets.ts"));
+        graph.add_import(make_edge(1, 2, &["getSecret"], 3));
+
+        let mut tags = HashMap::new();
+        tags.insert("api".to_string(), vec!["src/api/**".to_string()]);
+        tags.insert("internal".to_string(), vec!["src/internal/**".to_string()]);
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-api-to-internal".to_string(),
+                severity: Severity::Error,
+                description: "API must not access internal modules".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::TagBoundary(TagBoundaryRuleConfig {
+                    from_tag: "api".to_string(),
+                    deny_tags: vec!["internal".to_string()],
+                    except_tags: None,
+                }),
+            }],
+            tags,
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert_eq!(result.violations.len(), 1);
+        assert!(result.violations[0].description.contains("api"));
+        assert!(result.violations[0].description.contains("internal"));
+    }
+
+    #[test]
+    fn test_tag_boundary_no_violation_when_allowed() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/api/handler.ts"));
+        graph.add_file(make_file(2, "src/services/userService.ts"));
+        graph.add_import(make_edge(1, 2, &["UserService"], 3));
+
+        let mut tags = HashMap::new();
+        tags.insert("api".to_string(), vec!["src/api/**".to_string()]);
+        tags.insert("internal".to_string(), vec!["src/internal/**".to_string()]);
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-api-to-internal".to_string(),
+                severity: Severity::Error,
+                description: "API must not access internal modules".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::TagBoundary(TagBoundaryRuleConfig {
+                    from_tag: "api".to_string(),
+                    deny_tags: vec!["internal".to_string()],
+                    except_tags: None,
+                }),
+            }],
+            tags,
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn test_tag_boundary_except_tag() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/api/handler.ts"));
+        graph.add_file(make_file(2, "src/internal/types.ts"));
+        graph.add_import(make_edge(1, 2, &["InternalType"], 5));
+
+        let mut tags = HashMap::new();
+        tags.insert("api".to_string(), vec!["src/api/**".to_string()]);
+        tags.insert("internal".to_string(), vec!["src/internal/**".to_string()]);
+        tags.insert(
+            "internal-types".to_string(),
+            vec!["src/internal/types.ts".to_string()],
+        );
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-api-to-internal".to_string(),
+                severity: Severity::Error,
+                description: "API must not access internal modules".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::TagBoundary(TagBoundaryRuleConfig {
+                    from_tag: "api".to_string(),
+                    deny_tags: vec!["internal".to_string()],
+                    except_tags: Some(vec!["internal-types".to_string()]),
+                }),
+            }],
+            tags,
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(
+            result.violations.is_empty(),
+            "Should be allowed via except_tags"
+        );
+    }
+
+    #[test]
+    fn test_tag_boundary_multi_tag_file() {
+        let mut graph = FileGraph::new();
+        // A file that matches both api and shared tags
+        graph.add_file(make_file(1, "src/api/shared/utils.ts"));
+        graph.add_file(make_file(2, "src/internal/secrets.ts"));
+        graph.add_import(make_edge(1, 2, &["secret"], 1));
+
+        let mut tags = HashMap::new();
+        tags.insert("api".to_string(), vec!["src/api/**".to_string()]);
+        tags.insert("shared".to_string(), vec!["src/api/shared/**".to_string()]);
+        tags.insert("internal".to_string(), vec!["src/internal/**".to_string()]);
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-api-to-internal".to_string(),
+                severity: Severity::Error,
+                description: "API must not access internal".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::TagBoundary(TagBoundaryRuleConfig {
+                    from_tag: "api".to_string(),
+                    deny_tags: vec!["internal".to_string()],
+                    except_tags: None,
+                }),
+            }],
+            tags,
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert_eq!(
+            result.violations.len(),
+            1,
+            "File matching 'api' tag should still produce a violation"
+        );
+    }
+
+    #[test]
+    fn test_tag_boundary_unknown_tag_skipped() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/api/handler.ts"));
+        graph.add_file(make_file(2, "src/internal/secrets.ts"));
+        graph.add_import(make_edge(1, 2, &["secret"], 1));
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "bad-tag".to_string(),
+                severity: Severity::Error,
+                description: "Rule with unknown tag".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::TagBoundary(TagBoundaryRuleConfig {
+                    from_tag: "nonexistent".to_string(),
+                    deny_tags: vec!["also-nonexistent".to_string()],
+                    except_tags: None,
+                }),
+            }],
+            tags: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(
+            result.violations.is_empty(),
+            "Unknown tags should be silently skipped"
         );
     }
 }

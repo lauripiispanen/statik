@@ -519,6 +519,7 @@ impl Database {
                     is_reexport: row.get::<_, i32>(4)? != 0,
                     is_type_only: row.get::<_, i32>(5)? != 0,
                     source_path: row.get(6)?,
+                    line: 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -542,6 +543,7 @@ impl Database {
                     is_reexport: row.get::<_, i32>(4)? != 0,
                     is_type_only: row.get::<_, i32>(5)? != 0,
                     source_path: row.get(6)?,
+                    line: 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -791,6 +793,7 @@ mod tests {
             is_reexport: false,
             is_type_only: false,
             source_path: None,
+            line: 0,
         };
         db.insert_export(&export).unwrap();
 
@@ -1031,6 +1034,7 @@ mod tests {
             is_reexport: true,
             is_type_only: false,
             source_path: Some("./other".to_string()),
+            line: 0,
         };
         db.insert_export(&export).unwrap();
 

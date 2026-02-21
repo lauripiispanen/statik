@@ -86,6 +86,7 @@ statik deps src/utils/helpers.ts --direction in           # only show importers
 statik deps src/utils/helpers.ts --transitive             # follow chains
 statik deps src/utils/helpers.ts --transitive --max-depth 3
 statik deps src/utils/helpers.ts --runtime-only           # exclude type-only imports
+statik deps --between "src/parser/**" "src/model/**"      # cross-module edges
 ```
 
 | Flag | Description |
@@ -94,6 +95,7 @@ statik deps src/utils/helpers.ts --runtime-only           # exclude type-only im
 | `--direction in\|out\|both` | Direction of analysis (default: `both`) |
 | `--max-depth <N>` | Limit transitive depth |
 | `--runtime-only` | Exclude type-only imports from results |
+| `--between <from_glob> <to_glob>` | Show only edges where source matches `from_glob` and target matches `to_glob` |
 
 ### `statik exports <path>`
 
@@ -162,7 +164,13 @@ Project overview: file counts by language, dependency statistics, dead code coun
 ```
 statik summary
 statik summary --format json
+statik summary --by-directory                      # aggregate stats per directory
+statik summary --by-directory --format json
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--by-directory` | Aggregate statistics per directory (file counts, exports, dead exports, coupling metrics) |
 
 ### `statik lint`
 
@@ -173,6 +181,8 @@ statik lint
 statik lint --config path/to/rules.toml
 statik lint --rule no-ui-to-db                     # evaluate a single rule
 statik lint --severity-threshold warning            # only report warnings and errors
+statik lint --freeze                                # save current violations as baseline
+statik lint --update-baseline                       # refresh baseline after intentional changes
 statik lint --format json
 ```
 
@@ -181,8 +191,12 @@ statik lint --format json
 | `--config <path>` | Path to config file (default: `.statik/rules.toml` or `statik.toml`) |
 | `--rule <id>` | Only evaluate a specific rule by ID |
 | `--severity-threshold error\|warning\|info` | Minimum severity to report (default: `info`) |
+| `--freeze` | Save current violations as the baseline (suppresses them in future runs) |
+| `--update-baseline` | Refresh the baseline with current violations (alias for `--freeze`) |
 
 The lint command exits with code 1 if any errors are found, and code 0 otherwise (even if warnings are present).
+
+When a baseline exists (`.statik/lint-baseline.json`), only violations not present in the baseline are reported. This allows teams to adopt architectural rules gradually: freeze existing violations, then enforce that no new violations are introduced.
 
 #### Configuration
 
@@ -207,6 +221,14 @@ Each rule also has a type-specific section (`[rules.boundary]`, `[rules.layer]`,
 | Module containment | `[rules.containment]` | Require external access through a public API file |
 | Import restriction | `[rules.import_restriction]` | Enforce type-only imports, forbidden/allowed names |
 | Fan-in/fan-out limit | `[rules.fan_limit]` | Detect architectural hotspots by capping dependency counts |
+| Cycle policy | `[rules.cycle_policy]` | Configurable cycle detection with size limits |
+| Stability limit | `[rules.stability_limit]` | Enforce the Stable Dependencies Principle (instability metric) |
+| Naming boundary | `[rules.naming_boundary]` | Enforce file naming conventions within path patterns |
+| Restricted consumer | `[rules.restricted_consumer]` | Allow only specific files to import from a target |
+| Export limit | `[rules.export_limit]` | Cap the number of exports per file |
+| Coupling weight | `[rules.coupling_weight]` | Limit how many symbols one file imports from another |
+| Directory cohesion | `[rules.cohesion]` | Ensure files in a directory depend more internally than externally |
+| Tag boundary | `[rules.tag_boundary]` | Define tagged file groups and control dependencies between tags |
 
 #### Boundary rules
 
@@ -339,6 +361,193 @@ You can set `max_fan_in`, `max_fan_out`, or both:
 | `max_fan_in` | no | Maximum number of files that may import this file |
 | `max_fan_out` | no | Maximum number of files this file may import |
 
+#### Cycle policy rules
+
+Configurable cycle detection in the lint framework. Allows teams to gradually tighten cycle tolerance by setting a maximum allowed cycle length, optionally scoped to specific paths.
+
+```toml
+[[rules]]
+id = "no-large-cycles"
+severity = "error"
+description = "No cycles longer than 2 files"
+
+[rules.cycle_policy]
+max_cycle_length = 2
+pattern = ["src/**"]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `max_cycle_length` | yes | Maximum allowed cycle length (0 = no cycles allowed) |
+| `pattern` | no | Glob patterns to restrict which files are checked |
+
+#### Stability limit rules
+
+Enforce Robert C. Martin's Stable Dependencies Principle. The instability metric `I = fan-out / (fan-in + fan-out)` measures how volatile a file is. Files with high instability (close to 1.0) have many outgoing dependencies but few incoming ones.
+
+```toml
+[[rules]]
+id = "stable-model"
+severity = "warning"
+description = "Model layer must be stable"
+
+[rules.stability_limit]
+pattern = ["src/model/**"]
+max_instability = 0.3
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns for files to check |
+| `max_instability` | yes | Maximum allowed instability (0.0 = perfectly stable, 1.0 = maximally unstable) |
+
+#### Naming boundary rules
+
+Enforce file naming conventions within specific directories. Uses regex patterns matched against the full relative file path.
+
+```toml
+[[rules]]
+id = "service-naming"
+severity = "warning"
+description = "Services must follow naming convention"
+
+[rules.naming_boundary]
+pattern = ["src/services/**"]
+must_match = ".*Service\\.(ts|rs)$"
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns selecting which files to check |
+| `must_match` | yes | Regex pattern that file paths must match |
+
+#### Restricted consumer rules
+
+Inverse of boundary rules: instead of "A must not import B", enforce "only A may import B". Useful for cross-cutting concerns like logging, metrics, or database access.
+
+```toml
+[[rules]]
+id = "db-restricted"
+severity = "error"
+description = "Only CLI layer may access the database"
+
+[rules.restricted_consumer]
+target = ["src/db/**"]
+allowed_consumers = ["src/cli/**"]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `target` | yes | Glob patterns for the import target to restrict |
+| `allowed_consumers` | yes | Glob patterns for files allowed to import from target |
+
+#### Export limit rules
+
+Cap the number of exports per file. Useful for preventing barrel files with excessive re-exports or god modules that expose too many symbols.
+
+```toml
+[[rules]]
+id = "api-surface-limit"
+severity = "warning"
+description = "Files should not export too many symbols"
+
+[rules.export_limit]
+pattern = ["src/**"]
+max_exports = 15
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns for files to check |
+| `max_exports` | yes | Maximum number of exports allowed per file |
+
+#### Coupling weight rules
+
+Detect heavy coupling between files by limiting how many distinct symbols one file imports from another. High coupling suggests the files should be merged or a shared abstraction extracted.
+
+```toml
+[[rules]]
+id = "coupling-limit"
+severity = "warning"
+description = "Too many symbols imported from a single file"
+fix_direction = "Consider merging files or extracting shared types"
+
+[rules.coupling_weight]
+pattern = ["src/**"]
+max_names_per_edge = 10
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns for source files to check |
+| `max_names_per_edge` | yes | Maximum number of imported symbols per import edge |
+
+#### Directory cohesion rules
+
+Ensure files within a directory depend more on each other than on outside files. Low cohesion suggests files may be misplaced.
+
+```toml
+[[rules]]
+id = "module-cohesion"
+severity = "info"
+description = "Modules should have high internal cohesion"
+
+[rules.cohesion]
+pattern = ["src/**"]
+max_external_ratio = 0.7
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | yes | Glob patterns for files to include in cohesion analysis |
+| `max_external_ratio` | yes | Maximum ratio of external to total dependencies (0.0 = all internal, 1.0 = all external) |
+
+#### Tag boundary rules
+
+The most flexible rule type. Define named tags with glob patterns, then control which tags may depend on which. Tags are defined in a top-level `[tags]` section and referenced by tag boundary rules.
+
+```toml
+[tags]
+api = ["src/api/**"]
+internal = ["src/internal/**"]
+shared = ["src/shared/**"]
+
+[[rules]]
+id = "no-api-to-internal"
+severity = "error"
+description = "API must not access internal modules"
+
+[rules.tag_boundary]
+from_tag = "api"
+deny_tags = ["internal"]
+except_tags = ["shared"]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `from_tag` | yes | Tag name for source files |
+| `deny_tags` | yes | List of tag names that source files must not depend on |
+| `except_tags` | no | List of tag names that are exceptions to the deny list |
+
+Tags are defined in the config's `[tags]` section as a map of tag name to glob patterns. A file may match multiple tags. Unknown tag names in rules are silently skipped.
+
+#### Freeze / baseline mechanism
+
+The freeze mechanism allows teams to adopt architectural rules in existing codebases without fixing all violations upfront. Run `statik lint --freeze` to save current violations as a baseline. Subsequent runs only report new violations.
+
+```
+# First time: create baseline from current violations
+statik lint --freeze
+
+# CI/daily runs: only report NEW violations
+statik lint
+
+# After intentionally fixing or introducing violations, refresh the baseline
+statik lint --update-baseline
+```
+
+The baseline is stored at `.statik/lint-baseline.json`. Add it to version control so the team shares the same baseline.
+
 #### AI Agent Integration
 
 `statik lint` is designed to be consumed by AI coding agents. Use `--format json` for structured output that agents can parse and act on:
@@ -423,13 +632,19 @@ statik callers processData --format json
 
 | Flag | Description |
 |------|-------------|
-| `--format text\|json\|compact` | Output format (default: `text`) |
+| `--format text\|json\|compact\|csv` | Output format (default: `text`) |
 | `--no-index` | Skip auto-indexing, use existing index only |
 | `--include <glob>` | Include only files matching this glob |
 | `--exclude <glob>` | Exclude files matching this glob |
 | `--lang <language>` | Filter to a specific language (`typescript`, `javascript`, `java`, `rust`) |
 | `--max-depth <N>` | Limit transitive depth for dependency/impact analysis |
 | `--runtime-only` | Exclude type-only imports, showing only runtime dependencies (applies to `deps`, `dead-code`, `cycles`, `impact`) |
+| `--path-filter <glob>` | Filter results to files matching this glob pattern |
+| `--count` | Output only the count of results instead of full output |
+| `--limit <N>` | Limit the number of results shown |
+| `--sort <field>` | Sort results by field (`path`, `confidence`, `name`, `depth`) |
+| `--reverse` | Reverse the sort order |
+| `--jq <expression>` | Apply a jq filter to JSON output (implicitly sets `--format json`) |
 
 ## How It Works
 
@@ -674,6 +889,10 @@ The `rationale` and `fix_direction` fields are included when defined in the conf
 ### Compact (`--format compact`)
 
 Single-line JSON output, suitable for piping to other tools.
+
+### CSV (`--format csv`)
+
+Comma-separated values output with a header row. Each command produces columns appropriate to its data. Fields containing commas are quoted. Useful for agents and scripts that need simple text processing without a JSON parser.
 
 ## Exit Codes
 

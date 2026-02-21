@@ -245,6 +245,7 @@ mod tests {
             to: FileId(to),
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
+            is_mod_declaration: false,
             line: 1,
         }
     }

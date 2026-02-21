@@ -231,7 +231,7 @@ impl<'a> Extractor<'a> {
                     .to_string();
                 self.add_import(&full_path, &name, None, false, decl_span, decl_line_span);
                 if is_pub {
-                    self.add_reexport(&full_path, &name);
+                    self.add_reexport(&full_path, &name, decl_line_span);
                 }
             }
             "identifier" => {
@@ -243,7 +243,7 @@ impl<'a> Extractor<'a> {
                 };
                 self.add_import(&full_path, &name, None, false, decl_span, decl_line_span);
                 if is_pub {
-                    self.add_reexport(&full_path, &name);
+                    self.add_reexport(&full_path, &name, decl_line_span);
                 }
             }
             "use_as_clause" => {
@@ -280,7 +280,7 @@ impl<'a> Extractor<'a> {
                     );
                     if is_pub {
                         let export_name = alias.as_deref().unwrap_or(&name);
-                        self.add_reexport(&full_path, export_name);
+                        self.add_reexport(&full_path, export_name, decl_line_span);
                     }
                 }
             }
@@ -296,7 +296,7 @@ impl<'a> Extractor<'a> {
                 };
                 self.add_import(&full_path, "*", None, true, decl_span, decl_line_span);
                 if is_pub {
-                    self.add_reexport(&full_path, "*");
+                    self.add_reexport(&full_path, "*", decl_line_span);
                 }
             }
             "scoped_use_list" => {
@@ -341,7 +341,7 @@ impl<'a> Extractor<'a> {
                                 decl_line_span,
                             );
                             if is_pub {
-                                self.add_reexport(&full_path, name);
+                                self.add_reexport(&full_path, name, decl_line_span);
                             }
                         }
                         _ => {
@@ -359,7 +359,7 @@ impl<'a> Extractor<'a> {
                 let name = prefix.last().map(|s| s.as_str()).unwrap_or("self");
                 self.add_import(&full_path, name, None, false, decl_span, decl_line_span);
                 if is_pub {
-                    self.add_reexport(&full_path, name);
+                    self.add_reexport(&full_path, name, decl_line_span);
                 }
             }
             _ => {
@@ -399,13 +399,14 @@ impl<'a> Extractor<'a> {
         });
     }
 
-    fn add_reexport(&mut self, source_path: &str, exported_name: &str) {
+    fn add_reexport(
+        &mut self,
+        source_path: &str,
+        exported_name: &str,
+        decl_line_span: LineSpan,
+    ) {
         let id = self.alloc_symbol_id();
         let span = Span { start: 0, end: 0 };
-        let line_span = LineSpan {
-            start: Position { line: 0, column: 0 },
-            end: Position { line: 0, column: 0 },
-        };
         // Create a synthetic symbol so the export FK constraint is satisfied
         self.symbols.push(Symbol {
             id,
@@ -414,7 +415,7 @@ impl<'a> Extractor<'a> {
             kind: SymbolKind::Export,
             file: self.file_id,
             span,
-            line_span,
+            line_span: decl_line_span,
             parent: None,
             visibility: Visibility::Public,
             signature: None,
@@ -427,6 +428,7 @@ impl<'a> Extractor<'a> {
             is_reexport: true,
             is_type_only: false,
             source_path: Some(source_path.to_string()),
+            line: decl_line_span.start.line,
         });
     }
 
@@ -516,6 +518,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
 
@@ -564,6 +567,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
     }
@@ -599,6 +603,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
 
@@ -667,6 +672,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
 
@@ -750,6 +756,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
     }
@@ -785,6 +792,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
     }
@@ -820,6 +828,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
     }
@@ -855,6 +864,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: node.start_position().row + 1,
             });
         }
 
@@ -1915,5 +1925,46 @@ mod inner {
             SymbolKind::Function,
             "function inside mod block should be Function, not Method"
         );
+    }
+
+    /// Regression test for bug #30: pub use reexport line numbers were 0.
+    #[test]
+    fn test_pub_use_reexport_has_nonzero_line() {
+        let result = parse_rust(
+            r#"
+pub use crate::model::User;
+"#,
+        );
+
+        let reexports: Vec<_> = result.exports.iter().filter(|e| e.is_reexport).collect();
+        assert_eq!(reexports.len(), 1);
+        assert!(
+            reexports[0].line > 0,
+            "reexport line should be > 0, got: {}",
+            reexports[0].line
+        );
+    }
+
+    /// Regression test for bug #30: all Rust export line numbers should be nonzero.
+    #[test]
+    fn test_export_line_numbers_nonzero() {
+        let result = parse_rust(
+            r#"
+pub fn greet() {}
+pub struct Config;
+pub enum Mode { A, B }
+pub trait Handler { fn handle(&self); }
+pub const MAX: u32 = 100;
+pub type Result<T> = std::result::Result<T, Error>;
+"#,
+        );
+
+        for export in &result.exports {
+            assert!(
+                export.line > 0,
+                "export '{}' should have line > 0, got: {}",
+                export.exported_name, export.line
+            );
+        }
     }
 }

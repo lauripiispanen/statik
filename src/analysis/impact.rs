@@ -146,6 +146,7 @@ mod tests {
             to: FileId(to),
             imported_names: vec!["x".to_string()],
             is_type_only: false,
+            is_mod_declaration: false,
             line: 1,
         }
     }

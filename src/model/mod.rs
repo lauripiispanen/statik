@@ -260,6 +260,8 @@ pub struct ExportRecord {
     pub is_reexport: bool,
     pub is_type_only: bool,
     pub source_path: Option<String>,
+    /// 1-based line number where this export is declared.
+    pub line: usize,
 }
 
 /// Result of parsing a single file.

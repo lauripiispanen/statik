@@ -167,6 +167,33 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
             }
         }
 
+        // Rust module-path imports: when code does `use crate::cli::commands`
+        // and calls `commands::run_deps()`, the imported_name is "commands"
+        // (the module name) but exports are individual symbols like "run_deps".
+        // If the imported name matches the target file's stem, mark all exports used.
+        for edges in graph.imports.values() {
+            for edge in edges {
+                if let Some(target_info) = graph.files.get(&edge.to) {
+                    if target_info.language == crate::model::Language::Rust {
+                        let file_stem = target_info
+                            .path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("");
+                        for name in &edge.imported_names {
+                            if name == file_stem {
+                                // Module-level import: mark all exports as used
+                                for export in &target_info.exports {
+                                    imported_names
+                                        .insert((edge.to, export.exported_name.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Propagate imported names through re-export chains.
         // If file B has `export * from './A'` and someone imports `foo` from B,
         // then (A, "foo") should also be marked as used.
@@ -203,7 +230,7 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
                         file_id: *file_id,
                         path: info.path.clone(),
                         export_name: export.exported_name.clone(),
-                        line: 0, // TODO: get line from export record
+                        line: export.line,
                         confidence: export_confidence,
                         kind: "export".to_string(),
                     });
@@ -510,6 +537,7 @@ mod tests {
                     is_reexport: false,
                     is_type_only: false,
                     source_path: None,
+                    line: i + 1,
                 })
                 .collect(),
             is_entry_point: is_entry,
@@ -522,6 +550,7 @@ mod tests {
             to: FileId(to),
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
+            is_mod_declaration: false,
             line: 1,
         }
     }
@@ -701,6 +730,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./utils".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -746,6 +776,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./utils".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -813,6 +844,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./utils".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -870,6 +902,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./utils".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -924,6 +957,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./b".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -942,6 +976,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./c".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -986,6 +1021,7 @@ mod tests {
                 is_reexport: true,
                 is_type_only: false,
                 source_path: Some("./utils".to_string()),
+                line: 0,
             }],
             is_entry_point: false,
         };
@@ -1251,6 +1287,7 @@ mod tests {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 1,
             }],
             type_references: vec![],
             annotations: vec![],
@@ -1464,6 +1501,137 @@ mod tests {
         assert!(
             dead_names.contains(&"UnusedClass"),
             "UnusedClass should be dead"
+        );
+    }
+
+    #[test]
+    fn test_rust_module_path_import_marks_exports_used() {
+        // In Rust, `use crate::cli::commands` imports the module name "commands"
+        // from the file commands.rs. When code does `commands::run_deps()`,
+        // the imported_name is "commands" but exports are "run_deps" etc.
+        // The module-name import should mark all exports as used.
+        use crate::model::{ExportRecord, SymbolId};
+
+        let mut graph = FileGraph::new();
+
+        // main.rs is the entry point
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/main.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: true,
+        });
+
+        // commands.rs exports run_deps, build_file_graph
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/cli/commands.rs"),
+            language: Language::Rust,
+            exports: vec![
+                ExportRecord {
+                    file: FileId(2),
+                    symbol: SymbolId(200),
+                    exported_name: "run_deps".to_string(),
+                    is_default: false,
+                    is_reexport: false,
+                    is_type_only: false,
+                    source_path: None,
+                    line: 10,
+                },
+                ExportRecord {
+                    file: FileId(2),
+                    symbol: SymbolId(201),
+                    exported_name: "build_file_graph".to_string(),
+                    is_default: false,
+                    is_reexport: false,
+                    is_type_only: false,
+                    source_path: None,
+                    line: 20,
+                },
+            ],
+            is_entry_point: false,
+        });
+
+        // main.rs imports "commands" (module name) from commands.rs
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["commands".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+
+        assert!(
+            !dead_names.contains(&"run_deps"),
+            "run_deps should NOT be dead (module-path import), dead: {:?}",
+            dead_names
+        );
+        assert!(
+            !dead_names.contains(&"build_file_graph"),
+            "build_file_graph should NOT be dead (module-path import), dead: {:?}",
+            dead_names
+        );
+    }
+
+    #[test]
+    fn test_rust_module_path_import_does_not_affect_typescript() {
+        // Module-path logic should only apply to Rust files
+        use crate::model::{ExportRecord, SymbolId};
+
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/index.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/utils.ts"),
+            language: Language::TypeScript,
+            exports: vec![ExportRecord {
+                file: FileId(2),
+                symbol: SymbolId(200),
+                exported_name: "helper".to_string(),
+                is_default: false,
+                is_reexport: false,
+                is_type_only: false,
+                source_path: None,
+                line: 1,
+            }],
+            is_entry_point: false,
+        });
+
+        // Importing "utils" (file stem) should NOT mark "helper" as used in TS
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["utils".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+        assert!(
+            dead_names.contains(&"helper"),
+            "helper should be dead in TS (module-path import logic is Rust-only), dead: {:?}",
+            dead_names
         );
     }
 }

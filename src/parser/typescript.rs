@@ -279,6 +279,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -347,6 +348,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -483,6 +485,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
     }
@@ -527,6 +530,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
     }
@@ -568,6 +572,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -684,6 +689,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -746,6 +752,7 @@ impl<'a> Extractor<'a> {
                                 is_reexport: false,
                                 is_type_only: false,
                                 source_path: None,
+                                line: 0,
                             });
                         }
                     }
@@ -793,6 +800,7 @@ impl<'a> Extractor<'a> {
                                 is_reexport: false,
                                 is_type_only: false,
                                 source_path: None,
+                                line: 0,
                             });
                         }
                     }
@@ -1015,6 +1023,7 @@ impl<'a> Extractor<'a> {
                             is_reexport: true,
                             is_type_only: false,
                             source_path: Some(source_path.clone()),
+                            line: 0,
                         });
                         // Also emit an ImportRecord so the re-export creates a
                         // file-level dependency edge in build_file_graph()
@@ -1091,6 +1100,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
     }
@@ -1132,6 +1142,7 @@ impl<'a> Extractor<'a> {
                         is_reexport,
                         is_type_only: false,
                         source_path: source_path.clone(),
+                        line: 0,
                     });
 
                     // For re-exports (export { foo } from './module'), also emit

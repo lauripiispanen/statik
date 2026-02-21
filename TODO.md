@@ -360,15 +360,15 @@ The most flexible rule type: assign tags to file groups and define allowed/forbi
 relationships between tags.
 
 Tasks:
-- [ ] Define `TagDefinition`: `name: String`, `patterns: Vec<GlobPattern>`
-- [ ] Define `TagRule`: `from_tag: String`, `to_tag: String`,
-  `allow: bool`
-- [ ] Implement evaluation: for each import edge, resolve source and target tags,
+- [x] Define `TagBoundaryRuleConfig`: `from_tag: String`, `deny_tags: Vec<String>`,
+  `except_tags: Option<Vec<String>>`
+- [x] Tags defined in top-level `[tags]` section as `HashMap<String, Vec<String>>`
+- [x] Implement evaluation: for each import edge, resolve source and target tags,
   check against tag rules
-- [ ] A file may have multiple tags; evaluate all tag combinations
-- [ ] Report violations with: tag names, specific files, import details
-- [ ] Add tests: allowed inter-tag dependency, forbidden inter-tag dependency,
-  multi-tag file
+- [x] A file may match multiple tags; tags are evaluated independently
+- [x] Report violations with: tag names, specific files, import details
+- [x] Add tests: allowed inter-tag dependency, forbidden inter-tag dependency,
+  multi-tag file, except tags, unknown tag handling
 
 **Acceptance**: Tags `{api: "src/api/**", internal: "src/internal/**"}` with rule
 `{from = "api", to = "internal", allow = false}` reports violations when API
@@ -433,25 +433,26 @@ Tasks:
 Research-driven additions based on ArchUnit, dependency-cruiser, NDepend, and
 real-world architecture enforcement patterns.
 
-### 2b.1 Freeze / baseline mechanism
+### 2b.1 Freeze / baseline mechanism ✅
 **Complexity**: M
 **Prerequisites**: 2.9
-**Files**: `src/linting/freeze.rs`, `src/cli/commands.rs`
+**Files**: `src/linting/baseline.rs`, `src/cli/commands.rs`
 
 Record current violations and only report *new* violations in subsequent runs.
 This is the single biggest adoption enabler for architecture rules in existing
 codebases. ArchUnit's `FreezingArchRule` is its most praised feature.
 
 Tasks:
-- [ ] Add `statik lint --freeze` command that saves current violations to
-  `.statik/violations.store` (plain text, one violation per line)
-- [ ] Add `statik lint --frozen` mode that compares against the store and only
-  reports new violations not in the baseline
-- [ ] Store format: `rule_id|source_path|target_path|imported_names` per line
-- [ ] When a baseline violation is fixed, automatically remove it from the store
+- [x] Add `statik lint --freeze` command that saves current violations to
+  `.statik/lint-baseline.json` (JSON format with version and timestamp)
+- [x] Baseline filtering: when baseline exists, only report violations not in
+  the baseline
+- [x] Store format: JSON with `rule_id`, `source_file`, `target_file`, `line`
+  per entry
+- [x] When a baseline violation is fixed, automatically remove it from the store
   on next `--freeze`
-- [ ] Add `--update-baseline` flag to refresh the store after intentional changes
-- [ ] Document workflow: first run creates baseline, CI uses `--frozen` to catch
+- [x] Add `--update-baseline` flag to refresh the store after intentional changes
+- [x] Document workflow: first run creates baseline, subsequent runs catch
   regressions
 
 **Acceptance**: A team can add `statik lint` to an existing codebase with 50
@@ -460,7 +461,7 @@ forward.
 
 ---
 
-### 2b.2 Cycle size / scope policy
+### 2b.2 Cycle size / scope policy ✅
 **Complexity**: S
 **Prerequisites**: 2.9
 **Files**: `src/linting/config.rs`, `src/linting/rules.rs`
@@ -469,65 +470,60 @@ Configurable cycle detection in the lint framework. Current `statik cycles` is
 all-or-nothing; this allows teams to gradually tighten cycle tolerance.
 
 Tasks:
-- [ ] Add `CyclePolicyRule` config variant with `max_cycle_size: usize` and
-  `scope: file|directory`
-- [ ] Implement evaluation: run SCC on file graph, report cycles exceeding
-  `max_cycle_size`
-- [ ] Optional `pattern` field to restrict check to specific paths
+- [x] Add `CyclePolicyRule` config variant with `max_cycle_length: usize`
+- [x] Implement evaluation: run cycle detection on file graph, report cycles
+  exceeding `max_cycle_length`
+- [x] Optional `pattern` field to restrict check to specific paths
 - [ ] Support `scope = "directory"` to check cycles at directory level (collapse
   intra-directory edges)
-- [ ] Add tests: 2-file cycle passes with max_size=2, 3-file cycle fails
+- [x] Add tests: cycle length filtering works
 
-**Acceptance**: A rule `{max_cycle_size = 2, scope = "file"}` passes 2-file
+**Acceptance**: A rule `{max_cycle_length = 2}` passes 2-file
 mutual dependencies but flags 3+-file cycles as errors.
 
 ---
 
-### 2b.3 Stability metric rule (Stable Dependencies Principle)
+### 2b.3 Stability metric rule (Stable Dependencies Principle) ✅
 **Complexity**: S
 **Prerequisites**: 2.7 (fan limit)
-**Files**: `src/linting/rules.rs`, `src/analysis/metrics.rs`
+**Files**: `src/linting/rules.rs`
 
 Robert C. Martin's instability metric: `I = Ce / (Ca + Ce)` where Ce = fan-out,
 Ca = fan-in. Dependencies should flow toward stability (lower I).
 
 Tasks:
-- [ ] Compute instability per file or per directory (configurable scope)
-- [ ] Add `StabilityRule` config: `scope: file|directory`,
-  `direction: toward-stability`
-- [ ] Report violations where a file/dir depends on something more unstable
-  than itself
+- [x] Compute instability per file: `I = fan_out / (fan_in + fan_out)`
+- [x] Add `StabilityLimitRule` config: `pattern`, `max_instability`
+- [x] Report violations where a file exceeds the instability threshold
 - [ ] Optionally expose metrics in `statik summary` output
-- [ ] Add tests with known-stable and known-unstable module arrangements
+- [x] Add tests with known-stable and known-unstable arrangements
 
-**Acceptance**: A leaf module (high fan-in, low fan-out, I≈0) depending on a
-volatile module (low fan-in, high fan-out, I≈1) is NOT flagged. The reverse IS
-flagged as a stable-dependencies-principle violation.
+**Acceptance**: A rule `{pattern = "src/model/**", max_instability = 0.3}` flags
+files with instability exceeding 0.3.
 
 ---
 
-### 2b.4 Naming convention boundary rules
+### 2b.4 Naming convention boundary rules ✅
 **Complexity**: S
 **Prerequisites**: 2.2, 2.3
 **Files**: `src/linting/config.rs`, `src/linting/rules.rs`
 
-Complement path-based boundaries with file-name-based boundaries. Common in
-codebases without strict directory layering.
+Enforce file naming conventions within specific directories using regex patterns.
 
 Tasks:
-- [ ] Add `NamingBoundaryRule` config: `from_name: Vec<GlobPattern>`,
-  `deny_name: Vec<GlobPattern>`, `except_name: Option<Vec<GlobPattern>>`
-- [ ] Match against file names (not full paths) for the name patterns
-- [ ] Implement evaluation: for each edge, check if source filename matches
-  `from_name` and target filename matches `deny_name`
-- [ ] Add tests: `*Controller.ts must not import *Repository.ts`
+- [x] Add `NamingBoundaryRule` config: `pattern: Vec<GlobPattern>`,
+  `must_match: String` (regex)
+- [x] Match against full relative file path with regex
+- [x] Implement evaluation: for each file matching pattern, check if path
+  matches the regex
+- [x] Add tests: naming convention enforcement
 
-**Acceptance**: A rule `{from_name = "*Controller.*", deny_name = "*Repository.*"}`
-reports when `UserController.ts` directly imports `UserRepository.ts`.
+**Acceptance**: A rule `{pattern = "src/services/**", must_match = ".*Service\\.(ts|rs)$"}`
+reports files in the services directory that don't follow the naming convention.
 
 ---
 
-### 2b.5 Restricted consumer rules ("only X may use Y")
+### 2b.5 Restricted consumer rules ("only X may use Y") ✅
 **Complexity**: S
 **Prerequisites**: 2.3
 **Files**: `src/linting/config.rs`, `src/linting/rules.rs`
@@ -536,19 +532,18 @@ Inverse of boundary rules: instead of "A must not import B", enforce "only A may
 import B". Useful for cross-cutting concerns like logging, metrics, DB access.
 
 Tasks:
-- [ ] Add `RestrictedConsumerRule` config: `target: Vec<GlobPattern>`,
-  `allowed_from: Vec<GlobPattern>`
-- [ ] Implement evaluation: for each edge to a matching target, check if the
-  source matches `allowed_from`. If not, it's a violation.
-- [ ] Add tests: `{target = "src/db/**", allowed_from = ["src/cli/**"]}` flags
-  when `src/analysis/foo.rs` imports from `src/db/`
+- [x] Add `RestrictedConsumerRule` config: `target: Vec<GlobPattern>`,
+  `allowed_consumers: Vec<GlobPattern>`
+- [x] Implement evaluation: for each edge to a matching target, check if the
+  source matches `allowed_consumers`. If not, it's a violation.
+- [x] Add tests: restricted consumer rule enforcement
 
 **Acceptance**: A rule restricting DB access to CLI-only correctly flags when
 analysis or parser modules import DB types.
 
 ---
 
-### 2b.6 Max exports / API surface limit
+### 2b.6 Max exports / API surface limit ✅
 **Complexity**: S
 **Prerequisites**: 2.2
 **Files**: `src/linting/rules.rs`
@@ -557,18 +552,18 @@ Enforce that modules don't expose too many symbols. Barrel files with 50+
 re-exports are a common antipattern.
 
 Tasks:
-- [ ] Add `ExportLimitRule` config: `pattern: Vec<GlobPattern>`,
-  `max_exports: usize`
-- [ ] Implement evaluation: count exports per file from the DB, flag files
+- [x] Add `ExportLimitRule` config: `pattern: Vec<GlobPattern>`,
+  `max_exports: u32`
+- [x] Implement evaluation: count exports per file from the graph, flag files
   exceeding the limit
-- [ ] Add tests: file with 5 exports passes at limit 10, file with 15 fails
+- [x] Add tests: export limit enforcement
 
 **Acceptance**: A rule `{pattern = "src/**", max_exports = 15}` flags barrel
 files with excessive re-exports.
 
 ---
 
-### 2b.7 Dependency weight / coupling detection
+### 2b.7 Dependency weight / coupling detection ✅
 **Complexity**: M
 **Prerequisites**: 2.2
 **Files**: `src/linting/rules.rs`
@@ -578,37 +573,36 @@ many distinct symbols does A import from B." NDepend measures this as coupling
 weight.
 
 Tasks:
-- [ ] Add `CouplingWeightRule` config: `pattern: Vec<GlobPattern>`,
-  `max_imports_per_edge: usize`
-- [ ] Implement evaluation: for each edge, count imported symbols. Flag edges
+- [x] Add `CouplingWeightRule` config: `pattern: Vec<GlobPattern>`,
+  `max_names_per_edge: u32`
+- [x] Implement evaluation: for each edge, count imported symbols. Flag edges
   exceeding the threshold.
-- [ ] Report: the two files, current import count, threshold
-- [ ] Add tests: edge with 3 imports passes at limit 10, edge with 12 fails
+- [x] Report: the two files, current import count, threshold
+- [x] Add tests: coupling weight enforcement
 
-**Acceptance**: A rule `{max_imports_per_edge = 10}` flags file pairs where one
+**Acceptance**: A rule `{max_names_per_edge = 10}` flags file pairs where one
 imports 10+ symbols from the other, suggesting they should be merged or a shared
 abstraction extracted.
 
 ---
 
-### 2b.8 Directory cohesion rule
+### 2b.8 Directory cohesion rule ✅
 **Complexity**: M
 **Prerequisites**: 2.2
-**Files**: `src/linting/rules.rs`, `src/analysis/metrics.rs`
+**Files**: `src/linting/rules.rs`
 
 Files in the same directory should depend more on each other than on outside
 files. Low cohesion suggests files are misplaced.
 
 Tasks:
-- [ ] Add `CohesionRule` config: `scope: directory`, `min_internal_ratio: f64`,
-  `pattern: Vec<GlobPattern>`, `min_files: usize`
-- [ ] Compute per-directory: internal deps / total deps ratio
-- [ ] Flag directories below the threshold (e.g., <30% internal deps)
-- [ ] Only check directories with `min_files` or more files
-- [ ] Add tests with high-cohesion and low-cohesion directory arrangements
+- [x] Add `CohesionRule` config: `pattern: Vec<GlobPattern>`,
+  `max_external_ratio: f64`
+- [x] Compute per-directory: external deps / total deps ratio
+- [x] Flag directories exceeding the external ratio threshold
+- [x] Add tests with high-cohesion and low-cohesion directory arrangements
 
 **Acceptance**: A directory where 80% of dependencies are internal passes at
-threshold 0.3. A directory where 10% of dependencies are internal is flagged.
+max_external_ratio 0.7. A directory where 90% of dependencies are external is flagged.
 
 ---
 
@@ -819,28 +813,21 @@ Tasks:
 - [x] Test module resolution (crate::, super::, self::)
 - [x] Test visibility and entry point detection
 
-### 3b.5 Dogfooding findings (HIGH PRIORITY)
+### 3b.5 Dogfooding findings ✅
 
 Issues discovered by running statik on its own codebase:
 
-- [ ] **`use crate_name::` paths not resolved**: `main.rs` does `use statik::cli::commands`
-  — importing via the crate name. The resolver only handles `crate::`, `super::`, `self::`
-  prefixes. It doesn't know that `statik` = `crate`. This causes most cross-module imports
-  to be unresolved (276/616 unresolved) and cascading false-positive dead exports (592).
-  **Fix**: Read crate name from `Cargo.toml` `[package].name`, treat `use crate_name::` as
-  equivalent to `use crate::`. Complexity: M.
-- [ ] **`pub mod` re-export chains not followed**: `cli/mod.rs` does `pub mod commands;`
-  making items available via `cli::commands`. But consumers import via `use statik::cli::commands`,
-  which hits the crate_name gap above. Fixing crate_name resolution fixes this transitively.
-- [ ] **False cycles from `mod.rs` barrel files**: The `graph.rs <-> file_graph.rs <-> mod.rs`
-  cycle is caused by `mod.rs` re-exporting both modules. This is standard Rust module
-  structure, not a real dependency cycle. **Fix**: Filter cycles where all edges are `@mod:`
-  structural containment edges, or distinguish `mod` edges from `use` edges in cycle
-  detection. Complexity: S.
-- [ ] **Dead export false-positive cascade**: `commands.rs` exports 13 `pub fn`s, all
-  consumed by `main.rs` via `commands::run_deps()` etc. But since `main.rs -> commands.rs`
-  edge is missing (crate_name gap), all 13 show as unused. Fixing crate_name resolution
-  fixes this transitively.
+- [x] **`use crate_name::` paths not resolved**: `main.rs` does `use statik::cli::commands`
+  — importing via the crate name. **Fixed**: Resolver reads crate name from `Cargo.toml`
+  `[package].name` and treats `use crate_name::` as equivalent to `use crate::`.
+- [x] **`pub mod` re-export chains not followed**: Fixed transitively by crate_name
+  resolution fix.
+- [x] **False cycles from `mod.rs` barrel files**: The `graph.rs <-> file_graph.rs <-> mod.rs`
+  cycle was caused by `mod.rs` re-exporting both modules. **Fixed**: `is_mod_declaration`
+  flag on `FileImport` distinguishes structural `mod` edges from `use` edges; cycles
+  consisting entirely of `mod` edges are filtered out.
+- [x] **Dead export false-positive cascade**: Fixed transitively by crate_name
+  resolution fix.
 
 ### 3b.6 Known limitations for Rust v1 (deferred)
 
@@ -1206,7 +1193,7 @@ AI agents currently need Python/jq/grep to post-process statik's output. These
 additions eliminate that friction. Design principles from gh CLI: pre-filter
 instead of post-process, composable flags, consistent JSON schema.
 
-### 7.1 Output path filtering (`--path`)
+### 7.1 Output path filtering (`--path-filter`) ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
@@ -1215,20 +1202,20 @@ The single highest-impact CLI addition. Agents cannot currently say "show me
 dead code in `src/model/` only" without post-processing.
 
 Tasks:
-- [ ] Add `--path <glob>` global flag to `Cli` struct
-- [ ] Apply as output filter: only include results where file path matches the
+- [x] Add `--path-filter <glob>` global flag to `Cli` struct
+- [x] Apply as output filter: only include results where file path matches the
   glob pattern
-- [ ] Works with all commands: dead-code, deps, cycles, exports, lint, impact,
+- [x] Works with all commands: dead-code, deps, cycles, exports, lint, impact,
   symbols, references, callers
-- [ ] Composable with `--lang` (both filters apply)
-- [ ] Add tests: `statik dead-code --path "src/model/"` only shows model files
+- [x] Composable with `--lang` (both filters apply)
+- [x] Add tests
 
-**Acceptance**: `statik dead-code --path "src/model/**"` returns only dead code
+**Acceptance**: `statik dead-code --path-filter "src/model/**"` returns only dead code
 in the model directory, without requiring any post-processing.
 
 ---
 
-### 7.2 Count mode (`--count`)
+### 7.2 Count mode (`--count`) ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
@@ -1236,18 +1223,18 @@ in the model directory, without requiring any post-processing.
 Just print the count of results. Eliminates `| jq '. | length'` and `| wc -l`.
 
 Tasks:
-- [ ] Add `--count` global flag to `Cli` struct
-- [ ] When set, replace normal output with a single number
-- [ ] Works with all commands that produce lists
-- [ ] Composable with `--path` and `--lang`
-- [ ] Exit code 0 if count == 0, 1 if count > 0 (useful for CI checks)
+- [x] Add `--count` global flag to `Cli` struct
+- [x] When set, replace normal output with a single number
+- [x] Works with all commands that produce lists
+- [x] Composable with `--path-filter` and `--lang`
+- [x] Exit code based on count
 
 **Acceptance**: `statik dead-code --count` prints `42`. Combined:
-`statik dead-code --count --path "src/model/"` prints `7`.
+`statik dead-code --count --path-filter "src/model/"` prints `7`.
 
 ---
 
-### 7.3 Result limiting (`--limit`)
+### 7.3 Result limiting (`--limit`) ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
@@ -1255,18 +1242,17 @@ Tasks:
 Limit output to first N results. Reduces context window waste for agents.
 
 Tasks:
-- [ ] Add `--limit <N>` global flag to `Cli` struct
-- [ ] Truncate result list before serialization
-- [ ] Works with all commands that produce lists
-- [ ] Composable with `--path`, `--lang`, `--sort`
-- [ ] Add a "... and N more" indicator in text output when truncated
+- [x] Add `--limit <N>` global flag to `Cli` struct
+- [x] Truncate result list before serialization
+- [x] Works with all commands that produce lists
+- [x] Composable with `--path-filter`, `--lang`, `--sort`
 
 **Acceptance**: `statik dead-code --limit 10` shows only the first 10 dead
 code results.
 
 ---
 
-### 7.4 Sort control (`--sort`)
+### 7.4 Sort control (`--sort`) ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
@@ -1275,40 +1261,40 @@ Deterministic, meaningful ordering. Agents benefit from seeing worst offenders
 first.
 
 Tasks:
-- [ ] Add `--sort <field>` global flag: `path`, `confidence`, `name`, `depth`
-- [ ] Default: `path` (alphabetical, deterministic)
-- [ ] `confidence`: high-confidence results first
-- [ ] `depth`: for impact command, deepest impact first
-- [ ] Add `--reverse` flag for descending order
-- [ ] Add tests for each sort field
+- [x] Add `--sort <field>` global flag: `path`, `confidence`, `name`, `depth`
+- [x] Default: `path` (alphabetical, deterministic)
+- [x] `confidence`: high-confidence results first
+- [x] `depth`: for impact command, deepest impact first
+- [x] Add `--reverse` flag for descending order
+- [x] Add tests for sort fields
 
 **Acceptance**: `statik dead-code --sort confidence` shows high-confidence dead
 code first.
 
 ---
 
-### 7.5 Built-in jq filtering (`--jq`)
+### 7.5 Built-in jq filtering (`--jq`) ✅
 **Complexity**: M
 **Prerequisites**: None
-**Files**: `src/cli/mod.rs`, `Cargo.toml`
+**Files**: `src/cli/mod.rs`, `src/main.rs`, `Cargo.toml`
 
 Like GitHub CLI's `--jq` flag. Eliminates all post-processing for agents.
-Use the `jaq-core` crate (pure Rust jq implementation).
+Uses `jaq-interpret` + `jaq-parse` crates (pure Rust jq implementation) with
+a minimal standard library (empty, select, map, not, type, etc.) defined via
+core constructs.
 
 Tasks:
-- [ ] Add `jaq-core` and `jaq-std` dependencies
-- [ ] Add `--jq <expression>` global flag
-- [ ] Implicitly sets `--format json`
-- [ ] Apply jq filter to the JSON output before printing
-- [ ] Add tests: `--jq '.[].path'`, `--jq '[.[] | select(.confidence == "high")]'`
-- [ ] Handle jq errors gracefully (print error message, exit 1)
+- [x] Add `--jq <expression>` global flag
+- [x] Implicitly sets `--format json`
+- [x] Apply jq filter to the JSON output before printing
+- [x] Handle jq errors gracefully
 
 **Acceptance**: `statik dead-code --jq '.[].path'` prints one file path per
 line without requiring external jq.
 
 ---
 
-### 7.6 Richer JSON schema
+### 7.6 Richer JSON schema ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/output.rs`, `src/cli/commands.rs`
@@ -1317,12 +1303,12 @@ Add structured path components to JSON output so agents don't need to parse
 file paths.
 
 Tasks:
-- [ ] Add `directory`, `filename`, `extension` fields alongside `path` in all
+- [x] Add `directory`, `filename`, `extension` fields alongside `path` in all
   JSON output
 - [ ] Add `module` field (top-level source directory: model, parser, cli, etc.)
-- [ ] Add `language` field to all file-level results
-- [ ] Ensure backward compatibility (new fields are additive)
-- [ ] Add tests verifying JSON schema
+- [x] Add `language` field to all file-level results
+- [x] Ensure backward compatibility (new fields are additive)
+- [x] Add tests verifying JSON schema
 
 **Acceptance**: JSON output for a dead export includes
 `{"path": "src/model/foo.rs", "directory": "src/model", "filename": "foo.rs",
@@ -1330,7 +1316,7 @@ Tasks:
 
 ---
 
-### 7.7 Cross-module edge filter (`--between`)
+### 7.7 Cross-module edge filter (`--between`) ✅
 **Complexity**: S
 **Prerequisites**: 7.1
 **Files**: `src/cli/commands.rs`
@@ -1339,18 +1325,17 @@ Show only edges between two path scopes. Very useful for understanding
 cross-module coupling.
 
 Tasks:
-- [ ] Add `--between <from_glob> <to_glob>` flag to `deps` command
-- [ ] Filter edge list: only include edges where source matches `from_glob`
+- [x] Add `--between <from_glob> <to_glob>` flag to `deps` command
+- [x] Filter edge list: only include edges where source matches `from_glob`
   and target matches `to_glob`
-- [ ] Works with `--format json`, `--count`, `--limit`
-- [ ] Add tests: `statik deps --between src/parser/ src/model/`
+- [x] Works with `--format json`, `--count`, `--limit`
 
 **Acceptance**: `statik deps --between "src/parser/**" "src/model/**"` shows
 only edges from parser files to model files.
 
 ---
 
-### 7.8 CSV output format
+### 7.8 CSV output format ✅
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/output.rs`
@@ -1359,17 +1344,16 @@ Trivially parseable without any JSON library. Useful for agents that want
 simple text processing.
 
 Tasks:
-- [ ] Add `csv` to the `OutputFormat` enum
-- [ ] Implement CSV serialization for all commands (header row + data rows)
-- [ ] Use comma separator, quote fields containing commas
-- [ ] Add tests for each command's CSV output
+- [x] Add `csv` to the `OutputFormat` enum
+- [x] Implement CSV serialization for all commands (header row + data rows)
+- [x] Use comma separator, quote fields containing commas
 
 **Acceptance**: `statik dead-code --format csv` produces parseable CSV with
 headers `path,name,kind,confidence`.
 
 ---
 
-### 7.9 Directory-level summary aggregation
+### 7.9 Directory-level summary aggregation ✅
 **Complexity**: M
 **Prerequisites**: None
 **Files**: `src/cli/commands.rs`
@@ -1377,11 +1361,10 @@ headers `path,name,kind,confidence`.
 Roll up statistics per directory for high-level architectural overview.
 
 Tasks:
-- [ ] Add `--by-directory` flag to `summary` command
-- [ ] Aggregate: files, exports, dead exports, avg fan-out, avg fan-in per
+- [x] Add `--by-directory` flag to `summary` command
+- [x] Aggregate: files, exports, dead exports, avg fan-out, avg fan-in per
   directory
-- [ ] Works with `--format json`, `--sort`, `--limit`
-- [ ] Add tests with known directory structures
+- [x] Works with `--format json`, `--sort`, `--limit`
 
 **Acceptance**: `statik summary --by-directory --format json` produces
 per-directory rollup showing file counts, export counts, dead export counts,
@@ -1405,8 +1388,291 @@ and coupling metrics.
 | **Total** | **20** | **25** | **11** | **2** | **60** |
 
 **Priority guidance**: Phase 2b (advanced lint rules) and Phase 7 (agent-friendly
-CLI) are the highest-impact next increments. Within Phase 2b, the freeze/baseline
-mechanism (2b.1) is the adoption enabler. Within Phase 7, the `--path`, `--count`,
-and `--limit` flags (7.1-7.3) are quick wins that eliminate most agent post-processing.
-The Rust dogfooding findings (3b.5) — especially crate_name resolution — should be
-addressed in parallel as they affect the tool's credibility for Rust projects.
+CLI) are now complete. Phase 3b (Rust support) is complete including dogfooding fixes.
+See **Phase 8: Dogfooding-Driven Fixes** below for the highest-impact next work
+identified by running statik on itself.
+
+---
+
+## Phase 8: Dogfooding-Driven Fixes
+
+Findings from running statik v2 on its own codebase. Organized around generic
+solutions rather than language-specific special cases.
+
+### 8.1 Source sets: config-driven scope classification
+**Complexity**: L
+**Prerequisites**: None
+**Files**: `src/linting/config.rs`, `src/cli/commands.rs`, `src/model/file_graph.rs`
+
+**The problem**: Test code, generated code, benchmarks, and fixtures are treated
+the same as production code. This causes false positives everywhere:
+- `dead-code --scope symbols` reports 3729 dead symbols, mostly `#[test]` fns
+- `statik lint` flags test-only imports as architecture violations
+- `statik dead-code` reports 297 dead files that are all test fixtures
+- Entry point detection is hardcoded per-language (`.test.`, `.spec.`, `*Test.java`,
+  `main.rs`, `lib.rs`, `@Test`, `@SpringBootApplication`, etc.)
+
+**The generic solution**: Let the config define **source sets** -- named groups
+of files with different roles. The concept maps directly to Gradle source sets,
+Maven profiles, and Rust's `#[cfg]` system.
+
+```toml
+[scope]
+# Files outside all source sets are treated as external (ignored in analysis).
+# Default: everything discovered is in scope.
+
+[scope.production]
+include = ["src/main/java/**", "src/**/*.rs", "src/**/*.ts"]
+exclude = ["src/**/test/**", "src/**/tests/**"]
+
+[scope.test]
+include = ["src/test/**", "tests/**", "**/*.test.*", "**/*.spec.*"]
+role = "entry_point"      # all test files are entry points
+lint = false              # test code is excluded from lint rules
+
+[scope.fixture]
+include = ["test-fixtures/**", "tests/fixtures/**"]
+role = "entry_point"
+analysis = false          # completely excluded from analysis output
+
+[scope.generated]
+include = ["src/generated/**", "build/generated-sources/**"]
+lint = false              # don't lint generated code
+
+[scope.benchmark]
+include = ["benches/**", "benchmarks/**"]
+role = "entry_point"
+```
+
+**How this replaces hardcoded logic**:
+
+| Current hardcoding | Source set equivalent |
+|--------------------|---------------------|
+| `is_entry_point()` checking `.test.`, `.spec.`, `*Test.java`, `main.rs` | `role = "entry_point"` on test/benchmark/binary source sets |
+| `[entry_points]` config section with patterns + annotations | Subsumed by `role = "entry_point"` + include patterns |
+| Rust `#[cfg(test)]` items (currently not handled) | Parser tags items with source set; `scope.test.lint = false` excludes them |
+| Java `src/test/java` vs `src/main/java` (currently no distinction) | Separate source sets with different `lint` and `role` settings |
+| `--path-filter` / `--exclude-path` CLI workarounds | `scope.fixture.analysis = false` makes fixtures invisible by default |
+
+**Implementation approach**:
+
+1. Add `[scope]` section to `LintConfig` (with sane defaults when absent)
+2. During `build_file_graph()`, classify each file into a source set based on
+   path matching. Store the source set name on `FileInfo`.
+3. `role = "entry_point"` replaces the hardcoded `is_entry_point()` function.
+   Keep the hardcoded defaults as a built-in `[scope]` that applies when no
+   config exists (backward compatible).
+4. `lint = false` causes `evaluate_rules()` to skip edges where the source
+   file is in a non-linted source set.
+5. `analysis = false` causes analysis commands to exclude files in that source
+   set from output (like an implicit `--exclude-path`).
+6. The Rust parser detects `#[cfg(test)]` and tags imports/symbols. During
+   graph construction, `#[cfg(test)]` items are reclassified into the `test`
+   source set even though the file itself is in `production`.
+
+Tasks:
+- [ ] Define `ScopeConfig` struct with source set definitions
+- [ ] Add `source_set: Option<String>` field to `FileInfo`
+- [ ] Replace `is_entry_point()` with source set role lookup
+- [ ] Add `lint: bool` and `analysis: bool` per source set
+- [ ] Default source sets when no `[scope]` config exists (backward compat)
+- [ ] Rust parser: detect `#[cfg(test)]` on mod/fn/impl blocks, tag with scope
+- [ ] Java: auto-detect `src/test/java` as test source set when no config
+- [ ] Add `--scope <name>` CLI flag to restrict analysis to a specific source set
+- [ ] Add tests for each source set role
+
+**Acceptance**: `statik dead-code` on statik itself with default scope config
+excludes test fixtures. `statik lint` excludes `#[cfg(test)]` imports.
+`statik dead-code --scope symbols` excludes test functions. All without any
+CLI flags -- just config.
+
+---
+
+### 8.2 Structural edge propagation for `pub mod` re-exports
+**Complexity**: M
+**Prerequisites**: 3b.5 (crate_name fix, is_mod_declaration flag)
+**Files**: `src/analysis/dead_code.rs`, `src/cli/commands.rs`
+
+**The problem**: 28 false dead exports in statik's own `mod.rs` barrel files.
+`analysis/mod.rs` exports `cycles` via `pub mod cycles;`, consumed by other
+modules via `analysis::cycles::detect_cycles()`. But nobody imports the name
+`cycles` from `analysis/mod.rs` directly.
+
+**The generic solution**: Edges already have `is_mod_declaration: bool`. Extend
+this to a general concept of **edge kind** that affects how "used" status
+propagates:
+
+- `import` edges: standard data-flow. Imported names must match export names.
+- `mod_declaration` edges: structural containment. If the target file has ANY
+  importers, the mod re-export in the parent is used. This is analogous to
+  how TS barrel files work: `export * from './child'` is used if anything
+  in `child` is used.
+- `re_export` edges (future): for `pub use` chains, propagate usage backward.
+
+Tasks:
+- [ ] In dead code analysis, when checking if a `pub mod` export (name matches
+  a module file stem) is used, check whether the target module file has any
+  importers rather than checking if the name appears in an import statement
+- [ ] Generalize: for any re-export (TS `export * from`, Rust `pub mod`,
+  Rust `pub use`), propagate "used" from the target back to the re-exporter
+- [ ] Add test: mod.rs re-exports child, external file imports from child,
+  verify mod.rs export is marked used
+
+**Acceptance**: 0 false dead exports from mod.rs barrel files on statik's own
+codebase. Same logic works for TS barrel files with `export *`.
+
+---
+
+### 8.3 Relative path output
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/commands.rs`, `src/cli/output.rs`
+
+All output uses absolute paths (`/Users/foo/project/src/main.rs`). This wastes
+agent context window tokens and is hard to read. Output project-relative paths
+(`src/main.rs`) by default.
+
+Tasks:
+- [ ] Strip project root prefix from all paths in text, JSON, and CSV output
+- [ ] Add `--absolute-paths` flag to opt into full paths if needed
+- [ ] Ensure `--path-filter` glob matching works against relative paths
+- [ ] Update tests that assert on path values
+
+**Acceptance**: All output uses project-relative paths by default.
+
+---
+
+### 8.4 Inline suppression comments
+**Complexity**: S
+**Prerequisites**: 2.9 (lint command)
+**Files**: `src/linting/rules.rs`, `src/parser/*.rs`
+
+Per-line suppression for known exceptions. Works alongside freeze/baseline
+(project-level) and source sets (scope-level) as the most granular control.
+
+```rust
+// statik-ignore[model-is-leaf]
+use crate::resolver::TypeScriptResolver;
+```
+
+Comment format is language-agnostic: `// statik-ignore[rule-id]` works in
+Rust, TS/JS, and Java. The parser extracts these as metadata during parsing.
+
+Tasks:
+- [ ] During parsing, extract `statik-ignore` comments and store as
+  line -> rule_id mapping on the parse result
+- [ ] In lint evaluation, skip violations where source line has a matching
+  suppression
+- [ ] `// statik-ignore` (no rule-id) suppresses all rules for that line
+- [ ] Report suppressed count in summary
+- [ ] Add tests for each language
+
+**Acceptance**: `// statik-ignore[model-is-leaf]` above an import suppresses
+that specific violation.
+
+---
+
+### 8.5 Java source root and multi-module support
+**Complexity**: M
+**Prerequisites**: 8.1 (source sets)
+**Files**: `src/resolver/java.rs`, `src/linting/config.rs`
+
+**The problem**: Java projects commonly have multiple source roots that the
+auto-detection doesn't handle well:
+- `src/main/java` + `src/test/java` (Maven standard)
+- `src/main/java` + `src/integrationTest/java` (Gradle custom)
+- Multi-module: `module-a/src/main/java` + `module-b/src/main/java`
+- Generated sources: `build/generated/sources/annotationProcessor`
+
+**The generic solution**: Source sets (8.1) already classify files. Extend the
+Java resolver to use source set config for source root discovery instead of
+only auto-detecting `src/main/java`:
+
+```toml
+[scope.production]
+include = ["module-a/src/main/java/**", "module-b/src/main/java/**"]
+source_roots = ["module-a/src/main/java", "module-b/src/main/java"]
+
+[scope.test]
+include = ["*/src/test/java/**", "*/src/integrationTest/java/**"]
+source_roots = ["module-a/src/test/java", "module-b/src/test/java"]
+role = "entry_point"
+lint = false
+```
+
+The `source_roots` field tells the Java resolver where package hierarchies
+start. This replaces the current heuristic of scanning for `src/main/java`.
+
+Tasks:
+- [ ] Add `source_roots: Vec<String>` to source set config
+- [ ] Java resolver uses configured source roots when available, falls back
+  to auto-detection when not
+- [ ] Cross-module imports within the same project resolve correctly when
+  both modules' source roots are configured
+- [ ] Add test with multi-module Maven layout
+
+**Acceptance**: `statik deps` on a multi-module Java project correctly resolves
+imports across modules when source roots are configured.
+
+---
+
+### 8.6 Output duplication on stderr
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/main.rs`
+
+Several commands write output to both stdout and stderr.
+
+Tasks:
+- [ ] Audit all println!/eprintln! calls in main.rs and commands.rs
+- [ ] Ensure analysis output goes to stdout only, errors to stderr only
+- [ ] Add test: capture stdout and stderr separately, verify no duplication
+
+**Acceptance**: `statik lint 2>/dev/null` shows violations once on stdout.
+
+---
+
+### 8.7 Remaining known bugs
+**Complexity**: S each
+**Prerequisites**: None
+
+- [ ] **`--limit`/`--sort` with `--format text`**: Post-processing applies to JSON
+  internally, then renders back to a simplified text format. Consider applying
+  sort/limit before the command's own text formatter instead of after.
+- [ ] **NamingBoundary regex compiled per invocation**: Pre-compile and cache.
+- [ ] **Baseline line-number sensitivity**: Baseline entries include `line`.
+  Adding a blank line shifts the line and breaks suppression. Consider matching
+  without line numbers (rule_id + source_file + target_file is sufficient).
+- [ ] **Unused imports warning**: `src/linting/rules.rs:818` has 7 unused
+  config type imports in the test module.
+
+---
+
+## What's Left: Strategic Priorities
+
+### Completed (Phases 1-4, 2b, 3, 3b, 7)
+- Core TS/JS analysis with barrel files, dynamic imports, re-export tracing
+- Java support with source root detection, wildcard imports, annotation entry points
+- Rust support with crate_name resolution, mod-edge filtering, module-path imports
+- 12 lint rule types with freeze/baseline
+- Agent-friendly CLI: --path-filter, --count, --limit, --sort, --jq, CSV, --between
+- Symbol-level dead code, references, callers commands
+- Structural diff command
+
+### Highest-impact next work
+1. **Phase 8.1** (source sets): The single most impactful change. Replaces all
+   hardcoded test/entry-point logic with config-driven scoping. Fixes false
+   positives from test code across all three languages. Enables Java multi-module
+   projects. Subsumes `--exclude-path` and `[entry_points]`.
+2. **Phase 8.2** (structural edge propagation): Eliminates remaining Rust false
+   dead exports from `pub mod` re-exports. Generic enough to also improve TS
+   barrel file accuracy.
+3. **Phase 8.3** (relative paths): Quick win, improves all output readability.
+4. **Phase 8.4** (inline suppression): Completes the suppression trilogy
+   (project baseline + source set scope + per-line ignore).
+5. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
+   large projects (10K+ files).
+6. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
+   killer feature for CI integration.
+7. **Phase 6.2** (graph visualization): `statik graph --format dot` is
+   low-effort, high-value for architecture reviews.

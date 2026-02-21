@@ -199,6 +199,7 @@ mod tests {
             to: FileId(to),
             imported_names: vec!["x".to_string()],
             is_type_only: false,
+            is_mod_declaration: false,
             line: 1,
         }
     }
@@ -398,6 +399,70 @@ mod tests {
         assert!(
             !all_cycle_ids.contains(&FileId(4)),
             "tail node d should not be included in the cycle"
+        );
+    }
+
+    #[test]
+    fn test_mod_declaration_edges_excluded_from_cycles() {
+        // Simulate mod.rs barrel file pattern:
+        // mod.rs --mod--> a.rs, mod.rs --mod--> b.rs
+        // a.rs --use--> b.rs, b.rs --use--> a.rs (real cycle)
+        // Without filtering, mod.rs would be in the SCC with a and b.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/mod.rs"));
+        graph.add_file(make_file(2, "src/a.rs"));
+        graph.add_file(make_file(3, "src/b.rs"));
+
+        // mod declarations (should be excluded)
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["a".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+        graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(3),
+            imported_names: vec!["b".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 2,
+        });
+
+        // Real cycle: a <-> b
+        graph.add_import(make_edge(2, 3)); // a -> b
+        graph.add_import(make_edge(3, 2)); // b -> a
+
+        // With mod edges: mod.rs is in the SCC (false positive)
+        let result_with_mod = detect_cycles(&graph);
+        let scc_sizes: Vec<usize> = result_with_mod.cycles.iter().map(|c| c.length).collect();
+        assert!(
+            scc_sizes.iter().any(|&s| s >= 2),
+            "should find at least one cycle"
+        );
+
+        // Without mod edges: only a <-> b cycle
+        let filtered = graph.without_mod_declaration_edges();
+        let result_without_mod = detect_cycles(&filtered);
+        assert_eq!(
+            result_without_mod.cycles.len(),
+            1,
+            "should find exactly one cycle"
+        );
+        assert_eq!(
+            result_without_mod.cycles[0].length, 2,
+            "cycle should be 2 files (a <-> b)"
+        );
+        let cycle_ids: Vec<FileId> = result_without_mod.cycles[0]
+            .files
+            .iter()
+            .map(|f| f.file_id)
+            .collect();
+        assert!(
+            !cycle_ids.contains(&FileId(1)),
+            "mod.rs should NOT be in the cycle"
         );
     }
 }

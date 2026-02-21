@@ -21,6 +21,8 @@ ignore = "0.4"
 anyhow = "1"
 regex = "1"
 thiserror = "2"
+jaq-core = "0.7"
+jaq-std = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

@@ -41,6 +41,30 @@ pub struct Cli {
     /// Exclude type-only imports (show only runtime dependencies)
     #[arg(long, global = true)]
     pub runtime_only: bool,
+
+    /// Filter analysis to files matching this glob pattern
+    #[arg(long = "path-filter", global = true)]
+    pub path_filter: Option<String>,
+
+    /// Output only the count of results (e.g. dead files, violations, cycles)
+    #[arg(long, global = true)]
+    pub count: bool,
+
+    /// Limit the number of results shown
+    #[arg(long, global = true)]
+    pub limit: Option<usize>,
+
+    /// Sort results by field (path, confidence, name, depth)
+    #[arg(long, global = true)]
+    pub sort: Option<String>,
+
+    /// Reverse the sort order
+    #[arg(long, global = true)]
+    pub reverse: bool,
+
+    /// Apply a jq filter to JSON output (implicitly sets --format json)
+    #[arg(long, global = true)]
+    pub jq: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -54,14 +78,17 @@ pub enum Commands {
 
     /// File-level dependency analysis
     Deps {
-        /// File path to analyze
-        path: String,
+        /// File path to analyze (omit when using --between)
+        file: Option<String>,
         /// Follow dependencies transitively
         #[arg(long)]
         transitive: bool,
         /// Direction: in, out, or both
         #[arg(long, default_value = "both")]
         direction: String,
+        /// Show edges between two glob patterns: --between <from_glob> <to_glob>
+        #[arg(long, num_args = 2, value_names = ["FROM_GLOB", "TO_GLOB"])]
+        between: Option<Vec<String>>,
     },
 
     /// List exports from a file with used/unused status
@@ -87,7 +114,11 @@ pub enum Commands {
     },
 
     /// Project overview statistics
-    Summary,
+    Summary {
+        /// Aggregate statistics per directory
+        #[arg(long)]
+        by_directory: bool,
+    },
 
     /// Check architectural boundary rules
     Lint {
@@ -100,6 +131,12 @@ pub enum Commands {
         /// Minimum severity to report (error, warning, info)
         #[arg(long, default_value = "info")]
         severity_threshold: String,
+        /// Save current violations as the baseline (suppresses them in future runs)
+        #[arg(long)]
+        freeze: bool,
+        /// Refresh the baseline with current violations (alias for --freeze)
+        #[arg(long)]
+        update_baseline: bool,
     },
 
     /// Compare export changes between two index snapshots
@@ -146,4 +183,5 @@ pub enum OutputFormat {
     Text,
     Json,
     Compact,
+    Csv,
 }

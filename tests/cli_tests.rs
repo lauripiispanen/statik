@@ -585,6 +585,133 @@ fn test_summary_json() {
 }
 
 // =============================================================================
+// SUMMARY --by-directory tests
+// =============================================================================
+
+#[test]
+fn test_summary_by_directory_json() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&["--format", "json", "--no-index", "summary", "--by-directory"]);
+
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let dirs = json["directories"]
+        .as_array()
+        .expect("should have directories array");
+
+    assert!(
+        !dirs.is_empty(),
+        "should have at least one directory entry"
+    );
+
+    // Check that known directories are present
+    let dir_names: Vec<&str> = dirs
+        .iter()
+        .filter_map(|d| d["directory"].as_str())
+        .collect();
+    assert!(
+        dir_names.iter().any(|d| d.contains("models")),
+        "should have models directory, got {:?}",
+        dir_names
+    );
+    assert!(
+        dir_names.iter().any(|d| d.contains("services")),
+        "should have services directory, got {:?}",
+        dir_names
+    );
+
+    // Check schema of each entry
+    for d in dirs {
+        assert!(d.get("directory").is_some(), "should have directory field");
+        assert!(d.get("files").is_some(), "should have files field");
+        assert!(d.get("exports").is_some(), "should have exports field");
+        assert!(
+            d.get("dead_exports").is_some(),
+            "should have dead_exports field"
+        );
+        assert!(
+            d.get("avg_fan_out").is_some(),
+            "should have avg_fan_out field"
+        );
+        assert!(
+            d.get("avg_fan_in").is_some(),
+            "should have avg_fan_in field"
+        );
+    }
+
+    // Check count field
+    let count = json["count"].as_u64().expect("should have count");
+    assert_eq!(count, dirs.len() as u64);
+}
+
+#[test]
+fn test_summary_by_directory_text() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&["--no-index", "summary", "--by-directory"]);
+
+    assert!(
+        stdout.contains("Directory Summary"),
+        "should have Directory Summary header: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Files") || stdout.contains("files"),
+        "should have Files column: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("directories"),
+        "should report directory count: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_summary_by_directory_sort_and_limit() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--format",
+        "json",
+        "--no-index",
+        "--sort",
+        "files",
+        "--reverse",
+        "--limit",
+        "2",
+        "summary",
+        "--by-directory",
+    ]);
+
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let dirs = json["directories"]
+        .as_array()
+        .expect("should have directories array");
+
+    assert!(
+        dirs.len() <= 2,
+        "should have at most 2 directories with --limit 2, got {}",
+        dirs.len()
+    );
+
+    // Verify sorted in descending order (--reverse)
+    if dirs.len() == 2 {
+        let files_0 = dirs[0]["files"].as_u64().unwrap_or(0);
+        let files_1 = dirs[1]["files"].as_u64().unwrap_or(0);
+        assert!(
+            files_0 >= files_1,
+            "should be sorted descending by files: {} >= {}",
+            files_0,
+            files_1
+        );
+    }
+}
+
+// =============================================================================
 // LINT command tests
 // =============================================================================
 
@@ -1270,4 +1397,330 @@ max_fan_out = 100
     assert_eq!(json["rules_evaluated"], 3);
     assert!(json["violations"].as_array().unwrap().len() >= 1);
     assert_eq!(json["summary"]["rules_evaluated"], 3);
+}
+
+// =============================================================================
+// --count, --limit, --sort, --reverse flag tests
+// =============================================================================
+
+#[test]
+fn test_count_dead_code() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&["--no-index", "--count", "dead-code"]);
+    // Should output just a number
+    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
+        panic!("--count should output a number, got: {}", stdout)
+    });
+    // Our basic project has at least orphan.ts + some unused exports
+    assert!(count > 0, "should find dead code, count was: {}", count);
+}
+
+#[test]
+fn test_count_no_cycles_exits_0() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let output = proj.run(&["--no-index", "--count", "cycles"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
+        panic!("--count should output a number, got: {}", stdout)
+    });
+    assert_eq!(count, 0, "acyclic project should have 0 cycles");
+    assert!(output.status.success(), "--count 0 should exit 0");
+}
+
+#[test]
+fn test_count_cycles_exits_1() {
+    let proj = create_circular_project();
+    proj.run(&["index", "."]);
+
+    let output = proj.run(&["--no-index", "--count", "cycles"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
+        panic!("--count should output a number, got: {}", stdout)
+    });
+    assert!(count > 0, "cyclic project should have cycles");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "--count > 0 should exit 1"
+    );
+}
+
+#[test]
+fn test_limit_dead_code() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&["--no-index", "--format", "json", "--limit", "1", "dead-code"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    // dead_files array should have at most 1 entry
+    let dead_files = json["dead_files"].as_array().unwrap();
+    assert!(
+        dead_files.len() <= 1,
+        "--limit 1 should truncate dead_files to at most 1, got: {}",
+        dead_files.len()
+    );
+}
+
+#[test]
+fn test_sort_dead_code_by_path() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "--sort",
+        "path",
+        "dead-code",
+        "--scope",
+        "exports",
+    ]);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    let dead_exports = json["dead_exports"].as_array().unwrap();
+    if dead_exports.len() >= 2 {
+        // Verify sorted ascending by path
+        let paths: Vec<&str> = dead_exports
+            .iter()
+            .map(|e| e["path"].as_str().unwrap_or(""))
+            .collect();
+        for w in paths.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "paths should be sorted ascending: {:?} > {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sort_reverse() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "--sort",
+        "path",
+        "--reverse",
+        "dead-code",
+        "--scope",
+        "exports",
+    ]);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    let dead_exports = json["dead_exports"].as_array().unwrap();
+    if dead_exports.len() >= 2 {
+        // Verify sorted descending by path
+        let paths: Vec<&str> = dead_exports
+            .iter()
+            .map(|e| e["path"].as_str().unwrap_or(""))
+            .collect();
+        for w in paths.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "paths should be sorted descending with --reverse: {:?} < {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sort_and_limit_combined() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "--sort",
+        "path",
+        "--limit",
+        "1",
+        "dead-code",
+        "--scope",
+        "exports",
+    ]);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    let dead_exports = json["dead_exports"].as_array().unwrap();
+    assert!(
+        dead_exports.len() <= 1,
+        "--sort + --limit 1 should give at most 1 result, got: {}",
+        dead_exports.len()
+    );
+}
+
+// =============================================================================
+// --format csv tests
+// =============================================================================
+
+#[test]
+fn test_csv_dead_code_files() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&["--no-index", "--format", "csv", "dead-code", "--scope", "files"]);
+
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert!(
+        lines.len() >= 2,
+        "CSV should have header + data rows, got: {}",
+        stdout
+    );
+    assert!(
+        lines[0].contains("path"),
+        "CSV header should contain 'path': {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("confidence"),
+        "CSV header should contain 'confidence': {}",
+        lines[0]
+    );
+}
+
+#[test]
+fn test_csv_with_sort_and_limit() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "csv",
+        "--sort",
+        "path",
+        "--limit",
+        "2",
+        "dead-code",
+        "--scope",
+        "exports",
+    ]);
+
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    // Header + at most 2 data rows
+    assert!(
+        lines.len() <= 3,
+        "CSV with --limit 2 should have at most 3 lines (header + 2 rows), got: {}",
+        lines.len()
+    );
+}
+
+// =============================================================================
+// --between flag tests
+// =============================================================================
+
+#[test]
+fn test_deps_between_finds_edges() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "deps",
+        "--between",
+        "src/services/**",
+        "src/utils/**",
+    ]);
+
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    let edges = json["edges"].as_array().expect("edges array");
+    // userService.ts imports from utils/format.ts
+    assert!(
+        !edges.is_empty(),
+        "should find edges from services to utils"
+    );
+
+    let count = json["count"].as_u64().unwrap();
+    assert_eq!(count, edges.len() as u64);
+}
+
+#[test]
+fn test_deps_between_no_matching_edges() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "deps",
+        "--between",
+        "src/db/**",
+        "src/ui/**",
+    ]);
+
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+
+    let edges = json["edges"].as_array().expect("edges array");
+    assert!(edges.is_empty(), "should find no edges from db to ui");
+}
+
+#[test]
+fn test_deps_between_text_output() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "deps",
+        "--between",
+        "src/ui/**",
+        "src/db/**",
+    ]);
+
+    assert!(
+        stdout.contains("Dependencies from"),
+        "should show between header: {}",
+        stdout
+    );
+    // ui/dashboard.ts -> db/connection.ts
+    assert!(
+        stdout.contains("dashboard") || stdout.contains("connection"),
+        "should show the ui->db edge: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_deps_between_count() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--count",
+        "deps",
+        "--between",
+        "src/ui/**",
+        "src/db/**",
+    ]);
+
+    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
+        panic!("--count should output a number, got: {}", stdout)
+    });
+    assert_eq!(count, 1, "should find exactly 1 edge from ui to db");
 }

@@ -21,6 +21,8 @@ pub struct FileImport {
     pub to: FileId,
     pub imported_names: Vec<String>,
     pub is_type_only: bool,
+    #[serde(default)]
+    pub is_mod_declaration: bool,
     pub line: usize,
 }
 
@@ -86,6 +88,7 @@ impl FileGraph {
             to: import.to,
             imported_names: import.imported_names.clone(),
             is_type_only: import.is_type_only,
+            is_mod_declaration: import.is_mod_declaration,
             line: import.line,
         };
         self.imports.entry(import.from).or_default().push(import);
@@ -177,6 +180,65 @@ impl FileGraph {
         new_graph
     }
 
+    /// Return a new FileGraph with mod declaration edges removed.
+    /// Useful for cycle detection where `mod foo;` in mod.rs should not count as a dependency.
+    pub fn without_mod_declaration_edges(&self) -> Self {
+        let mut new_graph = Self::new();
+
+        for info in self.files.values() {
+            new_graph.add_file(info.clone());
+        }
+
+        for edges in self.imports.values() {
+            for edge in edges {
+                if !edge.is_mod_declaration {
+                    new_graph.add_import(edge.clone());
+                }
+            }
+        }
+
+        new_graph.unresolved = self.unresolved.clone();
+
+        new_graph
+    }
+
+    /// Return a new FileGraph containing only files whose paths match the given glob matcher.
+    /// Edges are kept only between matching files.
+    pub fn filter_to_paths(&self, matcher: &globset::GlobMatcher, project_root: &Path) -> Self {
+        let mut new_graph = Self::new();
+
+        // Copy only matching files
+        for info in self.files.values() {
+            let rel = info
+                .path
+                .strip_prefix(project_root)
+                .unwrap_or(&info.path);
+            if matcher.is_match(rel) {
+                new_graph.add_file(info.clone());
+            }
+        }
+
+        // Copy edges where both endpoints are in the new graph
+        for edges in self.imports.values() {
+            for edge in edges {
+                if new_graph.files.contains_key(&edge.from)
+                    && new_graph.files.contains_key(&edge.to)
+                {
+                    new_graph.add_import(edge.clone());
+                }
+            }
+        }
+
+        // Copy unresolved imports for matching files
+        for u in &self.unresolved {
+            if new_graph.files.contains_key(&u.file) {
+                new_graph.add_unresolved(u.clone());
+            }
+        }
+
+        new_graph
+    }
+
     /// Get the unresolved imports list.
     pub fn unresolved_imports(&self) -> &[UnresolvedImport] {
         &self.unresolved
@@ -258,6 +320,7 @@ impl FileGraph {
                             to: target_id,
                             imported_names: vec![import.imported_name.clone()],
                             is_type_only: false,
+                            is_mod_declaration: false,
                             line: import.line_span.start.line,
                         });
                     }
@@ -668,6 +731,7 @@ mod tests {
                                 to: target_id,
                                 imported_names: vec!["default".to_string()],
                                 is_type_only: false,
+                                is_mod_declaration: false,
                                 line: 1,
                             });
                         }
@@ -748,6 +812,7 @@ mod tests {
             to: FileId(2),
             imported_names: vec!["UserType".to_string()],
             is_type_only: true,
+            is_mod_declaration: false,
             line: 1,
         });
         // Runtime edge: index -> utils
@@ -756,6 +821,7 @@ mod tests {
             to: FileId(3),
             imported_names: vec!["helper".to_string()],
             is_type_only: false,
+            is_mod_declaration: false,
             line: 2,
         });
 
@@ -796,6 +862,7 @@ mod tests {
             to: FileId(2),
             imported_names: vec!["Type".to_string()],
             is_type_only: true,
+            is_mod_declaration: false,
             line: 1,
         });
 

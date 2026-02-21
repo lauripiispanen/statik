@@ -11,18 +11,21 @@ pub struct RustResolver {
     crate_roots: Vec<PathBuf>,
     /// Known dependency crate names from Cargo.toml
     known_crates: HashSet<String>,
+    /// This crate's own name from [package].name (hyphens replaced with underscores)
+    crate_name: Option<String>,
 }
 
 impl RustResolver {
     pub fn new(project_root: PathBuf, known_files: Vec<PathBuf>) -> Self {
         let known_set: HashSet<PathBuf> = known_files.iter().cloned().collect();
         let crate_roots = Self::detect_crate_roots(&project_root, &known_set);
-        let known_crates = Self::read_cargo_dependencies(&project_root);
+        let (known_crates, crate_name) = Self::read_cargo_metadata(&project_root);
 
         RustResolver {
             known_files: known_set,
             crate_roots,
             known_crates,
+            crate_name,
         }
     }
 
@@ -63,6 +66,12 @@ impl RustResolver {
     fn crate_src_dir(&self, from_file: &Path) -> Option<PathBuf> {
         self.find_crate_root_for(from_file)
             .and_then(|root| root.parent().map(|p| p.to_path_buf()))
+    }
+
+    fn find_lib_root(&self) -> Option<&PathBuf> {
+        self.crate_roots
+            .iter()
+            .find(|r| r.file_name().and_then(|n| n.to_str()) == Some("lib.rs"))
     }
 
     /// Resolve `@mod:foo` to `foo.rs` or `foo/mod.rs` relative to the file containing the mod declaration.
@@ -276,17 +285,25 @@ impl RustResolver {
         )))
     }
 
-    /// Read crate names from Cargo.toml [dependencies] and [dev-dependencies].
-    fn read_cargo_dependencies(project_root: &Path) -> HashSet<String> {
+    /// Read crate names from Cargo.toml [dependencies] and [dev-dependencies],
+    /// plus the package's own name from [package].name.
+    fn read_cargo_metadata(project_root: &Path) -> (HashSet<String>, Option<String>) {
         let cargo_toml = project_root.join("Cargo.toml");
         let content = match std::fs::read_to_string(&cargo_toml) {
             Ok(c) => c,
-            Err(_) => return HashSet::new(),
+            Err(_) => return (HashSet::new(), None),
         };
         let table: toml::Table = match content.parse() {
             Ok(t) => t,
-            Err(_) => return HashSet::new(),
+            Err(_) => return (HashSet::new(), None),
         };
+
+        let crate_name = table
+            .get("package")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("name"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.replace('-', "_"));
 
         let mut crates = HashSet::new();
         for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
@@ -297,7 +314,7 @@ impl RustResolver {
                 }
             }
         }
-        crates
+        (crates, crate_name)
     }
 
     /// Check if a directory exists by checking if any known file has it as a prefix.
@@ -350,6 +367,34 @@ impl Resolver for RustResolver {
         let first_segment = import_source.split("::").next().unwrap_or(import_source);
         if Self::is_stdlib_path(first_segment) {
             return Resolution::External(first_segment.to_string());
+        }
+
+        // Check if first segment is this crate's own name (e.g., `use my_crate::foo`)
+        // Treat it identically to `use crate::foo` but targeting the library crate root
+        if let Some(ref our_name) = self.crate_name {
+            if first_segment == our_name {
+                let segments: Vec<&str> = import_source.split("::").collect();
+                let rest = &segments[1..];
+                // `use crate_name::X` always refers to the library crate (lib.rs)
+                if let Some(lib_root) = self.find_lib_root() {
+                    let src_dir = lib_root.parent().unwrap_or(lib_root);
+                    if !rest.is_empty() {
+                        if let Some(resolved) = self.resolve_path_segments(src_dir, rest) {
+                            if resolved != from_file {
+                                return Resolution::Resolved(resolved);
+                            }
+                        }
+                    }
+                    // Remaining segments are symbols at crate root; resolve to lib.rs
+                    if *lib_root != from_file {
+                        return Resolution::Resolved(lib_root.clone());
+                    }
+                }
+                return Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
+                    "crate path '{}' not found",
+                    import_source
+                )));
+            }
         }
 
         // Try to resolve as a crate-relative path (Rust 2015 style)
@@ -750,6 +795,94 @@ serde = "1"
             }
             other => panic!(
                 "expected Resolved for self:: from leaf file, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_resolve_crate_name_as_crate() {
+        let (dir, known) = setup_rust_project();
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = dir.path().join("src/main.rs");
+
+        // `use test_project::model` should resolve the same as `use crate::model`
+        let result = resolver.resolve("test_project::model", &from);
+        match result {
+            Resolution::Resolved(path) | Resolution::ResolvedWithCaveat(path, _) => {
+                assert!(
+                    path.ends_with("model.rs") || path.ends_with("model/mod.rs"),
+                    "got {:?}",
+                    path
+                );
+            }
+            other => panic!("expected Resolved for crate name path, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_crate_name_nested() {
+        let (dir, known) = setup_rust_project();
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = dir.path().join("src/main.rs");
+
+        let result = resolver.resolve("test_project::model::user", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(path.ends_with("model/user.rs"), "got {:?}", path);
+            }
+            other => panic!(
+                "expected Resolved for crate name nested path, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_crate_name_hyphen_to_underscore() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "my-cool-crate"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        fs::write(src.join("lib.rs"), "pub mod foo;").unwrap();
+        fs::write(src.join("foo.rs"), "pub fn bar() {}").unwrap();
+
+        let known = vec![src.join("lib.rs"), src.join("foo.rs")];
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = src.join("lib.rs");
+
+        // Cargo.toml has name = "my-cool-crate", Rust code uses my_cool_crate
+        let result = resolver.resolve("my_cool_crate::foo", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(path.ends_with("foo.rs"), "got {:?}", path);
+            }
+            other => panic!(
+                "expected Resolved for hyphenated crate name, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_crate_name_not_confused_with_dependency() {
+        let (dir, known) = setup_rust_project();
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = dir.path().join("src/lib.rs");
+
+        // serde is a dependency, not the crate name
+        let result = resolver.resolve("serde::Serialize", &from);
+        match result {
+            Resolution::External(name) => assert_eq!(name, "serde"),
+            other => panic!(
+                "expected External for dependency, got {:?}",
                 other
             ),
         }

@@ -111,11 +111,26 @@ id = "analysis-isolation"
 severity = "error"
 description = "analysis/ must not depend on cli, parser, resolver, linting, or discovery"
 rationale = "Analysis algorithms operate on the in-memory FileGraph/SymbolGraph. They should not know about parsing, resolution, or CLI concerns."
-fix_direction = "Analysis code should only use types from model/ (diff.rs exception: db is allowed)."
+fix_direction = "Analysis code should only use types from model/."
 
 [rules.boundary]
 from = ["src/analysis/**"]
 deny = ["src/cli/**", "src/parser/**", "src/resolver/**", "src/linting/**", "src/discovery/**"]
+
+# Track the analysis/diff.rs -> db/ dependency as a warning.
+# This is a real architecture issue that should be cleaned up:
+# diff.rs should receive pre-loaded data from cli/ rather than
+# importing db::Database directly.
+[[rules]]
+id = "analysis-no-db"
+severity = "warning"
+description = "analysis/ should not depend on db/ directly"
+rationale = "analysis/diff.rs currently imports db::Database. Ideally, the CLI layer loads data from both databases and passes it to a pure comparison function."
+fix_direction = "Refactor diff.rs to accept pre-loaded data instead of a Database reference"
+
+[rules.boundary]
+from = ["src/analysis/**"]
+deny = ["src/db/**"]
 
 # ---------------------------------------------------------------------------
 # 7. Linting depends on model and analysis only

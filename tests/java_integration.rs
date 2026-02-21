@@ -94,6 +94,7 @@ fn test_java_deps_shows_imports() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -140,6 +141,7 @@ fn test_java_deps_shows_importers() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -188,6 +190,7 @@ fn test_java_deps_text_output() {
         &OutputFormat::Text,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -216,6 +219,7 @@ fn test_java_exports_public_class() {
         "src/main/java/com/example/model/User.java",
         &OutputFormat::Json,
         true,
+        None,
     )
     .unwrap();
 
@@ -242,6 +246,7 @@ fn test_java_exports_public_enum() {
         "src/main/java/com/example/model/Role.java",
         &OutputFormat::Json,
         true,
+        None,
     )
     .unwrap();
 
@@ -266,7 +271,7 @@ fn test_java_dead_code_detects_orphan() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -289,7 +294,7 @@ fn test_java_dead_code_text_output() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false, None).unwrap();
 
     assert!(
         output.contains("UnusedHelper"),
@@ -311,7 +316,7 @@ fn test_java_cycles_detected() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -349,7 +354,7 @@ fn test_java_cycles_text_output() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false, None).unwrap();
 
     assert!(
         output.contains("Circular dependencies") || output.contains("cycle"),
@@ -374,6 +379,7 @@ fn test_java_impact_analysis() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -402,6 +408,7 @@ fn test_java_impact_orphan_file() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -424,7 +431,7 @@ fn test_java_summary_command() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true).unwrap();
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -444,7 +451,7 @@ fn test_java_summary_text_output() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Text, true).unwrap();
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Text, true, None, false).unwrap();
 
     assert!(
         output.contains("Project Summary"),
@@ -483,7 +490,7 @@ deny = ["src/main/java/com/example/db/**"]
     .unwrap();
 
     let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -532,7 +539,7 @@ deny = ["src/main/java/com/example/db/**"]
     .unwrap();
 
     let (output, _) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Text, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Text, true, None, false).unwrap();
 
     assert!(
         output.contains("no-controller-to-db"),
@@ -565,6 +572,7 @@ fn test_java_static_import_resolves() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -617,6 +625,7 @@ fn test_java_deps_cross_package_imports() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -660,6 +669,7 @@ fn test_java_exports_public_interface() {
         "src/main/java/com/example/model/Auditable.java",
         &OutputFormat::Json,
         true,
+        None,
     )
     .unwrap();
 
@@ -684,7 +694,7 @@ fn test_java_dead_code_excludes_entry_point() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -717,7 +727,7 @@ fn test_java_summary_language_breakdown() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true).unwrap();
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -761,6 +771,7 @@ fn test_java_impact_stringutils_transitive() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -813,6 +824,7 @@ fn test_java_deps_notification_service_fan_out() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -869,7 +881,7 @@ layers = [
     .unwrap();
 
     let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -914,7 +926,7 @@ max_fan_out = 4
     .unwrap();
 
     let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -966,7 +978,7 @@ public_api = ["src/main/java/com/example/model/User.java", "src/main/java/com/ex
     .unwrap();
 
     let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -1030,7 +1042,7 @@ max_fan_out = 100
     .unwrap();
 
     let (output, _) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -1072,6 +1084,7 @@ fn test_java_same_package_deps() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -1097,7 +1110,7 @@ fn test_java_same_package_dead_code_not_false_positive() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -1138,6 +1151,7 @@ fn test_java_wildcard_import_creates_edges() {
         &OutputFormat::Json,
         true,
         false,
+        None,
     )
     .unwrap();
 
@@ -1189,7 +1203,7 @@ fn test_java_annotation_entry_point_spring() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -1212,7 +1226,7 @@ fn test_java_annotation_entry_point_test() {
     index_java_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -1245,6 +1259,7 @@ fn test_java_inner_class_exported() {
         "src/main/java/com/example/service/NotificationService.java",
         &OutputFormat::Json,
         true,
+        None,
     )
     .unwrap();
 
@@ -1273,7 +1288,7 @@ fn test_java_same_package_cycles_still_detected() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false).unwrap();
+    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -1313,7 +1328,7 @@ fn test_java_custom_entry_point_pattern() {
 
     // Without config, UnusedHelper is dead
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_paths: Vec<&str> = json["dead_files"]
         .as_array()
@@ -1340,7 +1355,7 @@ patterns = ["**/orphan/**"]
 
     // Now UnusedHelper should NOT be dead
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_paths: Vec<&str> = json["dead_files"]
         .as_array()
@@ -1379,7 +1394,7 @@ public class BatchJob {
 
     // Without config, BatchJob is dead (Scheduled is not a built-in entry annotation)
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_paths: Vec<&str> = json["dead_files"]
         .as_array()
@@ -1407,7 +1422,7 @@ annotations = ["Scheduled"]
 
     // Now BatchJob should NOT be dead
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_paths: Vec<&str> = json["dead_files"]
         .as_array()
@@ -1432,7 +1447,7 @@ fn test_java_default_entry_points_unchanged_without_config() {
     let _ = std::fs::remove_file(tmp.path().join("statik.toml"));
 
     let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false).unwrap();
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_paths: Vec<&str> = json["dead_files"]
         .as_array()

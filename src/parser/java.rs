@@ -538,6 +538,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -594,6 +595,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -643,6 +645,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 
@@ -688,6 +691,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
     }
@@ -730,6 +734,7 @@ impl<'a> Extractor<'a> {
                 is_reexport: false,
                 is_type_only: false,
                 source_path: None,
+                line: 0,
             });
         }
 

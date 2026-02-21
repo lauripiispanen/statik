@@ -6,7 +6,9 @@ use crate::model::Symbol;
 /// Format a list of symbols for output.
 pub fn format_symbols(symbols: &[Symbol], format: &OutputFormat) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(symbols).unwrap_or_default(),
+        OutputFormat::Json | OutputFormat::Csv => {
+            serde_json::to_string_pretty(symbols).unwrap_or_default()
+        }
         OutputFormat::Compact => serde_json::to_string(symbols).unwrap_or_default(),
         OutputFormat::Text => {
             let mut output = String::new();
@@ -24,7 +26,9 @@ pub fn format_symbols(symbols: &[Symbol], format: &OutputFormat) -> String {
 /// Format any serializable value as JSON.
 pub fn format_json<T: Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
+        OutputFormat::Json | OutputFormat::Csv => {
+            serde_json::to_string_pretty(value).unwrap_or_default()
+        }
         OutputFormat::Compact => serde_json::to_string(value).unwrap_or_default(),
         OutputFormat::Text => serde_json::to_string_pretty(value).unwrap_or_default(),
     }
@@ -39,17 +43,17 @@ pub fn format_index_summary(
     format: &OutputFormat,
 ) -> String {
     match format {
-        OutputFormat::Json | OutputFormat::Compact => {
+        OutputFormat::Json | OutputFormat::Compact | OutputFormat::Csv => {
             let summary = serde_json::json!({
                 "files_indexed": files,
                 "symbols_extracted": symbols,
                 "references_found": references,
                 "duration_ms": duration_ms,
             });
-            if matches!(format, OutputFormat::Json) {
-                serde_json::to_string_pretty(&summary).unwrap_or_default()
-            } else {
+            if matches!(format, OutputFormat::Compact) {
                 serde_json::to_string(&summary).unwrap_or_default()
+            } else {
+                serde_json::to_string_pretty(&summary).unwrap_or_default()
             }
         }
         OutputFormat::Text => {
