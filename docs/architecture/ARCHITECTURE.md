@@ -223,12 +223,12 @@ After all files are extracted, the resolver runs to connect raw imports to files
 
 ### Language Support Strategy
 
-**v1: TypeScript/JavaScript only.**
+**v1: TypeScript/JavaScript, Java, Rust.**
 
-Rationale for single-language v1:
-- Import resolution is the hardest problem. Doing it well for one language is better than doing it poorly for three.
-- TypeScript has the most complex module system (tsconfig paths, barrel exports, `export *`, package.json exports, conditional exports, CJS interop). Solving TS first means other languages are easier.
-- TypeScript is the most common language in AI-assisted coding sessions.
+TypeScript was implemented first because it has the most complex module system
+(tsconfig paths, barrel exports, `export *`, package.json exports, conditional
+exports, CJS interop). Solving TS first meant other languages were easier. Java
+and Rust followed using the same `LanguageParser`/`Resolver` trait architecture.
 
 **v1 TypeScript resolver handles:**
 - Relative imports (`./foo`, `../bar`)
@@ -248,8 +248,10 @@ Rationale for single-language v1:
 - Ambient declarations (`.d.ts` files treated as regular TS)
 - Conditional exports in package.json
 
-**v2:** Python, Rust (leverage existing extractor/resolver trait)
-**v3:** Go, Java
+**v2:** Python (leverage existing extractor/resolver trait)
+**v3:** Go
+
+Note: Java and Rust are now supported via Tier 1 (tree-sitter) general mode.
 
 ## Data Model
 
@@ -600,7 +602,7 @@ statik/
 ```
 1. File Discovery
    - Walk project directory using `ignore` crate (respects .gitignore)
-   - Detect language by file extension (.ts, .tsx, .js, .jsx)
+   - Detect language by file extension (.ts, .tsx, .js, .jsx, .java, .rs)
    - Apply --include/--exclude filters
 
 2. Incremental Check (if .statik/index.db exists)
@@ -785,7 +787,7 @@ These limitations apply to Tier 1 (general mode) analysis. They are documented i
 | No dynamic dispatch | Yes -- `obj.method()` unresolvable | Resolved via type information |
 | No node_modules analysis | Third-party packages are opaque | Resolved via tsserver module resolution |
 | No computed import paths | Flagged as unresolvable | Partially resolved (static analysis of templates) |
-| TypeScript/JavaScript only | Yes | Per-backend (TS, Rust, Java, etc.) |
+| Language coverage gaps | Python, Go not yet supported | Per-backend expansion |
 | Barrel file accuracy | Reduced confidence on `export *` | Resolved via compiler resolution |
 | No conditional exports | `package.json` conditions ignored | Resolved via tsserver |
 | No CJS/ESM interop | Incomplete for mixed projects | Resolved via tsserver |
@@ -802,14 +804,20 @@ These limitations apply to Tier 1 (general mode) analysis. They are documented i
   - Type-resolved call graphs, precise module resolution
   - `callers`, `references`, `dead-code --scope methods` commands unlocked
 - **Tier 1: Python** general mode (extractor + resolver)
-- **Tier 1: Rust** general mode (dogfooding)
 - Auto-detection of available backends (default to deep when available)
 - `statik watch` for incremental re-indexing on file changes
+
+Note: **Tier 1: Java** and **Tier 1: Rust** general modes are now complete and
+shipped. Rust support includes `RustParser` (tree-sitter-rust), `RustResolver`
+(filesystem-based `crate::`/`super::`/`self::` module resolution with Cargo.toml
+dependency detection), and entry point detection for `main.rs`, `lib.rs`,
+`src/bin/`, `tests/`, `examples/`, `benches/`, and `build.rs`.
 
 ### v3 -- Broader Deep Mode Coverage
 - **Tier 2: Rust** deep backend (rust-analyzer)
 - **Tier 2: Java** deep backend (JDT language server)
 - Tier 1: Go general mode
+- Cargo workspace cross-crate resolution for Rust
 - stack-graphs as alternative Tier 1.5 backend (better than tree-sitter, lighter than full compiler)
 - SCIP index consumption as optional enrichment
 - IDE extensions

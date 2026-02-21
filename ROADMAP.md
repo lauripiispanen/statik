@@ -3,9 +3,9 @@
 ## Vision
 
 statik aims to be the fastest, most precise CLI-first dependency analysis tool for
-typed languages -- starting with TypeScript/JavaScript and expanding to Java. It
-prioritizes correctness over completeness, reporting confidence levels rather than
-guessing, and ships as a single binary with zero runtime dependencies.
+typed languages -- starting with TypeScript/JavaScript and expanding to Java and
+Rust. It prioritizes correctness over completeness, reporting confidence levels
+rather than guessing, and ships as a single binary with zero runtime dependencies.
 
 The north star: a developer runs `statik impact src/UserService.ts`, gets a precise
 blast radius in under a second, and trusts the result enough to act on it in CI.
@@ -35,8 +35,8 @@ from the CLI**. The differentiators worth protecting are:
 
 The strategy: **deepen before broadening**. Strengthen the TypeScript story until it
 is best-in-class, add architectural linting as the high-value governance layer, then
-extend to Java with a clear-eyed view of where the effort actually lives (resolvers,
-not parsers).
+extend to Java and Rust with a clear-eyed view of where the effort actually lives
+(resolvers, not parsers).
 
 ---
 
@@ -263,6 +263,46 @@ decision and belongs in a separate evaluation.
 
 ---
 
+### Phase 3b: Rust Support (COMPLETE)
+
+**Goal**: Add Rust as the third supported language using the same tree-sitter
+general mode architecture proven with TypeScript and Java. Dogfood statik on its
+own codebase.
+
+**Delivered**:
+
+1. **RustParser** (`src/parser/rust.rs`) -- tree-sitter-rust 0.23 extractor
+   implementing the `LanguageParser` trait. Extracts functions, structs, enums,
+   traits, type aliases, constants, statics, modules, `macro_rules!`, `impl` blocks,
+   `use` declarations (simple, grouped, wildcard, aliased, nested), `mod foo;`
+   declarations, `pub use` re-exports, `extern crate`, visibility tracking, call
+   references, inheritance references, and intra-file reference resolution.
+
+2. **RustResolver** (`src/resolver/rust.rs`) -- filesystem-based module resolution.
+   Handles `crate::`, `super::` (including chained), `self::`, external crate
+   detection from `Cargo.toml` `[dependencies]`, ambiguous module detection
+   (`foo.rs` vs `foo/mod.rs`), and crate root auto-detection (`src/lib.rs`,
+   `src/main.rs`, `src/bin/*.rs`).
+
+3. **Entry point detection** -- `lib.rs`, `main.rs`, `src/bin/*.rs`, `tests/`,
+   `examples/`, `benches/`, `build.rs` are recognized as entry points.
+
+4. **Integration** -- per-language resolver dispatch in `build_file_graph()`,
+   parser registration, test fixtures in `tests/fixtures/rust_project/`, integration
+   tests in `tests/rust_integration.rs`.
+
+**What remains (future work)**:
+
+- Cargo workspace cross-crate resolution
+- Proc macro expansion (derive, attribute macros)
+- `#[macro_export]` visibility detection
+- `#[cfg]` conditional compilation evaluation
+- `#[path = "..."]` custom module paths
+- Build script generated code visibility
+- Feature flag resolution
+
+---
+
 ### Phase 4: Deep Analysis (Type-Aware Dependencies, Symbol-Level Intelligence)
 
 **Goal**: Move beyond file-level analysis to symbol-level precision where tree-sitter
@@ -451,8 +491,8 @@ integrations.
   running tsc or javac, it's out of scope.
 - **node_modules resolution**: Documented as a limitation. External packages are
   identified but not resolved into node_modules.
-- **Python or Rust parsers**: Discovery supports these languages but parsers are not
-  planned. Focus on TS/JS and Java.
+- **Python parser**: Discovery supports Python but a parser is not planned. Focus
+  remains on TS/JS, Java, and Rust.
 - **Content-level linting**: statik's architectural linting operates on the
   dependency graph (file-to-file edges, import metadata). It does not lint code
   style, naming conventions, or AST patterns within a file -- that's ESLint/Clippy

@@ -4,7 +4,7 @@ This document describes how statik works at a high level. For the full internal 
 
 ## Overview
 
-statik is a Rust CLI tool that performs static code analysis on TypeScript/JavaScript projects. It extracts symbols and their relationships from source code using tree-sitter, stores them in a SQLite database, and runs graph algorithms to answer questions about dependencies, dead code, and refactoring impact.
+statik is a Rust CLI tool that performs static code analysis on TypeScript/JavaScript, Java, and Rust projects. It extracts symbols and their relationships from source code using tree-sitter, stores them in a SQLite database, and runs graph algorithms to answer questions about dependencies, dead code, and refactoring impact.
 
 ### What statik does that LSP does not
 
@@ -20,7 +20,7 @@ These capabilities are complementary to LSP. statik is designed to be used along
 ## Data Flow
 
 ```
-Source Files (.ts, .js, .tsx, .jsx)
+Source Files (.ts, .js, .tsx, .jsx, .java, .rs)
         |
         v
   File Discovery          -- Walk project, respect .gitignore, detect language
@@ -63,7 +63,7 @@ File-level analysis is both faster and more reliable than symbol-level analysis 
 
 ### Pluggable import resolution
 
-Import resolution is separated behind a `Resolver` trait, allowing different resolution strategies per language. The TypeScript resolver handles relative imports, tsconfig.json path aliases (`baseUrl`, `paths`), index file resolution, and external package detection. Each resolution returns a typed result (`Resolved`, `ResolvedWithCaveat`, `External`, `Unresolved`) so that analysis algorithms can adjust confidence based on resolution quality.
+Import resolution is separated behind a `Resolver` trait, allowing different resolution strategies per language. The TypeScript resolver handles relative imports, tsconfig.json path aliases (`baseUrl`, `paths`), index file resolution, and external package detection. The Java resolver handles package-to-directory mapping with source root auto-detection. The Rust resolver handles `crate::`, `super::`, and `self::` module paths with crate root auto-detection and Cargo.toml dependency parsing. Each resolution returns a typed result (`Resolved`, `ResolvedWithCaveat`, `External`, `Unresolved`) so that analysis algorithms can adjust confidence based on resolution quality.
 
 ### SQLite for persistence
 
