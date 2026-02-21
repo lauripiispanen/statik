@@ -428,6 +428,190 @@ Tasks:
 
 ---
 
+## Phase 2b: Advanced Lint Rules
+
+Research-driven additions based on ArchUnit, dependency-cruiser, NDepend, and
+real-world architecture enforcement patterns.
+
+### 2b.1 Freeze / baseline mechanism
+**Complexity**: M
+**Prerequisites**: 2.9
+**Files**: `src/linting/freeze.rs`, `src/cli/commands.rs`
+
+Record current violations and only report *new* violations in subsequent runs.
+This is the single biggest adoption enabler for architecture rules in existing
+codebases. ArchUnit's `FreezingArchRule` is its most praised feature.
+
+Tasks:
+- [ ] Add `statik lint --freeze` command that saves current violations to
+  `.statik/violations.store` (plain text, one violation per line)
+- [ ] Add `statik lint --frozen` mode that compares against the store and only
+  reports new violations not in the baseline
+- [ ] Store format: `rule_id|source_path|target_path|imported_names` per line
+- [ ] When a baseline violation is fixed, automatically remove it from the store
+  on next `--freeze`
+- [ ] Add `--update-baseline` flag to refresh the store after intentional changes
+- [ ] Document workflow: first run creates baseline, CI uses `--frozen` to catch
+  regressions
+
+**Acceptance**: A team can add `statik lint` to an existing codebase with 50
+violations, freeze the baseline, and CI only fails on *new* violations going
+forward.
+
+---
+
+### 2b.2 Cycle size / scope policy
+**Complexity**: S
+**Prerequisites**: 2.9
+**Files**: `src/linting/config.rs`, `src/linting/rules.rs`
+
+Configurable cycle detection in the lint framework. Current `statik cycles` is
+all-or-nothing; this allows teams to gradually tighten cycle tolerance.
+
+Tasks:
+- [ ] Add `CyclePolicyRule` config variant with `max_cycle_size: usize` and
+  `scope: file|directory`
+- [ ] Implement evaluation: run SCC on file graph, report cycles exceeding
+  `max_cycle_size`
+- [ ] Optional `pattern` field to restrict check to specific paths
+- [ ] Support `scope = "directory"` to check cycles at directory level (collapse
+  intra-directory edges)
+- [ ] Add tests: 2-file cycle passes with max_size=2, 3-file cycle fails
+
+**Acceptance**: A rule `{max_cycle_size = 2, scope = "file"}` passes 2-file
+mutual dependencies but flags 3+-file cycles as errors.
+
+---
+
+### 2b.3 Stability metric rule (Stable Dependencies Principle)
+**Complexity**: S
+**Prerequisites**: 2.7 (fan limit)
+**Files**: `src/linting/rules.rs`, `src/analysis/metrics.rs`
+
+Robert C. Martin's instability metric: `I = Ce / (Ca + Ce)` where Ce = fan-out,
+Ca = fan-in. Dependencies should flow toward stability (lower I).
+
+Tasks:
+- [ ] Compute instability per file or per directory (configurable scope)
+- [ ] Add `StabilityRule` config: `scope: file|directory`,
+  `direction: toward-stability`
+- [ ] Report violations where a file/dir depends on something more unstable
+  than itself
+- [ ] Optionally expose metrics in `statik summary` output
+- [ ] Add tests with known-stable and known-unstable module arrangements
+
+**Acceptance**: A leaf module (high fan-in, low fan-out, I≈0) depending on a
+volatile module (low fan-in, high fan-out, I≈1) is NOT flagged. The reverse IS
+flagged as a stable-dependencies-principle violation.
+
+---
+
+### 2b.4 Naming convention boundary rules
+**Complexity**: S
+**Prerequisites**: 2.2, 2.3
+**Files**: `src/linting/config.rs`, `src/linting/rules.rs`
+
+Complement path-based boundaries with file-name-based boundaries. Common in
+codebases without strict directory layering.
+
+Tasks:
+- [ ] Add `NamingBoundaryRule` config: `from_name: Vec<GlobPattern>`,
+  `deny_name: Vec<GlobPattern>`, `except_name: Option<Vec<GlobPattern>>`
+- [ ] Match against file names (not full paths) for the name patterns
+- [ ] Implement evaluation: for each edge, check if source filename matches
+  `from_name` and target filename matches `deny_name`
+- [ ] Add tests: `*Controller.ts must not import *Repository.ts`
+
+**Acceptance**: A rule `{from_name = "*Controller.*", deny_name = "*Repository.*"}`
+reports when `UserController.ts` directly imports `UserRepository.ts`.
+
+---
+
+### 2b.5 Restricted consumer rules ("only X may use Y")
+**Complexity**: S
+**Prerequisites**: 2.3
+**Files**: `src/linting/config.rs`, `src/linting/rules.rs`
+
+Inverse of boundary rules: instead of "A must not import B", enforce "only A may
+import B". Useful for cross-cutting concerns like logging, metrics, DB access.
+
+Tasks:
+- [ ] Add `RestrictedConsumerRule` config: `target: Vec<GlobPattern>`,
+  `allowed_from: Vec<GlobPattern>`
+- [ ] Implement evaluation: for each edge to a matching target, check if the
+  source matches `allowed_from`. If not, it's a violation.
+- [ ] Add tests: `{target = "src/db/**", allowed_from = ["src/cli/**"]}` flags
+  when `src/analysis/foo.rs` imports from `src/db/`
+
+**Acceptance**: A rule restricting DB access to CLI-only correctly flags when
+analysis or parser modules import DB types.
+
+---
+
+### 2b.6 Max exports / API surface limit
+**Complexity**: S
+**Prerequisites**: 2.2
+**Files**: `src/linting/rules.rs`
+
+Enforce that modules don't expose too many symbols. Barrel files with 50+
+re-exports are a common antipattern.
+
+Tasks:
+- [ ] Add `ExportLimitRule` config: `pattern: Vec<GlobPattern>`,
+  `max_exports: usize`
+- [ ] Implement evaluation: count exports per file from the DB, flag files
+  exceeding the limit
+- [ ] Add tests: file with 5 exports passes at limit 10, file with 15 fails
+
+**Acceptance**: A rule `{pattern = "src/**", max_exports = 15}` flags barrel
+files with excessive re-exports.
+
+---
+
+### 2b.7 Dependency weight / coupling detection
+**Complexity**: M
+**Prerequisites**: 2.2
+**Files**: `src/linting/rules.rs`
+
+Flag heavy coupling between two files: not just "does A depend on B" but "how
+many distinct symbols does A import from B." NDepend measures this as coupling
+weight.
+
+Tasks:
+- [ ] Add `CouplingWeightRule` config: `pattern: Vec<GlobPattern>`,
+  `max_imports_per_edge: usize`
+- [ ] Implement evaluation: for each edge, count imported symbols. Flag edges
+  exceeding the threshold.
+- [ ] Report: the two files, current import count, threshold
+- [ ] Add tests: edge with 3 imports passes at limit 10, edge with 12 fails
+
+**Acceptance**: A rule `{max_imports_per_edge = 10}` flags file pairs where one
+imports 10+ symbols from the other, suggesting they should be merged or a shared
+abstraction extracted.
+
+---
+
+### 2b.8 Directory cohesion rule
+**Complexity**: M
+**Prerequisites**: 2.2
+**Files**: `src/linting/rules.rs`, `src/analysis/metrics.rs`
+
+Files in the same directory should depend more on each other than on outside
+files. Low cohesion suggests files are misplaced.
+
+Tasks:
+- [ ] Add `CohesionRule` config: `scope: directory`, `min_internal_ratio: f64`,
+  `pattern: Vec<GlobPattern>`, `min_files: usize`
+- [ ] Compute per-directory: internal deps / total deps ratio
+- [ ] Flag directories below the threshold (e.g., <30% internal deps)
+- [ ] Only check directories with `min_files` or more files
+- [ ] Add tests with high-cohesion and low-cohesion directory arrangements
+
+**Acceptance**: A directory where 80% of dependencies are internal passes at
+threshold 0.3. A directory where 10% of dependencies are internal is flagged.
+
+---
+
 ## Phase 3: Multi-Language Foundation (Java v1 COMPLETE)
 
 ### 3.1 Language enum and SymbolKind expansion ✅
@@ -1016,21 +1200,213 @@ demonstrates cross-language dependency navigation in at least two editors.
 
 ---
 
+## Phase 7: Agent-Friendly CLI
+
+AI agents currently need Python/jq/grep to post-process statik's output. These
+additions eliminate that friction. Design principles from gh CLI: pre-filter
+instead of post-process, composable flags, consistent JSON schema.
+
+### 7.1 Output path filtering (`--path`)
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
+
+The single highest-impact CLI addition. Agents cannot currently say "show me
+dead code in `src/model/` only" without post-processing.
+
+Tasks:
+- [ ] Add `--path <glob>` global flag to `Cli` struct
+- [ ] Apply as output filter: only include results where file path matches the
+  glob pattern
+- [ ] Works with all commands: dead-code, deps, cycles, exports, lint, impact,
+  symbols, references, callers
+- [ ] Composable with `--lang` (both filters apply)
+- [ ] Add tests: `statik dead-code --path "src/model/"` only shows model files
+
+**Acceptance**: `statik dead-code --path "src/model/**"` returns only dead code
+in the model directory, without requiring any post-processing.
+
+---
+
+### 7.2 Count mode (`--count`)
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
+
+Just print the count of results. Eliminates `| jq '. | length'` and `| wc -l`.
+
+Tasks:
+- [ ] Add `--count` global flag to `Cli` struct
+- [ ] When set, replace normal output with a single number
+- [ ] Works with all commands that produce lists
+- [ ] Composable with `--path` and `--lang`
+- [ ] Exit code 0 if count == 0, 1 if count > 0 (useful for CI checks)
+
+**Acceptance**: `statik dead-code --count` prints `42`. Combined:
+`statik dead-code --count --path "src/model/"` prints `7`.
+
+---
+
+### 7.3 Result limiting (`--limit`)
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
+
+Limit output to first N results. Reduces context window waste for agents.
+
+Tasks:
+- [ ] Add `--limit <N>` global flag to `Cli` struct
+- [ ] Truncate result list before serialization
+- [ ] Works with all commands that produce lists
+- [ ] Composable with `--path`, `--lang`, `--sort`
+- [ ] Add a "... and N more" indicator in text output when truncated
+
+**Acceptance**: `statik dead-code --limit 10` shows only the first 10 dead
+code results.
+
+---
+
+### 7.4 Sort control (`--sort`)
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/mod.rs`, `src/cli/commands.rs`
+
+Deterministic, meaningful ordering. Agents benefit from seeing worst offenders
+first.
+
+Tasks:
+- [ ] Add `--sort <field>` global flag: `path`, `confidence`, `name`, `depth`
+- [ ] Default: `path` (alphabetical, deterministic)
+- [ ] `confidence`: high-confidence results first
+- [ ] `depth`: for impact command, deepest impact first
+- [ ] Add `--reverse` flag for descending order
+- [ ] Add tests for each sort field
+
+**Acceptance**: `statik dead-code --sort confidence` shows high-confidence dead
+code first.
+
+---
+
+### 7.5 Built-in jq filtering (`--jq`)
+**Complexity**: M
+**Prerequisites**: None
+**Files**: `src/cli/mod.rs`, `Cargo.toml`
+
+Like GitHub CLI's `--jq` flag. Eliminates all post-processing for agents.
+Use the `jaq-core` crate (pure Rust jq implementation).
+
+Tasks:
+- [ ] Add `jaq-core` and `jaq-std` dependencies
+- [ ] Add `--jq <expression>` global flag
+- [ ] Implicitly sets `--format json`
+- [ ] Apply jq filter to the JSON output before printing
+- [ ] Add tests: `--jq '.[].path'`, `--jq '[.[] | select(.confidence == "high")]'`
+- [ ] Handle jq errors gracefully (print error message, exit 1)
+
+**Acceptance**: `statik dead-code --jq '.[].path'` prints one file path per
+line without requiring external jq.
+
+---
+
+### 7.6 Richer JSON schema
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/output.rs`, `src/cli/commands.rs`
+
+Add structured path components to JSON output so agents don't need to parse
+file paths.
+
+Tasks:
+- [ ] Add `directory`, `filename`, `extension` fields alongside `path` in all
+  JSON output
+- [ ] Add `module` field (top-level source directory: model, parser, cli, etc.)
+- [ ] Add `language` field to all file-level results
+- [ ] Ensure backward compatibility (new fields are additive)
+- [ ] Add tests verifying JSON schema
+
+**Acceptance**: JSON output for a dead export includes
+`{"path": "src/model/foo.rs", "directory": "src/model", "filename": "foo.rs",
+"extension": "rs", "module": "model", "language": "rust", ...}`.
+
+---
+
+### 7.7 Cross-module edge filter (`--between`)
+**Complexity**: S
+**Prerequisites**: 7.1
+**Files**: `src/cli/commands.rs`
+
+Show only edges between two path scopes. Very useful for understanding
+cross-module coupling.
+
+Tasks:
+- [ ] Add `--between <from_glob> <to_glob>` flag to `deps` command
+- [ ] Filter edge list: only include edges where source matches `from_glob`
+  and target matches `to_glob`
+- [ ] Works with `--format json`, `--count`, `--limit`
+- [ ] Add tests: `statik deps --between src/parser/ src/model/`
+
+**Acceptance**: `statik deps --between "src/parser/**" "src/model/**"` shows
+only edges from parser files to model files.
+
+---
+
+### 7.8 CSV output format
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/output.rs`
+
+Trivially parseable without any JSON library. Useful for agents that want
+simple text processing.
+
+Tasks:
+- [ ] Add `csv` to the `OutputFormat` enum
+- [ ] Implement CSV serialization for all commands (header row + data rows)
+- [ ] Use comma separator, quote fields containing commas
+- [ ] Add tests for each command's CSV output
+
+**Acceptance**: `statik dead-code --format csv` produces parseable CSV with
+headers `path,name,kind,confidence`.
+
+---
+
+### 7.9 Directory-level summary aggregation
+**Complexity**: M
+**Prerequisites**: None
+**Files**: `src/cli/commands.rs`
+
+Roll up statistics per directory for high-level architectural overview.
+
+Tasks:
+- [ ] Add `--by-directory` flag to `summary` command
+- [ ] Aggregate: files, exports, dead exports, avg fan-out, avg fan-in per
+  directory
+- [ ] Works with `--format json`, `--sort`, `--limit`
+- [ ] Add tests with known directory structures
+
+**Acceptance**: `statik summary --by-directory --format json` produces
+per-directory rollup showing file counts, export counts, dead export counts,
+and coupling metrics.
+
+---
+
 ## Summary of Complexity Estimates
 
 | Phase | S tasks | M tasks | L tasks | XL tasks | Total tasks |
 |-------|---------|---------|---------|----------|-------------|
 | 1     | 0       | 4       | 2       | 0        | 7           |
 | 2     | 3       | 6       | 0       | 0        | 10          |
+| 2b    | 5       | 3       | 0       | 0        | 8           |
 | 3     | 2       | 1       | 1       | 1        | 5           |
+| 3b    | 1       | 0       | 2       | 0        | 3           |
 | 4     | 2       | 3       | 2       | 0        | 7           |
 | 5     | 0       | 3       | 2       | 0        | 5           |
 | 6     | 0       | 3       | 2       | 1        | 6           |
-| **Total** | **7** | **20** | **9** | **2** | **40** |
+| 7     | 7       | 2       | 0       | 0        | 9           |
+| **Total** | **20** | **25** | **11** | **2** | **60** |
 
-Phase 1 is the foundation. Phase 2 (architectural linting) is the highest-priority
-customer-facing feature -- it builds directly on Phase 1's file graph and is the
-primary integration surface for AI agents. Do not skip to Phase 3 (Java) until
-Phase 2 is solid. The lazy loading (1.4) and graph caching (1.5) are prerequisites
-for Java projects to work well, and the structural diff (1.7) is the achievable
-foundation for the dream feature in Phase 5.
+**Priority guidance**: Phase 2b (advanced lint rules) and Phase 7 (agent-friendly
+CLI) are the highest-impact next increments. Within Phase 2b, the freeze/baseline
+mechanism (2b.1) is the adoption enabler. Within Phase 7, the `--path`, `--count`,
+and `--limit` flags (7.1-7.3) are quick wins that eliminate most agent post-processing.
+The Rust dogfooding findings (3b.5) — especially crate_name resolution — should be
+addressed in parallel as they affect the tool's credibility for Rust projects.
