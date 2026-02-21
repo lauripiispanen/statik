@@ -190,8 +190,7 @@ impl Database {
                     id: FileId(row.get(0)?),
                     path: std::path::PathBuf::from(row.get::<_, String>(1)?),
                     mtime: row.get(2)?,
-                    language: Language::from_stored_str(&lang_str)
-                        .unwrap_or(Language::TypeScript),
+                    language: Language::from_stored_str(&lang_str).unwrap_or(Language::TypeScript),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()

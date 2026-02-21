@@ -102,10 +102,8 @@ pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexR
     }
 
     // Build FileId -> DiscoveredFile lookup (avoids O(N²) linear scans)
-    let files_to_parse_map: HashMap<FileId, &crate::discovery::DiscoveredFile> = files_to_parse
-        .iter()
-        .map(|(id, df)| (*id, df))
-        .collect();
+    let files_to_parse_map: HashMap<FileId, &crate::discovery::DiscoveredFile> =
+        files_to_parse.iter().map(|(id, df)| (*id, df)).collect();
 
     let mut total_symbols = 0;
     let mut total_references = 0;

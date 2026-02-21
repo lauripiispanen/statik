@@ -28,11 +28,7 @@ pub struct DiscoveryConfig {
 /// Default exclude patterns for common build output and IDE directories.
 const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
     // Java / JVM
-    "target/",
-    "build/",
-    ".gradle/",
-    ".idea/",
-    "*.class",
+    "target/", "build/", ".gradle/", ".idea/", "*.class",
 ];
 
 /// Discover source files in a project directory, respecting .gitignore.
@@ -381,25 +377,13 @@ mod tests {
 
         // Source file (should be discovered)
         fs::create_dir_all(root.join("src/main/java")).unwrap();
-        fs::write(
-            root.join("src/main/java/App.java"),
-            "public class App {}",
-        )
-        .unwrap();
+        fs::write(root.join("src/main/java/App.java"), "public class App {}").unwrap();
 
         // Build output dirs (should be excluded)
         fs::create_dir_all(root.join("target/classes")).unwrap();
-        fs::write(
-            root.join("target/classes/App.java"),
-            "// compiled",
-        )
-        .unwrap();
+        fs::write(root.join("target/classes/App.java"), "// compiled").unwrap();
         fs::create_dir_all(root.join("build/classes")).unwrap();
-        fs::write(
-            root.join("build/classes/App.java"),
-            "// compiled",
-        )
-        .unwrap();
+        fs::write(root.join("build/classes/App.java"), "// compiled").unwrap();
         fs::create_dir_all(root.join(".gradle")).unwrap();
         fs::write(root.join(".gradle/config.java"), "// gradle").unwrap();
 

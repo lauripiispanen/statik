@@ -149,8 +149,8 @@ struct ConfigWithEntryPoints {
 
 /// Load and parse a lint config from a TOML file.
 pub fn load_config(path: &Path) -> Result<LintConfig> {
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     parse_config(&content).with_context(|| format!("Failed to parse {}", path.display()))
 }
 
@@ -200,7 +200,10 @@ deny = ["src/db/**"]
         let rule = &config.rules[0];
         assert_eq!(rule.id, "no-ui-to-db");
         assert_eq!(rule.severity, Severity::Error);
-        assert_eq!(rule.description, "UI layer must not import from database layer");
+        assert_eq!(
+            rule.description,
+            "UI layer must not import from database layer"
+        );
         assert_eq!(
             rule.rationale.as_deref(),
             Some("The UI should go through the service layer")

@@ -77,12 +77,8 @@ fn main() -> Result<()> {
         }
 
         Commands::Cycles => {
-            let output = commands::run_cycles(
-                &project_path,
-                &cli.format,
-                cli.no_index,
-                cli.runtime_only,
-            )?;
+            let output =
+                commands::run_cycles(&project_path, &cli.format, cli.no_index, cli.runtime_only)?;
             println!("{}", output);
         }
 
@@ -123,19 +119,11 @@ fn main() -> Result<()> {
         }
 
         Commands::Diff { ref before } => {
-            let output = commands::run_diff(
-                &project_path,
-                before,
-                &cli.format,
-                cli.no_index,
-            )?;
+            let output = commands::run_diff(&project_path, before, &cli.format, cli.no_index)?;
             println!("{}", output);
         }
 
-        Commands::Symbols {
-            ref file,
-            ref kind,
-        } => {
+        Commands::Symbols { ref file, ref kind } => {
             let output = commands::run_symbols(
                 &project_path,
                 file.as_deref(),
@@ -162,7 +150,10 @@ fn main() -> Result<()> {
             println!("{}", output);
         }
 
-        Commands::Callers { ref symbol, ref file } => {
+        Commands::Callers {
+            ref symbol,
+            ref file,
+        } => {
             let output = commands::run_callers(
                 &project_path,
                 symbol,

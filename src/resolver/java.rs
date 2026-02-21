@@ -4,11 +4,7 @@ use std::path::{Path, PathBuf};
 use super::{Resolution, Resolver, UnresolvedReason};
 
 /// Standard Maven/Gradle source root directories to probe.
-const STANDARD_SOURCE_ROOTS: &[&str] = &[
-    "src/main/java",
-    "src/test/java",
-    "src",
-];
+const STANDARD_SOURCE_ROOTS: &[&str] = &["src/main/java", "src/test/java", "src"];
 
 /// Java import resolver.
 ///
@@ -169,18 +165,13 @@ impl JavaResolver {
         None
     }
 
-    pub fn resolve_type_ref(
-        &self,
-        type_name: &str,
-        from_file: &Path,
-    ) -> Resolution {
+    pub fn resolve_type_ref(&self, type_name: &str, from_file: &Path) -> Resolution {
         if JAVA_LANG_TYPES.contains(&type_name) {
             return Resolution::External("java.lang".to_string());
         }
 
         // Determine from_file's package
-        let from_pkg = Self::infer_package(from_file, &self.source_roots)
-            .unwrap_or_default();
+        let from_pkg = Self::infer_package(from_file, &self.source_roots).unwrap_or_default();
 
         if let Some(siblings) = self.package_files.get(&from_pkg) {
             for (class_name, path) in siblings {
@@ -191,15 +182,13 @@ impl JavaResolver {
         }
 
         // Not found in same package; could be from a wildcard import or external
-        Resolution::Unresolved(UnresolvedReason::FileNotFound(
-            format!("type ref '{}' not in same package", type_name),
-        ))
+        Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
+            "type ref '{}' not in same package",
+            type_name
+        )))
     }
 
-    pub fn resolve_wildcard(
-        &self,
-        package_fqn: &str,
-    ) -> Vec<PathBuf> {
+    pub fn resolve_wildcard(&self, package_fqn: &str) -> Vec<PathBuf> {
         if Self::is_likely_external(package_fqn) || package_fqn.starts_with("java.") {
             return Vec::new();
         }
@@ -291,7 +280,11 @@ mod tests {
         // Create Maven-style source layout
         let src = root.join("src/main/java/com/example");
         fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("App.java"), "package com.example; public class App {}").unwrap();
+        fs::write(
+            src.join("App.java"),
+            "package com.example; public class App {}",
+        )
+        .unwrap();
         fs::write(
             src.join("UserService.java"),
             "package com.example; public class UserService {}",

@@ -29,7 +29,9 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let custom_pattern_matcher = if ep_config.patterns.is_empty() {
         None
     } else {
-        Some(crate::linting::matcher::FileMatcher::new(&ep_config.patterns)?)
+        Some(crate::linting::matcher::FileMatcher::new(
+            &ep_config.patterns,
+        )?)
     };
 
     // Collect all known file paths for resolvers
@@ -111,46 +113,48 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 continue;
             }
 
-            let lang = file_language.get(&file.id).copied().unwrap_or(Language::TypeScript);
-            let resolution: Resolution = if let Some(type_name) =
-                import.source_path.strip_prefix("@type-ref:")
-            {
-                java_resolver.resolve_type_ref(type_name, &file.path)
-            } else if import.is_namespace && lang == Language::Java {
-                // Wildcard import: resolve to all files in the package
-                let files = java_resolver.resolve_wildcard(&import.source_path);
-                if files.is_empty() {
-                    if JavaResolver::is_likely_external(&import.source_path) {
-                        let pkg = import
-                            .source_path
-                            .split('.')
-                            .take(3)
-                            .collect::<Vec<_>>()
-                            .join(".");
-                        Resolution::External(pkg)
+            let lang = file_language
+                .get(&file.id)
+                .copied()
+                .unwrap_or(Language::TypeScript);
+            let resolution: Resolution =
+                if let Some(type_name) = import.source_path.strip_prefix("@type-ref:") {
+                    java_resolver.resolve_type_ref(type_name, &file.path)
+                } else if import.is_namespace && lang == Language::Java {
+                    // Wildcard import: resolve to all files in the package
+                    let files = java_resolver.resolve_wildcard(&import.source_path);
+                    if files.is_empty() {
+                        if JavaResolver::is_likely_external(&import.source_path) {
+                            let pkg = import
+                                .source_path
+                                .split('.')
+                                .take(3)
+                                .collect::<Vec<_>>()
+                                .join(".");
+                            Resolution::External(pkg)
+                        } else {
+                            Resolution::External(import.source_path.clone())
+                        }
                     } else {
-                        Resolution::External(import.source_path.clone())
-                    }
-                } else {
-                    for resolved_path in &files {
-                        if let Some(&target_id) = path_to_id.get(resolved_path) {
-                            if target_id != file.id {
-                                edges_by_target.entry(target_id).or_default().push((
-                                    "*".to_string(),
-                                    import.is_type_only,
-                                    import.line_span.start.line,
-                                ));
+                        for resolved_path in &files {
+                            if let Some(&target_id) = path_to_id.get(resolved_path) {
+                                if target_id != file.id {
+                                    edges_by_target.entry(target_id).or_default().push((
+                                        "*".to_string(),
+                                        import.is_type_only,
+                                        import.line_span.start.line,
+                                    ));
+                                }
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
-            } else {
-                match lang {
-                    Language::Java => java_resolver.resolve(&import.source_path, &file.path),
-                    _ => ts_resolver.resolve(&import.source_path, &file.path),
-                }
-            };
+                } else {
+                    match lang {
+                        Language::Java => java_resolver.resolve(&import.source_path, &file.path),
+                        _ => ts_resolver.resolve(&import.source_path, &file.path),
+                    }
+                };
 
             match resolution {
                 Resolution::Resolved(resolved_path)
@@ -420,8 +424,7 @@ pub fn run_dead_code(
         // Symbol-level dead code analysis
         let file_graph = build_file_graph(&db, project_path)?;
         let symbol_graph = build_symbol_graph(&db)?;
-        let result =
-            crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
+        let result = crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
         return Ok(match format {
             OutputFormat::Text => format_dead_symbols_text(&result),
             _ => format_json(&result, format),
@@ -797,9 +800,7 @@ pub fn run_symbols(
             db.get_symbols_by_file(file_record.id)?
         }
         (_, Some(k)) => {
-            let sk: SymbolKind = k
-                .parse()
-                .map_err(|e: String| anyhow::anyhow!("{}", e))?;
+            let sk: SymbolKind = k.parse().map_err(|e: String| anyhow::anyhow!("{}", e))?;
             db.find_symbols_by_kind(sk)?
         }
         _ => db.all_symbols()?,
@@ -817,7 +818,8 @@ pub fn run_symbols(
 
     // Build file ID -> path lookup
     let all_files = db.all_files()?;
-    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let file_paths: HashMap<FileId, PathBuf> =
+        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
     let symbol_infos: Vec<SymbolInfo> = symbols
         .iter()
@@ -875,7 +877,10 @@ fn format_symbols_text(result: &impl serde::Serialize) -> String {
             let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
             let file = sym.get("file").and_then(|v| v.as_str()).unwrap_or("?");
             let line = sym.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-            let vis = sym.get("visibility").and_then(|v| v.as_str()).unwrap_or("?");
+            let vis = sym
+                .get("visibility")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             out.push_str(&format!(
                 "  {:<30} {:<12} {:<40} {:<6} {:<10}\n",
                 name, kind, file, line, vis
@@ -904,7 +909,8 @@ pub fn run_references(
     // Build lookups
     let symbol_map: HashMap<crate::model::SymbolId, &crate::model::Symbol> =
         all_symbols.iter().map(|s| (s.id, s)).collect();
-    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let file_paths: HashMap<FileId, PathBuf> =
+        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
     // Find all symbols matching the name
     let matching_symbols: Vec<crate::model::SymbolId> = all_symbols
@@ -1012,10 +1018,7 @@ fn format_references_text(result: &impl serde::Serialize) -> String {
     let value = serde_json::to_value(result).unwrap_or_default();
     let mut out = String::new();
 
-    let symbol = value
-        .get("symbol")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
+    let symbol = value.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
     let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
     out.push_str(&format!("References for '{}' ({}):\n\n", symbol, count));
 
@@ -1057,7 +1060,8 @@ pub fn run_callers(
 
     let symbol_map: HashMap<crate::model::SymbolId, &crate::model::Symbol> =
         all_symbols.iter().map(|s| (s.id, s)).collect();
-    let file_paths: HashMap<FileId, PathBuf> = all_files.iter().map(|f| (f.id, f.path.clone())).collect();
+    let file_paths: HashMap<FileId, PathBuf> =
+        all_files.iter().map(|f| (f.id, f.path.clone())).collect();
 
     // Find target symbols matching the name
     let target_symbols: Vec<crate::model::SymbolId> = all_symbols
@@ -1169,7 +1173,10 @@ fn display_path(path: &Path) -> String {
 
 fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Dependencies for {}\n", display_path(&result.target_path)));
+    out.push_str(&format!(
+        "Dependencies for {}\n",
+        display_path(&result.target_path)
+    ));
     out.push('\n');
 
     if !result.imports.is_empty() {
@@ -1275,7 +1282,11 @@ fn format_dead_symbols_text(result: &crate::analysis::dead_code::DeadSymbolResul
         for s in &result.dead_symbols {
             out.push_str(&format!(
                 "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
-                s.name, s.kind, s.file, s.line, format!("{}", s.confidence),
+                s.name,
+                s.kind,
+                s.file,
+                s.line,
+                format!("{}", s.confidence),
             ));
         }
         out.push('\n');
@@ -1418,15 +1429,9 @@ fn format_exports_text(result: &serde_json::Value) -> String {
     }
 
     if let Some(summary) = result.get("summary") {
-        let total = summary
-            .get("total")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let total = summary.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
         let used = summary.get("used").and_then(|v| v.as_u64()).unwrap_or(0);
-        let unused = summary
-            .get("unused")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let unused = summary.get("unused").and_then(|v| v.as_u64()).unwrap_or(0);
         out.push_str(&format!(
             "Summary: {} total, {} used, {} unused",
             total, used, unused
@@ -1455,11 +1460,7 @@ fn format_summary_text(result: &serde_json::Value) -> String {
 
         if let Some(by_lang) = files.get("by_language").and_then(|v| v.as_object()) {
             let mut langs: Vec<_> = by_lang.iter().collect();
-            langs.sort_by(|a, b| {
-                b.1.as_u64()
-                    .unwrap_or(0)
-                    .cmp(&a.1.as_u64().unwrap_or(0))
-            });
+            langs.sort_by(|a, b| b.1.as_u64().unwrap_or(0).cmp(&a.1.as_u64().unwrap_or(0)));
             for (lang, count) in &langs {
                 out.push_str(&format!("  {}: {}\n", lang, count.as_u64().unwrap_or(0)));
             }
@@ -1484,10 +1485,7 @@ fn format_summary_text(result: &serde_json::Value) -> String {
 
     if let Some(dc) = result.get("dead_code") {
         let dead_files = dc.get("dead_files").and_then(|v| v.as_u64()).unwrap_or(0);
-        let dead_exports = dc
-            .get("dead_exports")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let dead_exports = dc.get("dead_exports").and_then(|v| v.as_u64()).unwrap_or(0);
         let total_exports = dc
             .get("total_exports")
             .and_then(|v| v.as_u64())
@@ -1499,10 +1497,7 @@ fn format_summary_text(result: &serde_json::Value) -> String {
     }
 
     if let Some(cy) = result.get("cycles") {
-        let count = cy
-            .get("cycle_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let count = cy.get("cycle_count").and_then(|v| v.as_u64()).unwrap_or(0);
         let files_in = cy
             .get("files_in_cycles")
             .and_then(|v| v.as_u64())

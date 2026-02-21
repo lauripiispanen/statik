@@ -100,10 +100,7 @@ fn test_deps_command_json() {
         imports.len()
     );
 
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
     assert!(
         import_paths.iter().any(|p| p.contains("user.ts")),
         "Should import models/user.ts, got {:?}",
@@ -201,10 +198,7 @@ fn test_cycles_detects_circular_deps() {
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
 
-    assert!(
-        !cycles.is_empty(),
-        "Should detect the a.ts <-> b.ts cycle"
-    );
+    assert!(!cycles.is_empty(), "Should detect the a.ts <-> b.ts cycle");
 
     // Check that the cycle involves cycle/a.ts and cycle/b.ts
     let all_cycle_paths: Vec<&str> = cycles
@@ -286,10 +280,7 @@ fn test_exports_command() {
 
     assert!(!exports.is_empty(), "userService.ts should have exports");
 
-    let names: Vec<&str> = exports
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = exports.iter().filter_map(|e| e["name"].as_str()).collect();
 
     assert!(
         names.contains(&"UserService"),
@@ -363,15 +354,8 @@ fn test_lint_detects_boundary_violation() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -401,15 +385,8 @@ fn test_lint_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, _) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Text,
-        true,
-    )
-    .unwrap();
+    let (output, _) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Text, true).unwrap();
 
     assert!(
         output.contains("error[no-ui-to-db]"),
@@ -427,15 +404,8 @@ fn test_lint_severity_threshold_filters() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "warning",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "warning", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -468,10 +438,7 @@ fn test_barrel_file_deps_through_reexports() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     assert!(
         import_paths.iter().any(|p| p.contains("helpers.ts")),
@@ -490,29 +457,29 @@ fn test_barrel_file_dead_code_through_reexports() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false).unwrap();
+    let output =
+        commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_exports = json["dead_exports"].as_array().unwrap();
     let dead_names: Vec<(&str, &str)> = dead_exports
         .iter()
-        .filter_map(|e| {
-            Some((
-                e["export_name"].as_str()?,
-                e["path"].as_str()?,
-            ))
-        })
+        .filter_map(|e| Some((e["export_name"].as_str()?, e["path"].as_str()?)))
         .collect();
 
     // barrelHelper is used (imported by index.ts via barrel) -- should NOT be dead
     assert!(
-        !dead_names.iter().any(|(name, path)| *name == "barrelHelper" && path.contains("helpers.ts")),
+        !dead_names
+            .iter()
+            .any(|(name, path)| *name == "barrelHelper" && path.contains("helpers.ts")),
         "barrelHelper should NOT be dead (used via barrel), dead exports: {:?}",
         dead_names
     );
 
     // unusedBarrelFn is NOT imported by anyone -- should be dead
     assert!(
-        dead_names.iter().any(|(name, path)| *name == "unusedBarrelFn" && path.contains("helpers.ts")),
+        dead_names
+            .iter()
+            .any(|(name, path)| *name == "unusedBarrelFn" && path.contains("helpers.ts")),
         "unusedBarrelFn SHOULD be dead, dead exports: {:?}",
         dead_names
     );
@@ -538,10 +505,7 @@ fn test_dynamic_import_creates_dependency() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     assert!(
         import_paths.iter().any(|p| p.contains("lazy.ts")),
@@ -567,10 +531,7 @@ fn test_incremental_index_only_reparses_changed() {
         "No files should be re-indexed when nothing changed, got {} indexed",
         result2.files_indexed
     );
-    assert!(
-        result2.files_unchanged > 0,
-        "All files should be unchanged"
-    );
+    assert!(result2.files_unchanged > 0, "All files should be unchanged");
 
     // Touch one file -- sleep to ensure mtime changes (some filesystems
     // have 1-second granularity)

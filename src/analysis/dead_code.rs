@@ -261,10 +261,7 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
 ///
 /// Uses a worklist to handle chained re-exports (A re-exports from B which
 /// re-exports from C).
-fn propagate_through_reexports(
-    graph: &FileGraph,
-    imported_names: &mut HashSet<(FileId, String)>,
-) {
+fn propagate_through_reexports(graph: &FileGraph, imported_names: &mut HashSet<(FileId, String)>) {
     // Build a re-export map: for each file, which files it re-exports from and how
     // (file_id) -> Vec<(target_file_id, exported_name, is_wildcard)>
     // We derive target_file_id from import edges that match the re-export source_path.
@@ -278,19 +275,13 @@ fn propagate_through_reexports(
             // Find the import edge from this file that corresponds to this re-export
             if let Some(edges) = graph.imports.get(file_id) {
                 for edge in edges {
-                    if export.exported_name == "*"
-                        && edge.imported_names.iter().any(|n| n == "*")
-                    {
+                    if export.exported_name == "*" && edge.imported_names.iter().any(|n| n == "*") {
                         // Wildcard re-export: only match edges created by re-exports
                         // (which have "*" in imported_names), not unrelated imports
                         reexport_targets.push((*file_id, edge.to, "*".to_string()));
                     } else if edge.imported_names.contains(&export.exported_name) {
                         // Named re-export: match the export to its import edge
-                        reexport_targets.push((
-                            *file_id,
-                            edge.to,
-                            export.exported_name.clone(),
-                        ));
+                        reexport_targets.push((*file_id, edge.to, export.exported_name.clone()));
                     }
                 }
             }
@@ -338,10 +329,7 @@ fn propagate_through_reexports(
 /// Entry point symbols are exported symbols from entry point files.
 /// BFS through intra-file references from entry points.
 /// Unreachable symbols (excluding Import/Export/Package synthetic kinds) are dead.
-pub fn detect_dead_symbols(
-    symbol_graph: &SymbolGraph,
-    file_graph: &FileGraph,
-) -> DeadSymbolResult {
+pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -> DeadSymbolResult {
     // Determine entry point file IDs from the file graph
     let entry_file_ids: HashSet<FileId> = file_graph.entry_points().into_iter().collect();
 
@@ -386,11 +374,7 @@ pub fn detect_dead_symbols(
 
     // Find dead symbols: not reachable from any entry point
     // Exclude synthetic kinds (Import, Export, Package) that are not user-defined code
-    let skip_kinds = [
-        SymbolKind::Import,
-        SymbolKind::Export,
-        SymbolKind::Package,
-    ];
+    let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
 
     let mut dead_symbols = Vec::new();
     let file_paths: std::collections::HashMap<FileId, &PathBuf> = symbol_graph
@@ -835,7 +819,12 @@ mod tests {
         graph.add_file(barrel);
 
         // Utils file: export function helper()
-        graph.add_file(make_file_with_exports(3, "src/utils.ts", false, &["helper", "unused_fn"]));
+        graph.add_file(make_file_with_exports(
+            3,
+            "src/utils.ts",
+            false,
+            &["helper", "unused_fn"],
+        ));
 
         // Entry imports "helper" from barrel
         graph.add_import(make_edge(1, 2, &["helper"]));
@@ -843,7 +832,11 @@ mod tests {
         graph.add_import(make_edge(2, 3, &["*"]));
 
         let result = detect_dead_code(&graph, DeadCodeScope::Exports);
-        let dead_names: Vec<&str> = result.dead_exports.iter().map(|e| e.export_name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
         assert!(
             !dead_names.contains(&"helper"),
             "helper should NOT be dead (used via barrel re-export), dead: {:?}",
@@ -882,13 +875,22 @@ mod tests {
         };
         graph.add_file(barrel);
 
-        graph.add_file(make_file_with_exports(3, "src/utils.ts", false, &["helper", "unused_fn"]));
+        graph.add_file(make_file_with_exports(
+            3,
+            "src/utils.ts",
+            false,
+            &["helper", "unused_fn"],
+        ));
 
         graph.add_import(make_edge(1, 2, &["helper"]));
         graph.add_import(make_edge(2, 3, &["helper"]));
 
         let result = detect_dead_code(&graph, DeadCodeScope::Exports);
-        let dead_names: Vec<&str> = result.dead_exports.iter().map(|e| e.export_name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
         assert!(
             !dead_names.contains(&"helper"),
             "helper should NOT be dead (used via named re-export), dead: {:?}",
@@ -953,7 +955,11 @@ mod tests {
         graph.add_import(make_edge(3, 4, &["*"]));
 
         let result = detect_dead_code(&graph, DeadCodeScope::Exports);
-        let dead_names: Vec<&str> = result.dead_exports.iter().map(|e| e.export_name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
         assert!(
             !dead_names.contains(&"foo"),
             "foo should NOT be dead (used via chained re-exports), dead: {:?}",
@@ -1015,7 +1021,10 @@ mod tests {
                     span: Span { start: 0, end: 10 },
                     line_span: LineSpan {
                         start: Position { line: 1, column: 0 },
-                        end: Position { line: 1, column: 10 },
+                        end: Position {
+                            line: 1,
+                            column: 10,
+                        },
                     },
                     parent: None,
                     visibility: Visibility::Public,
@@ -1030,7 +1039,10 @@ mod tests {
                     span: Span { start: 20, end: 30 },
                     line_span: LineSpan {
                         start: Position { line: 2, column: 0 },
-                        end: Position { line: 2, column: 10 },
+                        end: Position {
+                            line: 2,
+                            column: 10,
+                        },
                     },
                     parent: None,
                     visibility: Visibility::Public,
@@ -1045,7 +1057,10 @@ mod tests {
                     span: Span { start: 40, end: 50 },
                     line_span: LineSpan {
                         start: Position { line: 3, column: 0 },
-                        end: Position { line: 3, column: 10 },
+                        end: Position {
+                            line: 3,
+                            column: 10,
+                        },
                     },
                     parent: None,
                     visibility: Visibility::Private,
@@ -1061,7 +1076,10 @@ mod tests {
                 span: Span { start: 5, end: 15 },
                 line_span: LineSpan {
                     start: Position { line: 1, column: 5 },
-                    end: Position { line: 1, column: 15 },
+                    end: Position {
+                        line: 1,
+                        column: 15,
+                    },
                 },
             }],
             imports: vec![],
@@ -1093,23 +1111,14 @@ mod tests {
         );
 
         // main and helper should NOT be dead
-        assert!(
-            !dead_names.contains(&"main"),
-            "main should NOT be dead"
-        );
+        assert!(!dead_names.contains(&"main"), "main should NOT be dead");
         assert!(
             !dead_names.contains(&"helper"),
             "helper should NOT be dead (called by main)"
         );
     }
 
-    fn make_sym(
-        id: u64,
-        name: &str,
-        kind: SymbolKind,
-        file: u64,
-        vis: Visibility,
-    ) -> Symbol {
+    fn make_sym(id: u64, name: &str, kind: SymbolKind, file: u64, vis: Visibility) -> Symbol {
         Symbol {
             id: SymbolId(id),
             name: name.to_string(),
@@ -1118,8 +1127,14 @@ mod tests {
             file: FileId(file),
             span: Span { start: 0, end: 10 },
             line_span: LineSpan {
-                start: Position { line: id as usize, column: 0 },
-                end: Position { line: id as usize, column: 10 },
+                start: Position {
+                    line: id as usize,
+                    column: 0,
+                },
+                end: Position {
+                    line: id as usize,
+                    column: 10,
+                },
             },
             parent: None,
             visibility: vis,
@@ -1184,9 +1199,13 @@ mod tests {
 
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(1),
-            symbols: vec![
-                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-            ],
+            symbols: vec![make_sym(
+                1,
+                "main",
+                SymbolKind::Function,
+                1,
+                Visibility::Public,
+            )],
             references: vec![],
             imports: vec![],
             exports: vec![],
@@ -1198,9 +1217,27 @@ mod tests {
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(2),
             symbols: vec![
-                make_sym(10, "api_handler", SymbolKind::Function, 2, Visibility::Public),
-                make_sym(11, "internal_helper", SymbolKind::Function, 2, Visibility::Private),
-                make_sym(12, "dead_internal", SymbolKind::Function, 2, Visibility::Private),
+                make_sym(
+                    10,
+                    "api_handler",
+                    SymbolKind::Function,
+                    2,
+                    Visibility::Public,
+                ),
+                make_sym(
+                    11,
+                    "internal_helper",
+                    SymbolKind::Function,
+                    2,
+                    Visibility::Private,
+                ),
+                make_sym(
+                    12,
+                    "dead_internal",
+                    SymbolKind::Function,
+                    2,
+                    Visibility::Private,
+                ),
             ],
             references: vec![
                 make_ref(1, 10, 11, RefKind::Call, 2), // api_handler calls internal_helper
@@ -1220,7 +1257,11 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph);
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
         assert!(
             dead_names.contains(&"dead_internal"),
@@ -1264,7 +1305,11 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph);
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
         // Synthetic kinds should not appear in dead symbols list at all
         assert!(!dead_names.contains(&"importSym"));
@@ -1307,9 +1352,18 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph);
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert_eq!(dead_names, vec!["d"], "only d should be dead, got: {:?}", dead_names);
+        assert_eq!(
+            dead_names,
+            vec!["d"],
+            "only d should be dead, got: {:?}",
+            dead_names
+        );
     }
 
     #[test]
@@ -1328,7 +1382,13 @@ mod tests {
             file_id: FileId(1),
             symbols: vec![
                 make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                make_sym(2, "maybe_dead", SymbolKind::Function, 1, Visibility::Private),
+                make_sym(
+                    2,
+                    "maybe_dead",
+                    SymbolKind::Function,
+                    1,
+                    Visibility::Private,
+                ),
             ],
             references: vec![
                 // Unresolved reference: target has a placeholder ID
@@ -1381,8 +1441,8 @@ mod tests {
                 make_sym(4, "UnusedClass", SymbolKind::Class, 1, Visibility::Private),
             ],
             references: vec![
-                make_ref(1, 1, 2, RefKind::Call, 1),          // main -> UserClass
-                make_ref(2, 2, 3, RefKind::Inheritance, 1),    // UserClass extends BaseClass
+                make_ref(1, 1, 2, RefKind::Call, 1),        // main -> UserClass
+                make_ref(2, 2, 3, RefKind::Inheritance, 1), // UserClass extends BaseClass
             ],
             imports: vec![],
             exports: vec![],
@@ -1391,9 +1451,19 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph);
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(!dead_names.contains(&"BaseClass"), "BaseClass reached via inheritance");
-        assert!(dead_names.contains(&"UnusedClass"), "UnusedClass should be dead");
+        assert!(
+            !dead_names.contains(&"BaseClass"),
+            "BaseClass reached via inheritance"
+        );
+        assert!(
+            dead_names.contains(&"UnusedClass"),
+            "UnusedClass should be dead"
+        );
     }
 }

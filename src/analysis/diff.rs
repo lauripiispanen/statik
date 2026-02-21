@@ -55,14 +55,10 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
     let files_before = db_before.all_files()?;
     let files_after = db_after.all_files()?;
 
-    let paths_before: HashMap<PathBuf, _> = files_before
-        .iter()
-        .map(|f| (f.path.clone(), f))
-        .collect();
-    let paths_after: HashMap<PathBuf, _> = files_after
-        .iter()
-        .map(|f| (f.path.clone(), f))
-        .collect();
+    let paths_before: HashMap<PathBuf, _> =
+        files_before.iter().map(|f| (f.path.clone(), f)).collect();
+    let paths_after: HashMap<PathBuf, _> =
+        files_after.iter().map(|f| (f.path.clone(), f)).collect();
 
     let all_paths: HashSet<&PathBuf> = paths_before.keys().chain(paths_after.keys()).collect();
 
@@ -155,7 +151,10 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
             .then(a.export_name.cmp(&b.export_name))
     });
 
-    let breaking_changes = changes.iter().filter(|c| c.kind == ChangeKind::Breaking).count();
+    let breaking_changes = changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Breaking)
+        .count();
     let expanding_changes = changes
         .iter()
         .filter(|c| c.kind == ChangeKind::Expanding)
@@ -187,11 +186,7 @@ mod tests {
         SymbolKind, Visibility,
     };
 
-    fn make_db_with_file(
-        file_id: u64,
-        path: &str,
-        export_names: &[&str],
-    ) -> Database {
+    fn make_db_with_file(file_id: u64, path: &str, export_names: &[&str]) -> Database {
         let db = Database::in_memory().unwrap();
         let file = FileRecord {
             id: FileId(file_id),
@@ -212,7 +207,10 @@ mod tests {
                 span: Span { start: 0, end: 10 },
                 line_span: LineSpan {
                     start: Position { line: 1, column: 0 },
-                    end: Position { line: 1, column: 10 },
+                    end: Position {
+                        line: 1,
+                        column: 10,
+                    },
                 },
                 parent: None,
                 visibility: Visibility::Public,

@@ -44,7 +44,6 @@ impl TestProject {
         let output = self.run(args);
         String::from_utf8_lossy(&output.stdout).to_string()
     }
-
 }
 
 /// Create a basic project with a known dependency structure:
@@ -274,8 +273,7 @@ fn test_deps_json_format() {
         "src/services/userService.ts",
     ]);
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("deps JSON should be valid");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("deps JSON should be valid");
 
     // Should have imports and imported_by arrays
     assert!(
@@ -374,10 +372,7 @@ fn test_exports_shows_used_status() {
         .iter()
         .find(|e| e["name"] == "unusedFormatter")
         .expect("should have unusedFormatter");
-    assert_eq!(
-        unused["is_used"], false,
-        "unusedFormatter should be unused"
-    );
+    assert_eq!(unused["is_used"], false, "unusedFormatter should be unused");
 }
 
 // =============================================================================
@@ -536,15 +531,9 @@ fn test_impact_json() {
     ]);
 
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert!(
-        json.get("affected").is_some(),
-        "should have affected field"
-    );
+    assert!(json.get("affected").is_some(), "should have affected field");
     let affected = json["affected"].as_array().unwrap();
-    assert!(
-        !affected.is_empty(),
-        "format.ts should affect other files"
-    );
+    assert!(!affected.is_empty(), "format.ts should affect other files");
 }
 
 // =============================================================================
@@ -606,10 +595,7 @@ fn test_lint_no_config_errors_gracefully() {
 
     // No rules.toml exists
     let output = proj.run(&["--no-index", "lint"]);
-    assert!(
-        !output.status.success(),
-        "lint without config should fail"
-    );
+    assert!(!output.status.success(), "lint without config should fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("config") || stderr.contains("rules.toml"),
@@ -760,14 +746,10 @@ deny = ["src/db/**"]
 
     let stdout = proj.stdout(&["--format", "json", "--no-index", "lint"]);
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("lint JSON should be valid");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("lint JSON should be valid");
 
     let violations = json["violations"].as_array().expect("violations array");
-    assert!(
-        !violations.is_empty(),
-        "should have violations in JSON"
-    );
+    assert!(!violations.is_empty(), "should have violations in JSON");
     assert_eq!(violations[0]["rule_id"], "no-ui-to-db");
     assert_eq!(violations[0]["severity"], "error");
 
@@ -796,10 +778,7 @@ except = ["src/db/connection.ts"]
     );
 
     let output = proj.run(&["--no-index", "lint"]);
-    assert!(
-        output.status.success(),
-        "lint with exception should pass"
-    );
+    assert!(output.status.success(), "lint with exception should pass");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -934,10 +913,7 @@ fn test_lint_invalid_toml() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    proj.write_file(
-        ".statik/rules.toml",
-        "this is not valid toml [[[broken",
-    );
+    proj.write_file(".statik/rules.toml", "this is not valid toml [[[broken");
 
     let output = proj.run(&["--no-index", "lint"]);
     assert!(
@@ -984,10 +960,7 @@ fn test_auto_index_on_first_run() {
 
     // Run deps without prior indexing - should auto-index
     let output = proj.run(&["deps", "src/index.ts"]);
-    assert!(
-        output.status.success(),
-        "should auto-index and succeed"
-    );
+    assert!(output.status.success(), "should auto-index and succeed");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1020,7 +993,10 @@ fn test_empty_project() {
 
     let output = proj.run(&["index", "."]);
     // Should succeed even with no files
-    assert!(output.status.success(), "empty project index should succeed");
+    assert!(
+        output.status.success(),
+        "empty project index should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -1088,21 +1064,33 @@ export const html = renderDashboard();
     );
 
     let output = proj.run(&["lint"]);
-    assert!(!output.status.success(), "should exit 1 for layer violation");
+    assert!(
+        !output.status.success(),
+        "should exit 1 for layer violation"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("clean-layers"), "should mention the layer rule: {}", stdout);
-    assert!(stdout.contains("data"), "should mention the data layer: {}", stdout);
-    assert!(stdout.contains("presentation"), "should mention the presentation layer: {}", stdout);
+    assert!(
+        stdout.contains("clean-layers"),
+        "should mention the layer rule: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("data"),
+        "should mention the data layer: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("presentation"),
+        "should mention the presentation layer: {}",
+        stdout
+    );
 }
 
 #[test]
 fn test_lint_containment_rule_violation() {
     let proj = create_basic_project();
 
-    proj.write_file(
-        "src/auth/index.ts",
-        r#"export { login } from './service';"#,
-    );
+    proj.write_file("src/auth/index.ts", r#"export { login } from './service';"#);
     proj.write_file(
         "src/auth/service.ts",
         r#"export function login() { return "token"; }"#,
@@ -1129,10 +1117,21 @@ public_api = ["src/auth/index.ts"]
     );
 
     let output = proj.run(&["lint"]);
-    assert!(!output.status.success(), "should exit 1 for containment violation");
+    assert!(
+        !output.status.success(),
+        "should exit 1 for containment violation"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("auth-encapsulation"), "should report containment rule: {}", stdout);
-    assert!(stdout.contains("src/auth/service.ts"), "should show internal target: {}", stdout);
+    assert!(
+        stdout.contains("auth-encapsulation"),
+        "should report containment rule: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("src/auth/service.ts"),
+        "should show internal target: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1156,10 +1155,21 @@ require_type_only = true
     // src/services/userService.ts has `import { User } from '../models/user'`
     // which is NOT type-only, so it should violate
     let output = proj.run(&["lint"]);
-    assert!(!output.status.success(), "should exit 1 for type-only violation");
+    assert!(
+        !output.status.success(),
+        "should exit 1 for type-only violation"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("models-type-only"), "should report import restriction: {}", stdout);
-    assert!(stdout.contains("type-only"), "should mention type-only: {}", stdout);
+    assert!(
+        stdout.contains("models-type-only"),
+        "should report import restriction: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("type-only"),
+        "should mention type-only: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1195,10 +1205,21 @@ max_fan_out = 3
     );
 
     let output = proj.run(&["lint"]);
-    assert!(!output.status.success(), "should exit 1 for fan-out violation");
+    assert!(
+        !output.status.success(),
+        "should exit 1 for fan-out violation"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("no-god-modules"), "should report fan limit: {}", stdout);
-    assert!(stdout.contains("fan-out"), "should mention fan-out: {}", stdout);
+    assert!(
+        stdout.contains("no-god-modules"),
+        "should report fan limit: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("fan-out"),
+        "should mention fan-out: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1243,8 +1264,8 @@ max_fan_out = 100
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Parse JSON to verify structure
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}: {}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}: {}", e, stdout));
 
     assert_eq!(json["rules_evaluated"], 3);
     assert!(json["violations"].as_array().unwrap().len() >= 1);

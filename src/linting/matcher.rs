@@ -70,11 +70,8 @@ mod tests {
 
     #[test]
     fn test_negation_pattern() {
-        let matcher = FileMatcher::new(&[
-            "src/ui/**".to_string(),
-            "!src/ui/shared/**".to_string(),
-        ])
-        .unwrap();
+        let matcher =
+            FileMatcher::new(&["src/ui/**".to_string(), "!src/ui/shared/**".to_string()]).unwrap();
         assert!(matcher.matches(Path::new("src/ui/Button.ts")));
         assert!(!matcher.matches(Path::new("src/ui/shared/types.ts")));
     }

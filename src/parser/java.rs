@@ -238,8 +238,7 @@ impl<'a> Extractor<'a> {
                 for inner_child in child.children(&mut inner_cursor) {
                     match inner_child.kind() {
                         "scoped_identifier" | "identifier" => {
-                            self.package_name =
-                                Some(self.node_text(inner_child).to_string());
+                            self.package_name = Some(self.node_text(inner_child).to_string());
                         }
                         _ => {}
                     }
@@ -265,8 +264,7 @@ impl<'a> Extractor<'a> {
             if child.kind() == "type_parameter" {
                 let mut inner_cursor = child.walk();
                 for inner_child in child.children(&mut inner_cursor) {
-                    if inner_child.kind() == "type_identifier"
-                        || inner_child.kind() == "identifier"
+                    if inner_child.kind() == "type_identifier" || inner_child.kind() == "identifier"
                     {
                         let name = self.node_text(inner_child).to_string();
                         if !name.is_empty() {
@@ -293,8 +291,7 @@ impl<'a> Extractor<'a> {
                             || inner_child.kind() == "annotation"
                         {
                             if let Some(name_n) = inner_child.child_by_field_name("name") {
-                                self.annotations
-                                    .push(self.node_text(name_n).to_string());
+                                self.annotations.push(self.node_text(name_n).to_string());
                             }
                         }
                     }
@@ -1264,7 +1261,10 @@ public interface Serializable {
         assert_eq!(iface.visibility, Visibility::Public);
 
         // Public interface should be exported
-        assert!(result.exports.iter().any(|e| e.exported_name == "Serializable"));
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.exported_name == "Serializable"));
     }
 
     #[test]
@@ -1308,7 +1308,10 @@ public @interface MyAnnotation {
             .unwrap();
         assert_eq!(ann.kind, SymbolKind::Annotation);
         assert_eq!(ann.visibility, Visibility::Public);
-        assert!(result.exports.iter().any(|e| e.exported_name == "MyAnnotation"));
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.exported_name == "MyAnnotation"));
     }
 
     #[test]
@@ -1517,7 +1520,10 @@ public class App {
             .iter()
             .filter(|r| r.kind == RefKind::Call)
             .collect();
-        assert!(!calls.is_empty(), "new MyClass() should generate a Call reference");
+        assert!(
+            !calls.is_empty(),
+            "new MyClass() should generate a Call reference"
+        );
     }
 
     #[test]
@@ -1530,14 +1536,8 @@ import static java.lang.Math.PI;
 "#,
         );
         assert_eq!(result.imports.len(), 3);
-        assert!(result
-            .imports
-            .iter()
-            .any(|i| i.imported_name == "List"));
-        assert!(result
-            .imports
-            .iter()
-            .any(|i| i.imported_name == "Map"));
+        assert!(result.imports.iter().any(|i| i.imported_name == "List"));
+        assert!(result.imports.iter().any(|i| i.imported_name == "Map"));
         assert!(result
             .imports
             .iter()
@@ -1630,7 +1630,10 @@ public interface UserService {
         assert_eq!(get_user.parent, Some(iface.id));
 
         // Verify export
-        assert!(result.exports.iter().any(|e| e.exported_name == "UserService"));
+        assert!(result
+            .exports
+            .iter()
+            .any(|e| e.exported_name == "UserService"));
     }
 
     #[test]
@@ -1665,11 +1668,7 @@ public class Base {
 }
 "#,
         );
-        let helper = result
-            .symbols
-            .iter()
-            .find(|s| s.name == "helper")
-            .unwrap();
+        let helper = result.symbols.iter().find(|s| s.name == "helper").unwrap();
         assert_eq!(helper.visibility, Visibility::Protected);
     }
 
@@ -1685,8 +1684,16 @@ public class App {
         let greet = result.symbols.iter().find(|s| s.name == "greet").unwrap();
         assert!(greet.signature.is_some());
         let sig = greet.signature.as_ref().unwrap();
-        assert!(sig.contains("greet"), "signature should contain method name: {}", sig);
-        assert!(sig.contains("String"), "signature should contain return type: {}", sig);
+        assert!(
+            sig.contains("greet"),
+            "signature should contain method name: {}",
+            sig
+        );
+        assert!(
+            sig.contains("String"),
+            "signature should contain return type: {}",
+            sig
+        );
     }
 
     #[test]
@@ -1804,10 +1811,7 @@ public record Point(int x, int y) {
         assert_eq!(distance.parent, Some(point.id));
 
         // Public top-level record should be exported
-        assert!(result
-            .exports
-            .iter()
-            .any(|e| e.exported_name == "Point"));
+        assert!(result.exports.iter().any(|e| e.exported_name == "Point"));
     }
 
     #[test]
@@ -1960,7 +1964,11 @@ public class Foo {
         // Widget is a type_identifier inside generic_type
         assert!(refs.contains(&"Widget".to_string()), "refs: {:?}", refs);
         // List is an explicit import, should not appear as type-ref
-        assert!(!refs.contains(&"List".to_string()), "List should be filtered (explicit import): {:?}", refs);
+        assert!(
+            !refs.contains(&"List".to_string()),
+            "List should be filtered (explicit import): {:?}",
+            refs
+        );
     }
 
     #[test]
@@ -2074,7 +2082,9 @@ public class Primitives {
         let refs = type_ref_names(&result);
         // Primitives use integral_type, boolean_type, etc., not type_identifier
         assert!(
-            !refs.iter().any(|r| r == "int" || r == "boolean" || r == "double" || r == "void"),
+            !refs
+                .iter()
+                .any(|r| r == "int" || r == "boolean" || r == "double" || r == "void"),
             "primitives should not appear as type refs: {:?}",
             refs
         );
@@ -2147,7 +2157,11 @@ public class Outer {
 }
 "#,
         );
-        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        let names: Vec<_> = result
+            .exports
+            .iter()
+            .map(|e| e.exported_name.as_str())
+            .collect();
         assert!(names.contains(&"Outer"), "exports: {:?}", names);
         assert!(
             names.contains(&"Inner"),
@@ -2165,7 +2179,11 @@ public class Outer {
 }
 "#,
         );
-        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        let names: Vec<_> = result
+            .exports
+            .iter()
+            .map(|e| e.exported_name.as_str())
+            .collect();
         assert!(names.contains(&"Outer"));
         assert!(
             !names.contains(&"Secret"),
@@ -2183,7 +2201,11 @@ class PackagePrivate {
 }
 "#,
         );
-        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        let names: Vec<_> = result
+            .exports
+            .iter()
+            .map(|e| e.exported_name.as_str())
+            .collect();
         assert!(
             !names.contains(&"Inner"),
             "public inner in package-private parent should not be exported: {:?}",
@@ -2200,7 +2222,11 @@ public class Outer {
 }
 "#,
         );
-        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        let names: Vec<_> = result
+            .exports
+            .iter()
+            .map(|e| e.exported_name.as_str())
+            .collect();
         assert!(
             names.contains(&"Callback"),
             "public inner interface should be exported: {:?}",
@@ -2217,7 +2243,11 @@ public class Outer {
 }
 "#,
         );
-        let names: Vec<_> = result.exports.iter().map(|e| e.exported_name.as_str()).collect();
+        let names: Vec<_> = result
+            .exports
+            .iter()
+            .map(|e| e.exported_name.as_str())
+            .collect();
         assert!(
             names.contains(&"Status"),
             "public inner enum should be exported: {:?}",
@@ -2294,7 +2324,11 @@ public class Config {}
 "#,
         );
         let anns = annotation_names(&result);
-        assert!(anns.contains(&"Configuration".to_string()), "anns: {:?}", anns);
+        assert!(
+            anns.contains(&"Configuration".to_string()),
+            "anns: {:?}",
+            anns
+        );
         assert!(
             anns.contains(&"EnableAutoConfiguration".to_string()),
             "anns: {:?}",
@@ -2511,9 +2545,10 @@ public class Foo {
 
         let base_sym = result.symbols.iter().find(|s| s.name == "Base").unwrap();
 
-        let inherit_ref = result.references.iter().find(|r| {
-            r.kind == RefKind::Inheritance && r.target == base_sym.id
-        });
+        let inherit_ref = result
+            .references
+            .iter()
+            .find(|r| r.kind == RefKind::Inheritance && r.target == base_sym.id);
         assert!(
             inherit_ref.is_some(),
             "Derived should have a resolved inheritance ref to Base, refs: {:?}",
@@ -2539,9 +2574,10 @@ public class Foo {
 
         let helper_sym = result.symbols.iter().find(|s| s.name == "helper").unwrap();
 
-        let call_ref = result.references.iter().find(|r| {
-            r.kind == RefKind::Call && r.target == helper_sym.id
-        });
+        let call_ref = result
+            .references
+            .iter()
+            .find(|r| r.kind == RefKind::Call && r.target == helper_sym.id);
         assert!(
             call_ref.is_some(),
             "main should have a resolved call ref to helper"

@@ -1795,9 +1795,16 @@ async function loadModule() {
             result.imports.iter().any(|i| i.source_path == "./lazy"),
             "dynamic import('./lazy') should generate an import record"
         );
-        let dynamic_import = result.imports.iter().find(|i| i.source_path == "./lazy").unwrap();
+        let dynamic_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path == "./lazy")
+            .unwrap();
         assert!(dynamic_import.is_dynamic, "should be marked as dynamic");
-        assert!(dynamic_import.is_namespace, "dynamic imports are namespace imports");
+        assert!(
+            dynamic_import.is_namespace,
+            "dynamic imports are namespace imports"
+        );
     }
 
     // --- Additional edge case tests added by test-reviewer ---
@@ -2131,7 +2138,10 @@ const CACHE_TTL = 3600;
         assert!(result.exports[0].is_reexport);
 
         assert!(
-            result.imports.iter().any(|i| i.source_path == "./module" && i.imported_name == "*"),
+            result
+                .imports
+                .iter()
+                .any(|i| i.source_path == "./module" && i.imported_name == "*"),
             "wildcard re-export should also create an ImportRecord for the dependency edge"
         );
     }
@@ -2142,7 +2152,11 @@ const CACHE_TTL = 3600;
         // Should create ExportRecords AND ImportRecords
         assert_eq!(result.exports.len(), 2);
 
-        let import_names: Vec<&str> = result.imports.iter().map(|i| i.imported_name.as_str()).collect();
+        let import_names: Vec<&str> = result
+            .imports
+            .iter()
+            .map(|i| i.imported_name.as_str())
+            .collect();
         assert!(
             import_names.contains(&"foo"),
             "named re-export should create ImportRecord for 'foo'"
@@ -2175,7 +2189,10 @@ function load(name: string) {
         // Top-level dynamic import (not inside a function)
         let result = parse_ts(r#"const p = import("./module");"#);
         assert!(
-            result.imports.iter().any(|i| i.source_path == "./module" && i.is_dynamic),
+            result
+                .imports
+                .iter()
+                .any(|i| i.source_path == "./module" && i.is_dynamic),
             "top-level dynamic import should be extracted"
         );
     }
@@ -2194,9 +2211,10 @@ function load(name: string) {
         let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
 
         // Should have a resolved call reference from main to helper
-        let call_ref = result.references.iter().find(|r| {
-            r.source == main_sym.id && r.kind == RefKind::Call
-        });
+        let call_ref = result
+            .references
+            .iter()
+            .find(|r| r.source == main_sym.id && r.kind == RefKind::Call);
         assert!(call_ref.is_some(), "should have a call reference from main");
         let call_ref = call_ref.unwrap();
         assert_eq!(
@@ -2217,13 +2235,18 @@ function load(name: string) {
         let foo_sym = result.symbols.iter().find(|s| s.name == "Foo").unwrap();
 
         // Find the call reference for `new Foo()`
-        let new_ref = result.references.iter().find(|r| {
-            r.kind == RefKind::Call && r.target == foo_sym.id
-        });
+        let new_ref = result
+            .references
+            .iter()
+            .find(|r| r.kind == RefKind::Call && r.target == foo_sym.id);
         assert!(
             new_ref.is_some(),
             "new Foo() should have a resolved call reference to Foo, refs: {:?}",
-            result.references.iter().map(|r| (r.source, r.target, r.kind)).collect::<Vec<_>>()
+            result
+                .references
+                .iter()
+                .map(|r| (r.source, r.target, r.kind))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2238,9 +2261,10 @@ function load(name: string) {
 
         let base_sym = result.symbols.iter().find(|s| s.name == "Base").unwrap();
 
-        let inherit_ref = result.references.iter().find(|r| {
-            r.kind == RefKind::Inheritance && r.target == base_sym.id
-        });
+        let inherit_ref = result
+            .references
+            .iter()
+            .find(|r| r.kind == RefKind::Inheritance && r.target == base_sym.id);
         assert!(
             inherit_ref.is_some(),
             "Derived should have a resolved inheritance ref to Base"
@@ -2279,9 +2303,10 @@ function load(name: string) {
 
         // There should be a call reference from main
         let main_sym = result.symbols.iter().find(|s| s.name == "main").unwrap();
-        let call_ref = result.references.iter().find(|r| {
-            r.source == main_sym.id && r.kind == RefKind::Call
-        });
+        let call_ref = result
+            .references
+            .iter()
+            .find(|r| r.source == main_sym.id && r.kind == RefKind::Call);
         assert!(call_ref.is_some());
         let call_ref = call_ref.unwrap();
         // With two symbols named "helper", the resolution should be conservative (unresolved)

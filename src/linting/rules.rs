@@ -218,14 +218,14 @@ pub fn evaluate_rules(
             }
             RuleKind::ImportRestriction(restriction) => {
                 let target_matcher = FileMatcher::new(&restriction.target)?;
-                let forbidden_set: Option<HashSet<&str>> =
-                    restriction.forbidden_names.as_ref().map(|names| {
-                        names.iter().map(|s| s.as_str()).collect()
-                    });
-                let allowed_set: Option<HashSet<&str>> =
-                    restriction.allowed_names.as_ref().map(|names| {
-                        names.iter().map(|s| s.as_str()).collect()
-                    });
+                let forbidden_set: Option<HashSet<&str>> = restriction
+                    .forbidden_names
+                    .as_ref()
+                    .map(|names| names.iter().map(|s| s.as_str()).collect());
+                let allowed_set: Option<HashSet<&str>> = restriction
+                    .allowed_names
+                    .as_ref()
+                    .map(|names| names.iter().map(|s| s.as_str()).collect());
 
                 for (source_id, edges) in graph.imports.iter() {
                     let source_info = match graph.files.get(source_id) {
@@ -337,9 +337,7 @@ pub fn evaluate_rules(
                     if let Some(max_out) = fan_config.max_fan_out {
                         let fan_out = graph
                             .import_edges(*file_id)
-                            .map(|edges| {
-                                edges.iter().map(|e| e.to).collect::<HashSet<_>>().len()
-                            })
+                            .map(|edges| edges.iter().map(|e| e.to).collect::<HashSet<_>>().len())
                             .unwrap_or(0);
 
                         if fan_out > max_out as usize {
@@ -365,9 +363,7 @@ pub fn evaluate_rules(
                     if let Some(max_in) = fan_config.max_fan_in {
                         let fan_in = graph
                             .imported_by_edges(*file_id)
-                            .map(|edges| {
-                                edges.iter().map(|e| e.from).collect::<HashSet<_>>().len()
-                            })
+                            .map(|edges| edges.iter().map(|e| e.from).collect::<HashSet<_>>().len())
                             .unwrap_or(0);
 
                         if fan_in > max_in as usize {
@@ -439,8 +435,8 @@ fn severity_order(s: Severity) -> u8 {
 mod tests {
     use super::*;
     use crate::linting::config::{
-        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig,
-        ImportRestrictionRuleConfig, LayerDefinition, LayerRuleConfig, RuleDefinition,
+        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig, ImportRestrictionRuleConfig,
+        LayerDefinition, LayerRuleConfig, RuleDefinition,
     };
     use crate::model::file_graph::{FileImport, FileInfo};
     use crate::model::{FileId, Language};
@@ -616,7 +612,12 @@ mod tests {
         graph.add_import(make_edge(1, 2, &["x"], 1));
 
         let config = LintConfig {
-            rules: vec![make_boundary_rule("no-match", Severity::Error, &[], &["src/db/**"])],
+            rules: vec![make_boundary_rule(
+                "no-match",
+                Severity::Error,
+                &[],
+                &["src/db/**"],
+            )],
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -634,7 +635,12 @@ mod tests {
 
         let config = LintConfig {
             rules: vec![
-                make_boundary_rule("no-ui-to-db", Severity::Error, &["src/ui/**"], &["src/db/**"]),
+                make_boundary_rule(
+                    "no-ui-to-db",
+                    Severity::Error,
+                    &["src/ui/**"],
+                    &["src/db/**"],
+                ),
                 make_boundary_rule(
                     "no-ui-to-api",
                     Severity::Warning,
@@ -669,7 +675,12 @@ mod tests {
                     &["src/ui/**"],
                     &["src/api/**"],
                 ),
-                make_boundary_rule("no-ui-to-db", Severity::Error, &["src/ui/**"], &["src/db/**"]),
+                make_boundary_rule(
+                    "no-ui-to-db",
+                    Severity::Error,
+                    &["src/ui/**"],
+                    &["src/db/**"],
+                ),
             ],
         };
 
@@ -799,10 +810,7 @@ mod tests {
             rules: vec![make_layer_rule(
                 "clean-layers",
                 Severity::Error,
-                &[
-                    ("presentation", &["src/ui/**"]),
-                    ("data", &["src/db/**"]),
-                ],
+                &[("presentation", &["src/ui/**"]), ("data", &["src/db/**"])],
             )],
         };
 
@@ -822,10 +830,7 @@ mod tests {
             rules: vec![make_layer_rule(
                 "clean-layers",
                 Severity::Error,
-                &[
-                    ("presentation", &["src/ui/**"]),
-                    ("data", &["src/db/**"]),
-                ],
+                &[("presentation", &["src/ui/**"]), ("data", &["src/db/**"])],
             )],
         };
 
@@ -1293,7 +1298,11 @@ mod tests {
             2,
             "Expected two violations: type-only AND forbidden name"
         );
-        let descriptions: Vec<&str> = result.violations.iter().map(|v| v.description.as_str()).collect();
+        let descriptions: Vec<&str> = result
+            .violations
+            .iter()
+            .map(|v| v.description.as_str())
+            .collect();
         assert!(
             descriptions.iter().any(|d| d.contains("type-only")),
             "Expected a type-only violation"

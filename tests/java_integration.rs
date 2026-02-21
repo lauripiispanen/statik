@@ -108,10 +108,7 @@ fn test_java_deps_shows_imports() {
         imports.len()
     );
 
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
     assert!(
         import_paths.iter().any(|p| p.contains("User.java")),
         "Should import model/User.java, got {:?}",
@@ -162,7 +159,9 @@ fn test_java_deps_shows_importers() {
         .filter_map(|i| i["path"].as_str())
         .collect();
     assert!(
-        importer_paths.iter().any(|p| p.contains("UserService.java")),
+        importer_paths
+            .iter()
+            .any(|p| p.contains("UserService.java")),
         "Should be imported by UserService, got {:?}",
         importer_paths
     );
@@ -225,10 +224,7 @@ fn test_java_exports_public_class() {
 
     assert!(!exports.is_empty(), "User.java should have exports");
 
-    let names: Vec<&str> = exports
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = exports.iter().filter_map(|e| e["name"].as_str()).collect();
     assert!(
         names.contains(&"User"),
         "Should export User class, got {:?}",
@@ -252,10 +248,7 @@ fn test_java_exports_public_enum() {
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
 
-    let names: Vec<&str> = exports
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = exports.iter().filter_map(|e| e["name"].as_str()).collect();
     assert!(
         names.contains(&"Role"),
         "Should export Role enum, got {:?}",
@@ -489,15 +482,8 @@ deny = ["src/main/java/com/example/db/**"]
     )
     .unwrap();
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -545,15 +531,8 @@ deny = ["src/main/java/com/example/db/**"]
     )
     .unwrap();
 
-    let (output, _) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Text,
-        true,
-    )
-    .unwrap();
+    let (output, _) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Text, true).unwrap();
 
     assert!(
         output.contains("no-controller-to-db"),
@@ -591,10 +570,7 @@ fn test_java_static_import_resolves() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     // AuditableUser has:
     // - Static import: StringUtils.sanitize -> StringUtils.java
@@ -646,10 +622,7 @@ fn test_java_deps_cross_package_imports() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     // NotificationService explicitly imports from 3 different packages
     assert!(
@@ -658,12 +631,16 @@ fn test_java_deps_cross_package_imports() {
         import_paths
     );
     assert!(
-        import_paths.iter().any(|p| p.contains("model/Auditable.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("model/Auditable.java")),
         "Should import model/Auditable.java, got {:?}",
         import_paths
     );
     assert!(
-        import_paths.iter().any(|p| p.contains("db/UserRepository.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("db/UserRepository.java")),
         "Should import db/UserRepository.java, got {:?}",
         import_paths
     );
@@ -689,10 +666,7 @@ fn test_java_exports_public_interface() {
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
 
-    let names: Vec<&str> = exports
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = exports.iter().filter_map(|e| e["name"].as_str()).collect();
     assert!(
         names.contains(&"Auditable"),
         "Should export Auditable interface, got {:?}",
@@ -804,17 +778,18 @@ fn test_java_impact_stringutils_transitive() {
 
     // Verify specific affected files
     let affected = json["affected"].as_array().unwrap();
-    let affected_paths: Vec<&str> = affected
-        .iter()
-        .filter_map(|a| a["path"].as_str())
-        .collect();
+    let affected_paths: Vec<&str> = affected.iter().filter_map(|a| a["path"].as_str()).collect();
     assert!(
-        affected_paths.iter().any(|p| p.contains("UserService.java")),
+        affected_paths
+            .iter()
+            .any(|p| p.contains("UserService.java")),
         "UserService should be affected, got {:?}",
         affected_paths
     );
     assert!(
-        affected_paths.iter().any(|p| p.contains("AuditableUser.java")),
+        affected_paths
+            .iter()
+            .any(|p| p.contains("AuditableUser.java")),
         "AuditableUser should be affected (static import), got {:?}",
         affected_paths
     );
@@ -851,12 +826,11 @@ fn test_java_deps_notification_service_fan_out() {
         imports.len()
     );
 
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
     assert!(
-        import_paths.iter().any(|p| p.contains("UserRepository.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("UserRepository.java")),
         "Should import UserRepository.java, got {:?}",
         import_paths
     );
@@ -894,15 +868,8 @@ layers = [
     )
     .unwrap();
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -946,15 +913,8 @@ max_fan_out = 4
     )
     .unwrap();
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -1005,15 +965,8 @@ public_api = ["src/main/java/com/example/model/User.java", "src/main/java/com/ex
     )
     .unwrap();
 
-    let (output, has_errors) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, has_errors) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -1076,15 +1029,8 @@ max_fan_out = 100
     )
     .unwrap();
 
-    let (output, _) = commands::run_lint(
-        tmp.path(),
-        None,
-        None,
-        "info",
-        &OutputFormat::Json,
-        true,
-    )
-    .unwrap();
+    let (output, _) =
+        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -1099,7 +1045,9 @@ max_fan_out = 100
     // Should have at least the boundary violation from AdminController -> db
     let violations = json["violations"].as_array().unwrap();
     assert!(
-        violations.iter().any(|v| v["rule_id"] == "no-controller-to-db"),
+        violations
+            .iter()
+            .any(|v| v["rule_id"] == "no-controller-to-db"),
         "Should detect boundary violation, got {:?}",
         violations
     );
@@ -1129,10 +1077,7 @@ fn test_java_same_package_deps() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     assert!(
         import_paths.iter().any(|p| p.contains("User.java")),
@@ -1198,10 +1143,7 @@ fn test_java_wildcard_import_creates_edges() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let imports = json["imports"].as_array().unwrap();
-    let import_paths: Vec<&str> = imports
-        .iter()
-        .filter_map(|i| i["path"].as_str())
-        .collect();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     // Wildcard import should create edges to all files in com.example.model
     assert!(
@@ -1215,17 +1157,23 @@ fn test_java_wildcard_import_creates_edges() {
         import_paths
     );
     assert!(
-        import_paths.iter().any(|p| p.contains("model/Auditable.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("model/Auditable.java")),
         "Wildcard import should include Auditable.java, got {:?}",
         import_paths
     );
     assert!(
-        import_paths.iter().any(|p| p.contains("model/AuditableUser.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("model/AuditableUser.java")),
         "Wildcard import should include AuditableUser.java, got {:?}",
         import_paths
     );
     assert!(
-        import_paths.iter().any(|p| p.contains("model/UserSummary.java")),
+        import_paths
+            .iter()
+            .any(|p| p.contains("model/UserSummary.java")),
         "Wildcard import should include UserSummary.java, got {:?}",
         import_paths
     );
@@ -1302,10 +1250,7 @@ fn test_java_inner_class_exported() {
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
-    let names: Vec<&str> = exports
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = exports.iter().filter_map(|e| e["name"].as_str()).collect();
 
     assert!(
         names.contains(&"NotificationService"),
@@ -1415,9 +1360,7 @@ fn test_java_custom_entry_point_annotation() {
     let tmp = setup_java_project();
 
     // Create a file with a custom annotation that built-in heuristics don't recognize
-    let custom_dir = tmp
-        .path()
-        .join("src/main/java/com/example/batch");
+    let custom_dir = tmp.path().join("src/main/java/com/example/batch");
     std::fs::create_dir_all(&custom_dir).unwrap();
     std::fs::write(
         custom_dir.join("BatchJob.java"),
