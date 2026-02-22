@@ -198,6 +198,25 @@ impl Database {
         Ok(files)
     }
 
+    /// Rewrite all file paths by stripping a prefix, making them relative.
+    /// Used after indexing a temp directory to normalize paths for comparison.
+    pub fn relativize_paths(&self, prefix: &Path) -> Result<()> {
+        let prefix_str = prefix.to_string_lossy();
+        // Ensure prefix ends with /
+        let prefix_with_slash = if prefix_str.ends_with('/') {
+            prefix_str.to_string()
+        } else {
+            format!("{}/", prefix_str)
+        };
+        self.conn
+            .execute(
+                "UPDATE files SET path = SUBSTR(path, ?1) WHERE path LIKE ?2",
+                params![prefix_with_slash.len() as i64 + 1, format!("{}%", prefix_with_slash)],
+            )
+            .context("failed to relativize file paths")?;
+        Ok(())
+    }
+
     pub fn delete_file(&self, id: FileId) -> Result<()> {
         // CASCADE will clean up symbols, refs, imports, exports
         self.conn

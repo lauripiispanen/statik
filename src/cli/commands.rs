@@ -1234,8 +1234,14 @@ fn index_git_ref(project_path: &Path, sha: &str) -> Result<Database> {
     let config = crate::discovery::DiscoveryConfig::default();
     let index_result = crate::cli::index::run_index(temp_dir.path(), &config)?;
 
-    // Copy the indexed DB to cache
+    // Relativize paths in the DB so they match across different temp dirs
     let temp_db_path = temp_dir.path().join(".statik/index.db");
+    if temp_db_path.exists() {
+        let temp_db = Database::open(&temp_db_path)?;
+        temp_db.relativize_paths(temp_dir.path())?;
+    }
+
+    // Copy the indexed DB to cache
     if temp_db_path.exists() {
         if let Some(parent) = cache_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -1672,16 +1678,21 @@ pub fn run_graph(
         (graph, None)
     };
 
-    match graph_format {
-        "dot" => Ok(generate_dot(&graph, project_path, focus_id)),
-        "svg" => generate_svg(&graph, project_path, focus_id),
-        "html" => Ok(generate_html(&graph, project_path, focus_id)),
-        _ => match format {
-            OutputFormat::Text => Ok(generate_dot(&graph, project_path, focus_id)),
-            _ => {
+    // When --format json/compact is explicitly requested, always output JSON
+    match format {
+        OutputFormat::Json | OutputFormat::Compact | OutputFormat::Csv => {
+            let result = build_graph_json(&graph, project_path, focus_id);
+            Ok(format_json(&result, format))
+        }
+        _ => match graph_format {
+            "dot" => Ok(generate_dot(&graph, project_path, focus_id)),
+            "svg" => generate_svg(&graph, project_path, focus_id),
+            "html" => Ok(generate_html(&graph, project_path, focus_id)),
+            "json" => {
                 let result = build_graph_json(&graph, project_path, focus_id);
-                Ok(format_json(&result, format))
+                Ok(format_json(&result, &OutputFormat::Json))
             }
+            _ => Ok(generate_dot(&graph, project_path, focus_id)),
         },
     }
 }
@@ -1943,6 +1954,7 @@ edges.forEach(e => {
   edgeEls.push({ el: line, data: e });
 });
 
+function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function textWidth(t) { return t.length * 6.8 + 16; }
 
 const nodeEls = [];
@@ -1965,10 +1977,10 @@ nodes.forEach(n => {
   g.addEventListener("mouseenter", () => {
     const imp = edges.filter(e => e.source === n).map(e => e.target.path);
     const by = edges.filter(e => e.target === n).map(e => e.source.path);
-    let html = '<div class="path">'+n.path+'</div><div class="meta">Language: '+n.language+'</div>';
+    let html = '<div class="path">'+escapeHtml(n.path)+'</div><div class="meta">Language: '+escapeHtml(n.language)+'</div>';
     if (n.is_entry_point) html += '<div class="meta">Entry point</div>';
-    if (imp.length) html += '<div class="meta">Imports: '+imp.join(", ")+'</div>';
-    if (by.length) html += '<div class="meta">Imported by: '+by.join(", ")+'</div>';
+    if (imp.length) html += '<div class="meta">Imports: '+escapeHtml(imp.join(", "))+'</div>';
+    if (by.length) html += '<div class="meta">Imported by: '+escapeHtml(by.join(", "))+'</div>';
     tooltip.innerHTML = html; tooltip.style.display = "block";
     edgeEls.forEach(ee => { if (ee.data.source===n||ee.data.target===n) { ee.el.style.stroke="#ff6b6b"; ee.el.style.strokeWidth="2"; ee.el.style.strokeOpacity="1"; }});
     rect.style.stroke = "#ff6b6b"; rect.style.strokeWidth = "2.5";

@@ -298,11 +298,19 @@ fn compare_snapshots_inner(
     // affected file with a matching imported name. If no importers reference
     // the removed export, downgrade to Safe.
     if let Some(g_after) = graph_after {
-        // Build path -> FileId lookup for the new graph
+        // Build path -> FileId lookups outside the loop
         let path_to_id_after: HashMap<&PathBuf, crate::model::FileId> = g_after
             .all_files()
             .map(|(_, info)| (&info.path, info.id))
             .collect();
+
+        let path_to_id_before: Option<HashMap<&PathBuf, crate::model::FileId>> =
+            graph_before.map(|g_before| {
+                g_before
+                    .all_files()
+                    .map(|(_, info)| (&info.path, info.id))
+                    .collect()
+            });
 
         for change in &mut changes {
             match change.kind {
@@ -337,15 +345,10 @@ fn compare_snapshots_inner(
                         // File no longer exists in new graph (was removed) ->
                         // check old graph to see if the file had importers
                         // that still exist in new graph
-                        if let Some(g_before) = graph_before {
-                            let path_to_id_before: HashMap<&PathBuf, crate::model::FileId> =
-                                g_before
-                                    .all_files()
-                                    .map(|(_, info)| (&info.path, info.id))
-                                    .collect();
-                            if let Some(&old_file_id) =
-                                path_to_id_before.get(&change.file_path)
-                            {
+                        if let (Some(g_before), Some(ref ptib)) =
+                            (graph_before, &path_to_id_before)
+                        {
+                            if let Some(&old_file_id) = ptib.get(&change.file_path) {
                                 let mut importers = Vec::new();
                                 if let Some(edges) = g_before.imported_by_edges(old_file_id) {
                                     for edge in edges {
@@ -544,28 +547,11 @@ fn normalize_cycle(cycle: &crate::analysis::cycles::Cycle) -> BTreeSet<PathBuf> 
     cycle.files.iter().map(|f| f.path.clone()).collect()
 }
 
-/// Check if a graph has any Rust files (determines whether to filter mod declaration edges).
-fn has_rust_files(graph: &FileGraph) -> bool {
-    graph
-        .all_files()
-        .any(|(_, info)| info.language == crate::model::Language::Rust)
-}
-
 /// Compare cycles between two FileGraphs and produce change records.
 fn compute_cycle_changes(graph_before: &FileGraph, graph_after: &FileGraph) -> Vec<CycleChange> {
-    // For Rust projects, filter mod declaration edges before cycle detection
-    let before_for_cycles = if has_rust_files(graph_before) {
-        graph_before.without_mod_declaration_edges()
-    } else {
-        // Clone is not available on FileGraph, so we detect directly
-        // We'll detect on the original and on filtered versions
-        graph_before.without_mod_declaration_edges()
-    };
-    let after_for_cycles = if has_rust_files(graph_after) {
-        graph_after.without_mod_declaration_edges()
-    } else {
-        graph_after.without_mod_declaration_edges()
-    };
+    // Filter mod declaration edges before cycle detection (no-op for non-Rust projects)
+    let before_for_cycles = graph_before.without_mod_declaration_edges();
+    let after_for_cycles = graph_after.without_mod_declaration_edges();
 
     let cycles_before = detect_cycles(&before_for_cycles);
     let cycles_after = detect_cycles(&after_for_cycles);

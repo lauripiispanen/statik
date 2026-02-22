@@ -28,7 +28,7 @@ pub fn export_tree_at_ref(project_root: &Path, git_ref: &str, target_dir: &Path)
     std::fs::create_dir_all(target_dir)
         .context(format!("Failed to create target dir: {}", target_dir.display()))?;
 
-    let git_archive = Command::new("git")
+    let mut git_archive = Command::new("git")
         .args(["archive", "--format=tar", git_ref])
         .current_dir(project_root)
         .stdout(std::process::Stdio::piped())
@@ -38,9 +38,12 @@ pub fn export_tree_at_ref(project_root: &Path, git_ref: &str, target_dir: &Path)
     let tar_output = Command::new("tar")
         .args(["-x", "-C"])
         .arg(target_dir)
-        .stdin(git_archive.stdout.unwrap())
+        .stdin(git_archive.stdout.take().unwrap())
         .output()
         .context("Failed to run tar")?;
+
+    // Reap the git archive child process to avoid zombies
+    git_archive.wait().context("Failed to wait for git archive")?;
 
     if !tar_output.status.success() {
         let stderr = String::from_utf8_lossy(&tar_output.stderr);
