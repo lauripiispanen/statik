@@ -1985,6 +1985,12 @@ fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
                     c.export_name,
                     c.detail,
                 ));
+                for importer in &c.affected_importers {
+                    out.push_str(&format!(
+                        "      imported by: {}\n",
+                        display_path(importer),
+                    ));
+                }
             }
             out.push('\n');
         }

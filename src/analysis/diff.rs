@@ -27,6 +27,13 @@ pub struct ExportChange {
     pub file_path: PathBuf,
     pub export_name: String,
     pub detail: String,
+    /// Files that import the changed export (populated when graphs are available).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub affected_importers: Vec<PathBuf>,
+    /// Confidence level: "certain" for removals with importers, "high" for renames,
+    /// "medium" for restructuring, empty when not computed.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub confidence: String,
 }
 
 /// A change in import edges between two snapshots.
@@ -138,6 +145,8 @@ fn compare_snapshots_inner(
                         file_path: (*path).clone(),
                         export_name: export.exported_name.clone(),
                         detail: "new file".to_string(),
+                        affected_importers: Vec::new(),
+                        confidence: String::new(),
                     });
                 }
             }
@@ -152,6 +161,8 @@ fn compare_snapshots_inner(
                         file_path: (*path).clone(),
                         export_name: export.exported_name.clone(),
                         detail: "file removed".to_string(),
+                        affected_importers: Vec::new(),
+                        confidence: String::new(),
                     });
                 }
             }
@@ -179,6 +190,8 @@ fn compare_snapshots_inner(
                         file_path: (*path).clone(),
                         export_name: name.clone(),
                         detail: "export removed".to_string(),
+                        affected_importers: Vec::new(),
+                        confidence: String::new(),
                     });
                     file_changed = true;
                 }
@@ -191,6 +204,8 @@ fn compare_snapshots_inner(
                         file_path: (*path).clone(),
                         export_name: name.clone(),
                         detail: "export added".to_string(),
+                        affected_importers: Vec::new(),
+                        confidence: String::new(),
                     });
                     file_changed = true;
                 }
@@ -251,6 +266,93 @@ fn compare_snapshots_inner(
                 } else if change.detail == "export added" || change.detail == "new file" {
                     change.detail = "moved from another file".to_string();
                 }
+            }
+        }
+    }
+
+    // Importer-aware breaking change detection (when new graph is available).
+    // For each Breaking change, check if any file in the NEW graph imports the
+    // affected file with a matching imported name. If no importers reference
+    // the removed export, downgrade to Safe.
+    if let Some(g_after) = graph_after {
+        // Build path -> FileId lookup for the new graph
+        let path_to_id_after: HashMap<&PathBuf, crate::model::FileId> = g_after
+            .all_files()
+            .map(|(_, info)| (&info.path, info.id))
+            .collect();
+
+        for change in &mut changes {
+            match change.kind {
+                ChangeKind::Breaking => {
+                    // Find importers of this file in the NEW graph that reference the export name
+                    if let Some(&file_id) = path_to_id_after.get(&change.file_path) {
+                        let mut importers = Vec::new();
+                        if let Some(edges) = g_after.imported_by_edges(file_id) {
+                            for edge in edges {
+                                if edge.imported_names.contains(&change.export_name)
+                                    || edge.imported_names.contains(&"*".to_string())
+                                {
+                                    if let Some(from_info) = g_after.get_file(edge.from) {
+                                        if !importers.contains(&from_info.path) {
+                                            importers.push(from_info.path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        importers.sort();
+
+                        if importers.is_empty() {
+                            // No consumers reference this export -> Safe
+                            change.kind = ChangeKind::Safe;
+                            change.confidence = "certain".to_string();
+                        } else {
+                            change.confidence = "certain".to_string();
+                            change.affected_importers = importers;
+                        }
+                    } else {
+                        // File no longer exists in new graph (was removed) ->
+                        // check old graph to see if the file had importers
+                        // that still exist in new graph
+                        if let Some(g_before) = graph_before {
+                            let path_to_id_before: HashMap<&PathBuf, crate::model::FileId> =
+                                g_before
+                                    .all_files()
+                                    .map(|(_, info)| (&info.path, info.id))
+                                    .collect();
+                            if let Some(&old_file_id) =
+                                path_to_id_before.get(&change.file_path)
+                            {
+                                let mut importers = Vec::new();
+                                if let Some(edges) = g_before.imported_by_edges(old_file_id) {
+                                    for edge in edges {
+                                        if let Some(from_info) = g_before.get_file(edge.from) {
+                                            // Only report importers that still exist in the new graph
+                                            if path_to_id_after.contains_key(&from_info.path)
+                                                && !importers.contains(&from_info.path)
+                                            {
+                                                importers.push(from_info.path.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                importers.sort();
+
+                                if importers.is_empty() {
+                                    change.kind = ChangeKind::Safe;
+                                    change.confidence = "certain".to_string();
+                                } else {
+                                    change.confidence = "certain".to_string();
+                                    change.affected_importers = importers;
+                                }
+                            }
+                        }
+                    }
+                }
+                ChangeKind::Restructuring => {
+                    change.confidence = "medium".to_string();
+                }
+                _ => {}
             }
         }
     }
@@ -836,6 +938,254 @@ mod tests {
         assert_eq!(
             result.import_edge_changes[1].from_path,
             PathBuf::from("z.ts")
+        );
+    }
+
+    // =========================================================================
+    // Importer-aware breaking change detection tests
+    // =========================================================================
+
+    #[test]
+    fn test_breaking_with_importers_stays_breaking() {
+        // b.ts exports "foo", a.ts imports "foo" from b.ts
+        // Remove "foo" from b.ts -> Breaking (a.ts is affected)
+        let before = make_db_with_file(1, "src/a.ts", &[]);
+        // Add b.ts to before with export "foo"
+        let file_b = FileRecord {
+            id: FileId(2),
+            path: PathBuf::from("src/b.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        before.upsert_file(&file_b).unwrap();
+        let sym = Symbol {
+            id: SymbolId(200),
+            name: "foo".to_string(),
+            qualified_name: "foo".to_string(),
+            kind: SymbolKind::Function,
+            file: FileId(2),
+            span: Span { start: 0, end: 10 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position { line: 1, column: 10 },
+            },
+            parent: None,
+            visibility: Visibility::Public,
+            signature: None,
+        };
+        before.insert_symbol(&sym).unwrap();
+        before
+            .insert_export(&ExportRecord {
+                file: FileId(2),
+                symbol: SymbolId(200),
+                exported_name: "foo".to_string(),
+                is_default: false,
+                is_reexport: false,
+                is_type_only: false,
+                source_path: None,
+                line: 0,
+            })
+            .unwrap();
+
+        // After: b.ts has no exports, but a.ts still imports foo from b.ts
+        let after = Database::in_memory().unwrap();
+        let file_a_after = FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/a.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        after.upsert_file(&file_a_after).unwrap();
+        let file_b_after = FileRecord {
+            id: FileId(2),
+            path: PathBuf::from("src/b.ts"),
+            mtime: 1001,
+            language: Language::TypeScript,
+        };
+        after.upsert_file(&file_b_after).unwrap();
+
+        // Build graphs: a.ts imports "foo" from b.ts in new graph
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["foo"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+        graph_after.add_file(make_file_info(2, "src/b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["foo"])); // still importing
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let foo_change = result
+            .changes
+            .iter()
+            .find(|c| c.export_name == "foo")
+            .unwrap();
+
+        assert_eq!(foo_change.kind, ChangeKind::Breaking);
+        assert_eq!(foo_change.confidence, "certain");
+        assert_eq!(
+            foo_change.affected_importers,
+            vec![PathBuf::from("src/a.ts")]
+        );
+    }
+
+    #[test]
+    fn test_breaking_without_importers_becomes_safe() {
+        // b.ts exports "foo", but nobody imports it
+        // Remove "foo" from b.ts -> Safe (no consumers)
+        let before = make_db_with_file(2, "src/b.ts", &["foo"]);
+        let after = make_db_with_file(2, "src/b.ts", &[]);
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(2, "src/b.ts"));
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let foo_change = result
+            .changes
+            .iter()
+            .find(|c| c.export_name == "foo")
+            .unwrap();
+
+        assert_eq!(foo_change.kind, ChangeKind::Safe);
+        assert_eq!(foo_change.confidence, "certain");
+        assert!(foo_change.affected_importers.is_empty());
+        assert_eq!(result.summary.breaking_changes, 0);
+    }
+
+    #[test]
+    fn test_removed_file_with_importers_stays_breaking() {
+        // file_a imports from file_b, then file_b is completely removed
+        let before = make_db_with_file(2, "src/b.ts", &["bar"]);
+        let file_a_before = FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/a.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        before.upsert_file(&file_a_before).unwrap();
+
+        let after = Database::in_memory().unwrap();
+        let file_a_after = FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/a.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        after.upsert_file(&file_a_after).unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["bar"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+        // b.ts removed from graph_after
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let bar_change = result
+            .changes
+            .iter()
+            .find(|c| c.export_name == "bar")
+            .unwrap();
+
+        assert_eq!(bar_change.kind, ChangeKind::Breaking);
+        assert_eq!(bar_change.confidence, "certain");
+        assert_eq!(
+            bar_change.affected_importers,
+            vec![PathBuf::from("src/a.ts")]
+        );
+    }
+
+    #[test]
+    fn test_removed_file_without_importers_becomes_safe() {
+        // file_b is removed but nobody imported from it
+        let before = make_db_with_file(2, "src/b.ts", &["lonely"]);
+        let after = Database::in_memory().unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+
+        let graph_after = FileGraph::new();
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let change = result
+            .changes
+            .iter()
+            .find(|c| c.export_name == "lonely")
+            .unwrap();
+
+        assert_eq!(change.kind, ChangeKind::Safe);
+        assert_eq!(change.confidence, "certain");
+    }
+
+    #[test]
+    fn test_restructuring_gets_medium_confidence() {
+        let before = make_db_with_file(1, "src/a.ts", &["helper"]);
+        let after = make_db_with_file(2, "src/b.ts", &["helper"]);
+
+        let graph_before = FileGraph::new();
+        let graph_after = FileGraph::new();
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        for change in &result.changes {
+            assert_eq!(change.kind, ChangeKind::Restructuring);
+            assert_eq!(change.confidence, "medium");
+        }
+    }
+
+    #[test]
+    fn test_wildcard_import_counts_as_affected() {
+        // a.ts does wildcard import from b.ts, b.ts removes an export -> a.ts is affected
+        let before = make_db_with_file(2, "src/b.ts", &["foo"]);
+        let after = make_db_with_file(2, "src/b.ts", &[]);
+
+        let file_a = FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/a.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        before.upsert_file(&file_a).unwrap();
+        after.upsert_file(&file_a).unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["*"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+        graph_after.add_file(make_file_info(2, "src/b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["*"])); // wildcard still there
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let foo_change = result
+            .changes
+            .iter()
+            .find(|c| c.export_name == "foo")
+            .unwrap();
+
+        assert_eq!(foo_change.kind, ChangeKind::Breaking);
+        assert_eq!(
+            foo_change.affected_importers,
+            vec![PathBuf::from("src/a.ts")]
         );
     }
 }
