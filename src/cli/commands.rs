@@ -1145,28 +1145,117 @@ pub fn run_lint(
 }
 
 /// Run the `diff` command.
+/// Run diff comparing two pre-opened databases (used for --before and git ref modes).
+pub fn run_diff_from_dbs(
+    db_before: &Database,
+    db_after: &Database,
+    project_root_before: &Path,
+    project_root_after: &Path,
+    format: &OutputFormat,
+) -> Result<String> {
+    use crate::analysis::diff::compare_snapshots_with_graphs;
+
+    let graph_before = build_file_graph(db_before, project_root_before)?;
+    let graph_after = build_file_graph(db_after, project_root_after)?;
+
+    let result =
+        compare_snapshots_with_graphs(db_before, db_after, &graph_before, &graph_after)?;
+
+    Ok(match format {
+        OutputFormat::Text => format_diff_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Run diff using --before flag (backward-compat DB path comparison).
 pub fn run_diff(
     project_path: &Path,
     before_path: &str,
     format: &OutputFormat,
     no_index: bool,
 ) -> Result<String> {
-    use crate::analysis::diff::compare_snapshots_with_graphs;
-
     let db_before = Database::open(std::path::Path::new(before_path))
         .context(format!("Failed to open baseline database: {}", before_path))?;
     let db_after = ensure_index(project_path, no_index)?;
 
-    let graph_before = build_file_graph(&db_before, project_path)?;
-    let graph_after = build_file_graph(&db_after, project_path)?;
+    run_diff_from_dbs(&db_before, &db_after, project_path, project_path, format)
+}
 
-    let result =
-        compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)?;
+/// Run diff comparing two git refs.
+pub fn run_diff_git(
+    project_path: &Path,
+    ref1: &str,
+    ref2: Option<&str>,
+    format: &OutputFormat,
+) -> Result<String> {
+    use crate::git;
 
-    Ok(match format {
-        OutputFormat::Text => format_diff_text(&result),
-        _ => format_json(&result, format),
-    })
+    let sha1 = git::resolve_git_ref(project_path, ref1)
+        .context(format!("Failed to resolve ref1: {}", ref1))?;
+
+    // Index the first ref (with caching)
+    let db_before = index_git_ref(project_path, &sha1)?;
+
+    // For the second ref: if provided, resolve and index; otherwise use working tree
+    let db_after = if let Some(r2) = ref2 {
+        let sha2 = git::resolve_git_ref(project_path, r2)
+            .context(format!("Failed to resolve ref2: {}", r2))?;
+        index_git_ref(project_path, &sha2)?
+    } else {
+        // Use current working tree
+        ensure_index(project_path, false)?
+    };
+
+    run_diff_from_dbs(
+        &db_before,
+        &db_after,
+        project_path,
+        project_path,
+        format,
+    )
+}
+
+/// Index a git ref, using cache if available.
+fn index_git_ref(project_path: &Path, sha: &str) -> Result<Database> {
+    use crate::git;
+
+    let cache_path = git::snapshot_cache_path(project_path, sha);
+
+    if cache_path.exists() {
+        return Database::open(&cache_path)
+            .context(format!("Failed to open cached snapshot: {}", cache_path.display()));
+    }
+
+    // Export tree to temp dir and index it
+    let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
+    git::export_tree_at_ref(project_path, sha, temp_dir.path())
+        .context(format!("Failed to export tree at {}", sha))?;
+
+    let config = crate::discovery::DiscoveryConfig::default();
+    let index_result = crate::cli::index::run_index(temp_dir.path(), &config)?;
+
+    // Copy the indexed DB to cache
+    let temp_db_path = temp_dir.path().join(".statik/index.db");
+    if temp_db_path.exists() {
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&temp_db_path, &cache_path).context(format!(
+            "Failed to cache snapshot at {}",
+            cache_path.display()
+        ))?;
+
+        eprintln!(
+            "Indexed {} at {}: {} files, {} symbols",
+            &sha[..8.min(sha.len())],
+            temp_dir.path().display(),
+            index_result.files_indexed + index_result.files_unchanged,
+            index_result.symbols_extracted,
+        );
+    }
+
+    Database::open(&cache_path)
+        .context(format!("Failed to open indexed snapshot for {}", sha))
 }
 
 /// Run the `symbols` command.

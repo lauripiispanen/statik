@@ -182,9 +182,57 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Diff { ref before } => {
-            let output = commands::run_diff(&project_path, before, format, cli.no_index)?;
-            emit_output(&output, command_name, &post_opts);
+        Commands::Diff {
+            ref ref1,
+            ref ref2,
+            ref before,
+            cached,
+            ci,
+            allow_breaking,
+            threshold,
+        } => {
+            let effective_format = if ci { &OutputFormat::Json } else { format };
+
+            let output = if let Some(before_path) = before {
+                // Backward-compat: --before <db_path>
+                commands::run_diff(&project_path, before_path, effective_format, cli.no_index)?
+            } else if cached {
+                // --cached: compare staged changes against HEAD
+                commands::run_diff_git(&project_path, "HEAD", None, effective_format)?
+            } else if let Some(r1) = ref1 {
+                // Git ref mode: statik diff <ref1> [ref2]
+                commands::run_diff_git(
+                    &project_path,
+                    r1,
+                    ref2.as_deref(),
+                    effective_format,
+                )?
+            } else {
+                anyhow::bail!(
+                    "diff requires either two git refs, --before <db_path>, or --cached"
+                );
+            };
+
+            if ci {
+                // Parse the JSON output to check for breaking changes
+                let json: serde_json::Value = serde_json::from_str(&output)?;
+                let breaking_count = json
+                    .get("summary")
+                    .and_then(|s| s.get("breaking_changes"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                emit_output(&output, command_name, &post_opts);
+
+                if !allow_breaking {
+                    let max_allowed = threshold.unwrap_or(0) as u64;
+                    if breaking_count > max_allowed {
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                emit_output(&output, command_name, &post_opts);
+            }
         }
 
         Commands::Symbols { ref file, ref kind } => {

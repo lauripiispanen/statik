@@ -139,11 +139,29 @@ pub enum Commands {
         update_baseline: bool,
     },
 
-    /// Compare export changes between two index snapshots
+    /// Compare export changes between two snapshots (git refs or DB files)
     Diff {
-        /// Path to the old/baseline index database
+        /// First git ref or DB path (baseline). When using git refs, provide two positional args.
+        #[arg()]
+        ref1: Option<String>,
+        /// Second git ref (current). Defaults to working tree if omitted.
+        #[arg()]
+        ref2: Option<String>,
+        /// Path to the old/baseline index database (backward-compat alternative to positional args)
         #[arg(long)]
-        before: String,
+        before: Option<String>,
+        /// Compare staged changes against HEAD
+        #[arg(long)]
+        cached: bool,
+        /// CI mode: force JSON output and use exit codes for breaking changes
+        #[arg(long)]
+        ci: bool,
+        /// Allow breaking changes without failing (still reported in output)
+        #[arg(long)]
+        allow_breaking: bool,
+        /// Maximum number of breaking changes before failing (0 = any breaks fail)
+        #[arg(long)]
+        threshold: Option<u32>,
     },
 
     /// List symbols in the project
