@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -1453,9 +1453,10 @@ pub fn run_references(
         kind: String,
         file: String,
         line: usize,
+        cross_file: bool,
     }
 
-    let ref_infos: Vec<RefInfo> = matching_refs
+    let mut ref_infos: Vec<RefInfo> = matching_refs
         .iter()
         .map(|r| {
             let source_name = symbol_map
@@ -1476,9 +1477,51 @@ pub fn run_references(
                 kind: r.kind.as_str().to_string(),
                 file: file_path,
                 line: r.line_span.start.line,
+                cross_file: false,
             }
         })
         .collect();
+
+    // Cross-file linking: match imports to exports across file boundaries
+    let file_graph = build_file_graph(&db, project_path)?;
+    let link_result =
+        crate::analysis::linker::link_cross_file_symbols(&file_graph);
+    for xref in &link_result.references {
+        // Only include cross-file refs where target symbol matches our search
+        if !matching_symbols.contains(&xref.target_symbol) {
+            continue;
+        }
+        // Apply file filter
+        if file_filter_id.is_some_and(|fid| fid != xref.source_file) {
+            continue;
+        }
+        // Apply kind filter: cross-file refs are import-kind references
+        if kind_filter.is_some_and(|k| k != RefKind::Import) {
+            continue;
+        }
+        let source_path = file_paths
+            .get(&xref.source_file)
+            .map(|p| display_path(p))
+            .unwrap_or_else(|| format!("file:{}", xref.source_file.0));
+        let target_name = symbol_map
+            .get(&xref.target_symbol)
+            .map(|s| s.qualified_name.as_str())
+            .unwrap_or("?");
+        ref_infos.push(RefInfo {
+            source: format!("(import from {})", source_path),
+            target: target_name.to_string(),
+            kind: "import".to_string(),
+            file: source_path,
+            line: xref.line,
+            cross_file: true,
+        });
+    }
+
+    // Deduplicate refs by (file, target, line)
+    {
+        let mut seen = HashSet::new();
+        ref_infos.retain(|r| seen.insert((r.file.clone(), r.target.clone(), r.line)));
+    }
 
     #[derive(serde::Serialize)]
     struct RefsResult {
@@ -1520,9 +1563,14 @@ fn format_references_text(result: &impl serde::Serialize) -> String {
                 let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
                 let file = r.get("file").and_then(|v| v.as_str()).unwrap_or("?");
                 let line = r.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                let is_cross = r
+                    .get("cross_file")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let marker = if is_cross { " [cross-file]" } else { "" };
                 out.push_str(&format!(
-                    "  {} -> {} [{}] at {}:{}\n",
-                    source, target, kind, file, line
+                    "  {} -> {} [{}] at {}:{}{}\n",
+                    source, target, kind, file, line, marker
                 ));
             }
         }
@@ -1588,9 +1636,10 @@ pub fn run_callers(
         kind: String,
         file: String,
         line: usize,
+        cross_file: bool,
     }
 
-    let caller_infos: Vec<CallerInfo> = callers
+    let mut caller_infos: Vec<CallerInfo> = callers
         .iter()
         .map(|r| {
             let caller_name = symbol_map
@@ -1606,9 +1655,40 @@ pub fn run_callers(
                 kind: "call".to_string(),
                 file: file_path,
                 line: r.line_span.start.line,
+                cross_file: false,
             }
         })
         .collect();
+
+    // Cross-file linking: find importers of the target symbol across files
+    let file_graph = build_file_graph(&db, project_path)?;
+    let link_result =
+        crate::analysis::linker::link_cross_file_symbols(&file_graph);
+    for xref in &link_result.references {
+        if !target_symbols.contains(&xref.target_symbol) {
+            continue;
+        }
+        if file_filter_id.is_some_and(|fid| fid != xref.source_file) {
+            continue;
+        }
+        let source_path = file_paths
+            .get(&xref.source_file)
+            .map(|p| display_path(p))
+            .unwrap_or_else(|| format!("file:{}", xref.source_file.0));
+        caller_infos.push(CallerInfo {
+            caller: format!("(import '{}')", xref.imported_name),
+            kind: "import".to_string(),
+            file: source_path,
+            line: xref.line,
+            cross_file: true,
+        });
+    }
+
+    // Deduplicate callers by (file, caller, line)
+    {
+        let mut seen = HashSet::new();
+        caller_infos.retain(|c| seen.insert((c.file.clone(), c.caller.clone(), c.line)));
+    }
 
     #[derive(serde::Serialize)]
     struct CallersResult {
@@ -1634,7 +1714,11 @@ pub fn run_callers(
                 out.push_str("No callers found.\n");
             } else {
                 for c in &result.callers {
-                    out.push_str(&format!("  {} at {}:{}\n", c.caller, c.file, c.line));
+                    let marker = if c.cross_file { " [cross-file]" } else { "" };
+                    out.push_str(&format!(
+                        "  {} at {}:{}{}\n",
+                        c.caller, c.file, c.line, marker
+                    ));
                 }
             }
             out

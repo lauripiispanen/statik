@@ -3,6 +3,7 @@ pub mod dead_code;
 pub mod dependencies;
 pub mod diff;
 pub mod impact;
+pub mod linker;
 
 use serde::{Deserialize, Serialize};
 
