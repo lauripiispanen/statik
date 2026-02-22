@@ -1151,13 +1151,17 @@ pub fn run_diff(
     format: &OutputFormat,
     no_index: bool,
 ) -> Result<String> {
-    use crate::analysis::diff::compare_snapshots;
+    use crate::analysis::diff::compare_snapshots_with_graphs;
 
     let db_before = Database::open(std::path::Path::new(before_path))
         .context(format!("Failed to open baseline database: {}", before_path))?;
     let db_after = ensure_index(project_path, no_index)?;
 
-    let result = compare_snapshots(&db_before, &db_after)?;
+    let graph_before = build_file_graph(&db_before, project_path)?;
+    let graph_after = build_file_graph(&db_after, project_path)?;
+
+    let result =
+        compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)?;
 
     Ok(match format {
         OutputFormat::Text => format_diff_text(&result),
@@ -1949,7 +1953,7 @@ fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
 }
 
 fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
-    use crate::analysis::diff::ChangeKind;
+    use crate::analysis::diff::{ChangeKind, EdgeChangeKind};
 
     let mut out = String::new();
 
@@ -1966,12 +1970,30 @@ fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
             .iter()
             .filter(|c| c.kind == ChangeKind::Expanding)
             .collect();
+        let restructuring: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Restructuring)
+            .collect();
 
         if !breaking.is_empty() {
             out.push_str(&format!("Breaking changes ({}):\n", breaking.len()));
             for c in &breaking {
                 out.push_str(&format!(
                     "  - {}  {}  ({})\n",
+                    display_path(&c.file_path),
+                    c.export_name,
+                    c.detail,
+                ));
+            }
+            out.push('\n');
+        }
+
+        if !restructuring.is_empty() {
+            out.push_str(&format!("Restructured ({}):\n", restructuring.len()));
+            for c in &restructuring {
+                out.push_str(&format!(
+                    "  ~ {}  {}  ({})\n",
                     display_path(&c.file_path),
                     c.export_name,
                     c.detail,
@@ -1994,6 +2016,45 @@ fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
         }
     }
 
+    if !result.import_edge_changes.is_empty() {
+        let added: Vec<_> = result
+            .import_edge_changes
+            .iter()
+            .filter(|e| e.change == EdgeChangeKind::Added)
+            .collect();
+        let removed: Vec<_> = result
+            .import_edge_changes
+            .iter()
+            .filter(|e| e.change == EdgeChangeKind::Removed)
+            .collect();
+
+        if !added.is_empty() {
+            out.push_str(&format!("New dependency edges ({}):\n", added.len()));
+            for e in &added {
+                out.push_str(&format!(
+                    "  + {} -> {}  [{}]\n",
+                    display_path(&e.from_path),
+                    display_path(&e.to_path),
+                    e.imported_names.join(", "),
+                ));
+            }
+            out.push('\n');
+        }
+
+        if !removed.is_empty() {
+            out.push_str(&format!("Removed dependency edges ({}):\n", removed.len()));
+            for e in &removed {
+                out.push_str(&format!(
+                    "  - {} -> {}  [{}]\n",
+                    display_path(&e.from_path),
+                    display_path(&e.to_path),
+                    e.imported_names.join(", "),
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
     out.push_str(&format!(
         "Summary: {} added, {} removed, {} changed, {} unchanged files\n",
         result.summary.files_added,
@@ -2002,9 +2063,17 @@ fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
         result.summary.files_unchanged,
     ));
     out.push_str(&format!(
-        "  {} breaking, {} expanding changes",
-        result.summary.breaking_changes, result.summary.expanding_changes,
+        "  {} breaking, {} expanding, {} restructuring changes\n",
+        result.summary.breaking_changes,
+        result.summary.expanding_changes,
+        result.summary.restructuring_changes,
     ));
+    if result.summary.import_edges_added > 0 || result.summary.import_edges_removed > 0 {
+        out.push_str(&format!(
+            "  {} edges added, {} edges removed",
+            result.summary.import_edges_added, result.summary.import_edges_removed,
+        ));
+    }
 
     out
 }

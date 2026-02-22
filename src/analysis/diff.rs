@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
+use crate::model::file_graph::FileGraph;
 
 /// Classification of how an export change affects consumers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,27 @@ pub struct ExportChange {
     pub detail: String,
 }
 
+/// A change in import edges between two snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportEdgeChange {
+    /// Whether this edge was added or removed.
+    pub change: EdgeChangeKind,
+    /// The file that has the import statement.
+    pub from_path: PathBuf,
+    /// The file being imported.
+    pub to_path: PathBuf,
+    /// Names imported across this edge.
+    pub imported_names: Vec<String>,
+}
+
+/// Whether an import edge was added or removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeChangeKind {
+    Added,
+    Removed,
+}
+
 /// Summary statistics for the diff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSummary {
@@ -38,12 +60,15 @@ pub struct DiffSummary {
     pub breaking_changes: usize,
     pub expanding_changes: usize,
     pub restructuring_changes: usize,
+    pub import_edges_added: usize,
+    pub import_edges_removed: usize,
 }
 
 /// Result of comparing two index snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffResult {
     pub changes: Vec<ExportChange>,
+    pub import_edge_changes: Vec<ImportEdgeChange>,
     pub summary: DiffSummary,
 }
 
@@ -51,7 +76,34 @@ pub struct DiffResult {
 ///
 /// `db_before` is the baseline (e.g., the old version).
 /// `db_after` is the current state (e.g., after code changes).
+///
+/// This is the backward-compatible entry point that does not require
+/// pre-built FileGraphs (no import edge or move detection).
 pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::Result<DiffResult> {
+    compare_snapshots_inner(db_before, db_after, None, None)
+}
+
+/// Compare two database snapshots with pre-built FileGraphs.
+///
+/// When graphs are provided, this enables:
+/// - Import edge change tracking (added/removed dependency edges)
+/// - Move detection (export removed from file A, same name+kind added to file B)
+pub fn compare_snapshots_with_graphs(
+    db_before: &Database,
+    db_after: &Database,
+    graph_before: &FileGraph,
+    graph_after: &FileGraph,
+) -> anyhow::Result<DiffResult> {
+    compare_snapshots_inner(db_before, db_after, Some(graph_before), Some(graph_after))
+}
+
+/// Internal comparison engine used by both public entry points.
+fn compare_snapshots_inner(
+    db_before: &Database,
+    db_after: &Database,
+    graph_before: Option<&FileGraph>,
+    graph_after: Option<&FileGraph>,
+) -> anyhow::Result<DiffResult> {
     let files_before = db_before.all_files()?;
     let files_after = db_after.all_files()?;
 
@@ -68,16 +120,22 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
     let mut files_changed = 0usize;
     let mut files_unchanged = 0usize;
 
-    for path in all_paths {
-        match (paths_before.get(path), paths_after.get(path)) {
+    // Collect all removed and added exports for cross-file move detection.
+    // Key: (export_name), Value: list of file paths where this export was removed/added.
+    let mut removed_exports: Vec<(String, PathBuf)> = Vec::new();
+    let mut added_exports: Vec<(String, PathBuf)> = Vec::new();
+
+    for path in &all_paths {
+        match (paths_before.get(*path), paths_after.get(*path)) {
             (None, Some(after_file)) => {
                 // File added
                 files_added += 1;
                 let exports = db_after.get_exports_by_file(after_file.id)?;
                 for export in &exports {
+                    added_exports.push((export.exported_name.clone(), (*path).clone()));
                     changes.push(ExportChange {
                         kind: ChangeKind::Expanding,
-                        file_path: path.clone(),
+                        file_path: (*path).clone(),
                         export_name: export.exported_name.clone(),
                         detail: "new file".to_string(),
                     });
@@ -88,9 +146,10 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
                 files_removed += 1;
                 let exports = db_before.get_exports_by_file(before_file.id)?;
                 for export in &exports {
+                    removed_exports.push((export.exported_name.clone(), (*path).clone()));
                     changes.push(ExportChange {
                         kind: ChangeKind::Breaking,
-                        file_path: path.clone(),
+                        file_path: (*path).clone(),
                         export_name: export.exported_name.clone(),
                         detail: "file removed".to_string(),
                     });
@@ -114,9 +173,10 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
 
                 // Removed exports (in before but not after)
                 for name in names_before.difference(&names_after) {
+                    removed_exports.push((name.clone(), (*path).clone()));
                     changes.push(ExportChange {
                         kind: ChangeKind::Breaking,
-                        file_path: path.clone(),
+                        file_path: (*path).clone(),
                         export_name: name.clone(),
                         detail: "export removed".to_string(),
                     });
@@ -125,9 +185,10 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
 
                 // Added exports (in after but not before)
                 for name in names_after.difference(&names_before) {
+                    added_exports.push((name.clone(), (*path).clone()));
                     changes.push(ExportChange {
                         kind: ChangeKind::Expanding,
-                        file_path: path.clone(),
+                        file_path: (*path).clone(),
                         export_name: name.clone(),
                         detail: "export added".to_string(),
                     });
@@ -144,12 +205,70 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
         }
     }
 
+    // Move detection: if an export name was removed from file A and added to file B,
+    // reclassify both as Restructuring instead of Breaking+Expanding.
+    if graph_before.is_some() {
+        let removed_by_name: HashMap<&str, Vec<&PathBuf>> = {
+            let mut map: HashMap<&str, Vec<&PathBuf>> = HashMap::new();
+            for (name, path) in &removed_exports {
+                map.entry(name.as_str()).or_default().push(path);
+            }
+            map
+        };
+
+        let added_by_name: HashMap<&str, Vec<&PathBuf>> = {
+            let mut map: HashMap<&str, Vec<&PathBuf>> = HashMap::new();
+            for (name, path) in &added_exports {
+                map.entry(name.as_str()).or_default().push(path);
+            }
+            map
+        };
+
+        // For each export name that appears in both removed and added (but on different files),
+        // reclassify as Restructuring.
+        let mut moved_entries: HashSet<(String, PathBuf)> = HashSet::new();
+
+        for (name, removed_paths) in &removed_by_name {
+            if let Some(added_paths) = added_by_name.get(name) {
+                // Only match moves across different files
+                for rp in removed_paths {
+                    for ap in added_paths {
+                        if rp != ap {
+                            moved_entries.insert((name.to_string(), (*rp).clone()));
+                            moved_entries.insert((name.to_string(), (*ap).clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        for change in &mut changes {
+            let key = (change.export_name.clone(), change.file_path.clone());
+            if moved_entries.contains(&key) {
+                change.kind = ChangeKind::Restructuring;
+                if change.detail == "export removed" || change.detail == "file removed" {
+                    change.detail = "moved to another file".to_string();
+                } else if change.detail == "export added" || change.detail == "new file" {
+                    change.detail = "moved from another file".to_string();
+                }
+            }
+        }
+    }
+
     // Sort for deterministic output
     changes.sort_by(|a, b| {
         a.file_path
             .cmp(&b.file_path)
             .then(a.export_name.cmp(&b.export_name))
     });
+
+    // Import edge comparison (only when graphs are provided)
+    let import_edge_changes =
+        if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
+            compute_import_edge_changes(g_before, g_after)
+        } else {
+            Vec::new()
+        };
 
     let breaking_changes = changes
         .iter()
@@ -163,9 +282,18 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
         .iter()
         .filter(|c| c.kind == ChangeKind::Restructuring)
         .count();
+    let import_edges_added = import_edge_changes
+        .iter()
+        .filter(|e| e.change == EdgeChangeKind::Added)
+        .count();
+    let import_edges_removed = import_edge_changes
+        .iter()
+        .filter(|e| e.change == EdgeChangeKind::Removed)
+        .count();
 
     Ok(DiffResult {
         changes,
+        import_edge_changes,
         summary: DiffSummary {
             files_added,
             files_removed,
@@ -174,13 +302,103 @@ pub fn compare_snapshots(db_before: &Database, db_after: &Database) -> anyhow::R
             breaking_changes,
             expanding_changes,
             restructuring_changes,
+            import_edges_added,
+            import_edges_removed,
         },
     })
+}
+
+/// Represent a directed edge between two file paths for comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EdgeKey {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+/// Compare import edges between two FileGraphs and produce change records.
+fn compute_import_edge_changes(
+    graph_before: &FileGraph,
+    graph_after: &FileGraph,
+) -> Vec<ImportEdgeChange> {
+    // Build sets of (from_path, to_path) -> imported_names for each graph
+    let edges_before = collect_edges(graph_before);
+    let edges_after = collect_edges(graph_after);
+
+    let keys_before: HashSet<&EdgeKey> = edges_before.keys().collect();
+    let keys_after: HashSet<&EdgeKey> = edges_after.keys().collect();
+
+    let mut changes = Vec::new();
+
+    // Removed edges
+    for key in keys_before.difference(&keys_after) {
+        changes.push(ImportEdgeChange {
+            change: EdgeChangeKind::Removed,
+            from_path: key.from.clone(),
+            to_path: key.to.clone(),
+            imported_names: edges_before[key].clone(),
+        });
+    }
+
+    // Added edges
+    for key in keys_after.difference(&keys_before) {
+        changes.push(ImportEdgeChange {
+            change: EdgeChangeKind::Added,
+            from_path: key.from.clone(),
+            to_path: key.to.clone(),
+            imported_names: edges_after[key].clone(),
+        });
+    }
+
+    // Sort for deterministic output
+    changes.sort_by(|a, b| {
+        a.from_path
+            .cmp(&b.from_path)
+            .then(a.to_path.cmp(&b.to_path))
+    });
+
+    changes
+}
+
+/// Collect all import edges from a FileGraph into a map of EdgeKey -> imported names.
+fn collect_edges(graph: &FileGraph) -> HashMap<EdgeKey, Vec<String>> {
+    let mut edges: HashMap<EdgeKey, Vec<String>> = HashMap::new();
+
+    for (_file_id, import_list) in graph.all_import_edges() {
+        for import in import_list {
+            let from_path = graph
+                .get_file(import.from)
+                .map(|f| f.path.clone())
+                .unwrap_or_default();
+            let to_path = graph
+                .get_file(import.to)
+                .map(|f| f.path.clone())
+                .unwrap_or_default();
+
+            let key = EdgeKey {
+                from: from_path,
+                to: to_path,
+            };
+            let entry = edges.entry(key).or_default();
+            for name in &import.imported_names {
+                if !entry.contains(name) {
+                    entry.push(name.clone());
+                }
+            }
+        }
+    }
+
+    // Sort imported_names for deterministic comparison
+    for names in edges.values_mut() {
+        names.sort();
+    }
+
+    edges
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::file_graph::{FileImport, FileInfo};
     use crate::model::{
         ExportRecord, FileId, FileRecord, Language, LineSpan, Position, Span, Symbol, SymbolId,
         SymbolKind, Visibility,
@@ -234,6 +452,31 @@ mod tests {
         db
     }
 
+    fn make_file_info(id: u64, path: &str) -> FileInfo {
+        FileInfo {
+            id: FileId(id),
+            path: PathBuf::from(path),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        }
+    }
+
+    fn make_edge(from: u64, to: u64, names: &[&str]) -> FileImport {
+        FileImport {
+            from: FileId(from),
+            to: FileId(to),
+            imported_names: names.iter().map(|s| s.to_string()).collect(),
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        }
+    }
+
+    // =========================================================================
+    // Backward-compatible compare_snapshots tests
+    // =========================================================================
+
     #[test]
     fn test_no_changes() {
         let before = make_db_with_file(1, "src/utils.ts", &["foo", "bar"]);
@@ -243,6 +486,7 @@ mod tests {
         assert!(result.changes.is_empty());
         assert_eq!(result.summary.files_unchanged, 1);
         assert_eq!(result.summary.breaking_changes, 0);
+        assert!(result.import_edge_changes.is_empty());
     }
 
     #[test]
@@ -326,5 +570,272 @@ mod tests {
         assert!(result.changes.is_empty());
         assert_eq!(result.summary.files_added, 0);
         assert_eq!(result.summary.files_removed, 0);
+    }
+
+    // =========================================================================
+    // Import edge change tests
+    // =========================================================================
+
+    #[test]
+    fn test_import_edge_added() {
+        let db_before = make_db_with_file(1, "src/a.ts", &["foo"]);
+        let db_after = make_db_with_file(1, "src/a.ts", &["foo"]);
+        // Add a second file to after DB
+        let file2 = FileRecord {
+            id: FileId(2),
+            path: PathBuf::from("src/b.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        db_after.upsert_file(&file2).unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+        graph_after.add_file(make_file_info(2, "src/b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["foo"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)
+                .unwrap();
+
+        assert_eq!(result.import_edge_changes.len(), 1);
+        assert_eq!(result.import_edge_changes[0].change, EdgeChangeKind::Added);
+        assert_eq!(
+            result.import_edge_changes[0].from_path,
+            PathBuf::from("src/a.ts")
+        );
+        assert_eq!(
+            result.import_edge_changes[0].to_path,
+            PathBuf::from("src/b.ts")
+        );
+        assert_eq!(result.summary.import_edges_added, 1);
+        assert_eq!(result.summary.import_edges_removed, 0);
+    }
+
+    #[test]
+    fn test_import_edge_removed() {
+        let db_before = make_db_with_file(1, "src/a.ts", &["foo"]);
+        let db_after = make_db_with_file(1, "src/a.ts", &["foo"]);
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["bar"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+
+        let result =
+            compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)
+                .unwrap();
+
+        assert_eq!(result.import_edge_changes.len(), 1);
+        assert_eq!(
+            result.import_edge_changes[0].change,
+            EdgeChangeKind::Removed
+        );
+        assert_eq!(result.summary.import_edges_removed, 1);
+        assert_eq!(result.summary.import_edges_added, 0);
+    }
+
+    #[test]
+    fn test_import_edges_unchanged() {
+        let db_before = make_db_with_file(1, "src/a.ts", &["foo"]);
+        let db_after = make_db_with_file(1, "src/a.ts", &["foo"]);
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "src/a.ts"));
+        graph_before.add_file(make_file_info(2, "src/b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "src/a.ts"));
+        graph_after.add_file(make_file_info(2, "src/b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)
+                .unwrap();
+
+        assert!(result.import_edge_changes.is_empty());
+        assert_eq!(result.summary.import_edges_added, 0);
+        assert_eq!(result.summary.import_edges_removed, 0);
+    }
+
+    // =========================================================================
+    // Move detection tests
+    // =========================================================================
+
+    #[test]
+    fn test_move_detection_cross_file() {
+        // Export "helper" removed from a.ts, added to b.ts -> Restructuring
+        let before = make_db_with_file(1, "src/a.ts", &["helper"]);
+        let after = make_db_with_file(2, "src/b.ts", &["helper"]);
+
+        let graph_before = FileGraph::new();
+        let graph_after = FileGraph::new();
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        // Both changes should be Restructuring (moved)
+        assert_eq!(result.changes.len(), 2);
+        for change in &result.changes {
+            assert_eq!(
+                change.kind,
+                ChangeKind::Restructuring,
+                "change for {} in {} should be Restructuring",
+                change.export_name,
+                change.file_path.display()
+            );
+        }
+        assert_eq!(result.summary.restructuring_changes, 2);
+        assert_eq!(result.summary.breaking_changes, 0);
+        assert_eq!(result.summary.expanding_changes, 0);
+    }
+
+    #[test]
+    fn test_move_detection_same_file_not_triggered() {
+        // Export removed and added within the same file should NOT be move detection.
+        // (This scenario: export "x" removed from a.ts, export "x" added to a.ts is not possible
+        //  since within-file changes are handled differently - they'd be unchanged.)
+        // Instead test: "x" removed from a.ts, "y" added to a.ts -- no move.
+        let before = make_db_with_file(1, "src/a.ts", &["x"]);
+        let after = make_db_with_file(1, "src/a.ts", &["y"]);
+
+        let graph_before = FileGraph::new();
+        let graph_after = FileGraph::new();
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        // Different names: no move, should be Breaking + Expanding
+        let breaking: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Breaking)
+            .collect();
+        let expanding: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Expanding)
+            .collect();
+        assert_eq!(breaking.len(), 1);
+        assert_eq!(expanding.len(), 1);
+    }
+
+    #[test]
+    fn test_move_detection_detail_messages() {
+        let before = make_db_with_file(1, "src/old.ts", &["movedFn"]);
+        let after = make_db_with_file(2, "src/new.ts", &["movedFn"]);
+
+        let graph_before = FileGraph::new();
+        let graph_after = FileGraph::new();
+
+        let result =
+            compare_snapshots_with_graphs(&before, &after, &graph_before, &graph_after).unwrap();
+
+        let old_change = result
+            .changes
+            .iter()
+            .find(|c| c.file_path == PathBuf::from("src/old.ts"))
+            .unwrap();
+        let new_change = result
+            .changes
+            .iter()
+            .find(|c| c.file_path == PathBuf::from("src/new.ts"))
+            .unwrap();
+
+        assert_eq!(old_change.detail, "moved to another file");
+        assert_eq!(new_change.detail, "moved from another file");
+    }
+
+    #[test]
+    fn test_no_move_detection_without_graphs() {
+        // Without graphs, move detection is not active
+        let before = make_db_with_file(1, "src/a.ts", &["helper"]);
+        let after = make_db_with_file(2, "src/b.ts", &["helper"]);
+
+        let result = compare_snapshots(&before, &after).unwrap();
+
+        // Without graphs, these should stay as Breaking + Expanding
+        let breaking: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Breaking)
+            .collect();
+        let expanding: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Expanding)
+            .collect();
+        assert_eq!(breaking.len(), 1);
+        assert_eq!(expanding.len(), 1);
+    }
+
+    // =========================================================================
+    // Summary field tests
+    // =========================================================================
+
+    #[test]
+    fn test_summary_import_edge_counts() {
+        let db_before = Database::in_memory().unwrap();
+        let db_after = Database::in_memory().unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "a.ts"));
+        graph_before.add_file(make_file_info(2, "b.ts"));
+        graph_before.add_file(make_file_info(3, "c.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+        graph_before.add_import(make_edge(1, 3, &["y"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "a.ts"));
+        graph_after.add_file(make_file_info(2, "b.ts"));
+        graph_after.add_file(make_file_info(4, "d.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"])); // unchanged
+        graph_after.add_import(make_edge(1, 4, &["z"])); // new
+
+        let result =
+            compare_snapshots_with_graphs(&db_before, &db_after, &graph_before, &graph_after)
+                .unwrap();
+
+        // Edge 1->3 removed, edge 1->4 added, edge 1->2 unchanged
+        assert_eq!(result.summary.import_edges_added, 1);
+        assert_eq!(result.summary.import_edges_removed, 1);
+        assert_eq!(result.import_edge_changes.len(), 2);
+    }
+
+    #[test]
+    fn test_import_edge_changes_sorted_deterministically() {
+        let db = Database::in_memory().unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "z.ts"));
+        graph_before.add_file(make_file_info(2, "a.ts"));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "z.ts"));
+        graph_after.add_file(make_file_info(2, "a.ts"));
+        graph_after.add_file(make_file_info(3, "m.ts"));
+        graph_after.add_import(make_edge(1, 3, &["x"]));
+        graph_after.add_import(make_edge(2, 3, &["y"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert_eq!(result.import_edge_changes.len(), 2);
+        // Should be sorted by from_path: a.ts before z.ts
+        assert_eq!(
+            result.import_edge_changes[0].from_path,
+            PathBuf::from("a.ts")
+        );
+        assert_eq!(
+            result.import_edge_changes[1].from_path,
+            PathBuf::from("z.ts")
+        );
     }
 }
