@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::analysis::Confidence;
 use crate::model::file_graph::{FileGraph, FileImport};
-use crate::model::{FileId, SymbolId};
+use crate::model::{FileId, Language, SymbolId};
 
 /// A cross-file reference linking an import site in one file to an exported symbol in another.
 #[derive(Debug, Clone)]
@@ -272,6 +272,52 @@ pub fn link_cross_file_symbols(
                         confidence,
                     });
                     resolved += 1;
+                } else if let Some(target_info) = file_graph.get_file(edge.to) {
+                    // Rust module-path imports: `use crate::cli::commands` imports the
+                    // module name "commands" but actual exports are "run_deps" etc.
+                    // When the imported name matches the target file's stem, resolve
+                    // to all exports of that file.
+                    if target_info.language == Language::Rust {
+                        let file_stem = target_info
+                            .path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("");
+                        if name == file_stem {
+                            let mut found_any = false;
+                            for export in &target_info.exports {
+                                if export.exported_name == "*" {
+                                    continue;
+                                }
+                                let mut vis = HashSet::new();
+                                if let Some((def_file, def_symbol)) = resolve_export(
+                                    edge.to,
+                                    &export.exported_name,
+                                    export.is_default,
+                                    file_graph,
+                                    &mut vis,
+                                ) {
+                                    references.push(CrossFileRef {
+                                        source_file: edge.from,
+                                        target_file: def_file,
+                                        target_symbol: def_symbol,
+                                        imported_name: export.exported_name.clone(),
+                                        line: edge.line,
+                                        confidence: Confidence::Medium,
+                                    });
+                                    resolved += 1;
+                                    found_any = true;
+                                }
+                            }
+                            if !found_any {
+                                unresolved += 1;
+                            }
+                        } else {
+                            unresolved += 1;
+                        }
+                    } else {
+                        unresolved += 1;
+                    }
                 } else {
                     unresolved += 1;
                 }

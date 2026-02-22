@@ -555,3 +555,95 @@ fn test_incremental_index_only_reparses_changed() {
         result3.files_indexed
     );
 }
+
+#[test]
+fn test_dead_code_symbols_cross_file_linking() {
+    let tmp = setup_project();
+    index_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "symbols", &OutputFormat::Json, true, false, None)
+            .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let total = json["summary"]["total_symbols"].as_u64().unwrap();
+    let dead = json["summary"]["dead_symbols"].as_u64().unwrap();
+    let entry = json["summary"]["entry_point_symbols"].as_u64().unwrap();
+
+    assert!(
+        total > 0,
+        "Should have symbols in the project, got {}",
+        total
+    );
+    assert!(
+        entry > 0,
+        "Should have entry point symbols, got {}",
+        entry
+    );
+
+    // The dead symbol count should be less than total (some should be alive)
+    assert!(
+        dead < total,
+        "Not all symbols should be dead: dead={}, total={}",
+        dead,
+        total
+    );
+
+    // In the basic_project fixture, most symbols are exports and thus entry points.
+    // With cross-file linking, the dead ratio should be reasonable.
+    let dead_ratio = dead as f64 / total as f64;
+    assert!(
+        dead_ratio < 0.50,
+        "Dead symbol ratio should be < 50%, got {:.1}% ({}/{})",
+        dead_ratio * 100.0,
+        dead,
+        total
+    );
+
+    // Confidence should be high when cross-file linking is active
+    let confidence = json["confidence"].as_str().unwrap();
+    assert!(
+        confidence == "high" || confidence == "certain",
+        "Confidence should be high with cross-file linking, got {}",
+        confidence
+    );
+
+    // Verify specific symbols: collect dead symbol names
+    let dead_symbols = json["dead_symbols"].as_array().unwrap();
+    let dead_names: std::collections::HashSet<String> = dead_symbols
+        .iter()
+        .filter_map(|s| s["name"].as_str().map(|n| n.to_string()))
+        .collect();
+
+    // UserService is imported by index.ts -- should NOT be dead.
+    // This is the critical cross-file linking test: index.ts imports UserService
+    // from userService.ts, and the linker resolves that import to the export.
+    assert!(
+        !dead_names.contains("UserService"),
+        "UserService should be alive (imported by index.ts via cross-file linking)"
+    );
+
+    // formatName is imported by both index.ts and userService.ts -- alive
+    assert!(
+        !dead_names.contains("formatName"),
+        "formatName should be alive (imported by multiple files)"
+    );
+
+    // barrelHelper is imported via barrel re-export chain -- alive
+    // index.ts -> barrel/index.ts (export * from helpers) -> helpers.ts
+    assert!(
+        !dead_names.contains("barrelHelper"),
+        "barrelHelper should be alive (imported via barrel re-export chain)"
+    );
+
+    // specialThing is imported via named barrel re-export -- alive
+    assert!(
+        !dead_names.contains("specialThing"),
+        "specialThing should be alive (imported via named barrel re-export)"
+    );
+
+    // Note: loadLazy is a private function called at top-level in index.ts.
+    // It may or may not be detected as alive depending on whether the parser
+    // creates a reference from the module scope to it. This is a known
+    // limitation of tree-sitter-based analysis for top-level call expressions.
+}

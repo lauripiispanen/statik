@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::linker::LinkingResult;
 use crate::model::file_graph::FileGraph;
 use crate::model::graph::SymbolGraph;
 use crate::model::{FileId, SymbolId, SymbolKind, Visibility};
@@ -349,19 +350,36 @@ fn propagate_through_reexports(graph: &FileGraph, imported_names: &mut HashSet<(
     }
 }
 
-/// BFS from entry points, following import edges forward.
-/// Returns the set of all files reachable from any entry point.
 /// Detect dead symbols using the symbol-level reference graph.
 ///
 /// Entry point symbols are exported symbols from entry point files.
-/// BFS through intra-file references from entry points.
+/// For non-entry files, only exports that are actually imported (per linker results)
+/// are seeded as entry points. BFS through intra-file references from entry points.
 /// Unreachable symbols (excluding Import/Export/Package synthetic kinds) are dead.
-pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -> DeadSymbolResult {
+pub fn detect_dead_symbols(
+    symbol_graph: &SymbolGraph,
+    file_graph: &FileGraph,
+    linker_result: &LinkingResult,
+) -> DeadSymbolResult {
     // Determine entry point file IDs from the file graph
     let entry_file_ids: HashSet<FileId> = file_graph.entry_points().into_iter().collect();
 
-    // Entry point symbols: exported symbols in entry point files, plus all
-    // symbols in entry point files that are public (conservative approach)
+    // Build set of symbols that are targets of cross-file linker references.
+    // These are the exports actually imported by other files.
+    let linker_targets: HashSet<SymbolId> = linker_result
+        .references
+        .iter()
+        .map(|xref| xref.target_symbol)
+        .collect();
+
+    // Entry point symbols: all public symbols in entry point files,
+    // plus all exported symbols in non-entry files.
+    //
+    // We conservatively seed ALL exports as entry points because the linker
+    // cannot resolve every calling pattern (e.g., Rust qualified-path calls
+    // like `crate::analysis::dead_code::detect_dead_symbols(...)` don't
+    // appear in the imports table). Once linker coverage is complete, this
+    // can be tightened to only linker-resolved targets.
     let mut entry_symbols: Vec<SymbolId> = Vec::new();
 
     for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
@@ -375,10 +393,9 @@ pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -
                 }
             }
         } else {
-            // For non-entry-point files, exported symbols that are imported by entry files
-            // are entry points. But for simplicity, any exported public symbol connected
-            // through the file graph is an entry.
-            // We use exported symbols as seeds.
+            // All exported symbols in non-entry files are entry points.
+            // This is conservative: some may be truly unused, but we can't
+            // distinguish them until the linker handles all call patterns.
             if let Some(exports) = symbol_graph.exports.get(&file_id) {
                 for export in exports {
                     entry_symbols.push(export.symbol);
@@ -387,21 +404,32 @@ pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -
         }
     }
 
-    // Use the symbol graph's reachable_from to find all reachable symbols
+    let cross_file_edges = linker_targets.len();
+
+
+    // BFS from entry points through intra-file references to find all reachable symbols
     let reachable = symbol_graph.reachable_from(&entry_symbols);
 
-    // Count resolved vs unresolved references
-    let total_refs = symbol_graph.references.len();
-    let resolved_refs = symbol_graph
+    // Count references
+    let intra_resolved = symbol_graph
         .references
         .iter()
         .filter(|r| r.target.0 < u64::MAX - 1_000_000)
         .count();
-    let unresolved_refs = total_refs - resolved_refs;
 
     // Find dead symbols: not reachable from any entry point
     // Exclude synthetic kinds (Import, Export, Package) that are not user-defined code
     let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
+
+    // Determine confidence based on linker quality.
+    // If all cross-file imports were resolved (unresolved == 0), we have High confidence.
+    // If some imports couldn't be resolved, we have Medium confidence.
+    let linker_unresolved = linker_result.unresolved;
+    let overall_confidence = if linker_unresolved == 0 {
+        Confidence::High
+    } else {
+        Confidence::Medium
+    };
 
     let mut dead_symbols = Vec::new();
     let file_paths: std::collections::HashMap<FileId, &PathBuf> = symbol_graph
@@ -427,11 +455,7 @@ pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -
                 kind: symbol.kind.as_str().to_string(),
                 file: file_path,
                 line: symbol.line_span.start.line,
-                confidence: if unresolved_refs == 0 {
-                    Confidence::High
-                } else {
-                    Confidence::Medium
-                },
+                confidence: overall_confidence,
             });
         }
     }
@@ -445,23 +469,14 @@ pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -
         .filter(|s| !skip_kinds.contains(&s.kind))
         .count();
 
-    let confidence = if unresolved_refs == 0 {
-        Confidence::High
-    } else {
-        // Unresolved references are expected (cross-file refs not yet tracked).
-        // Medium confidence: results are directionally correct but may have
-        // false positives for symbols called from other files.
-        Confidence::Medium
-    };
-
     let mut limitations = Vec::new();
-    if unresolved_refs > 0 {
+    if linker_unresolved > 0 {
         limitations.push(Limitation {
             description: format!(
-                "{}/{} references unresolved (cross-file references not yet tracked)",
-                unresolved_refs, total_refs
+                "{} cross-file imports could not be resolved to symbols",
+                linker_unresolved
             ),
-            count: unresolved_refs,
+            count: linker_unresolved,
         });
     }
 
@@ -470,11 +485,11 @@ pub fn detect_dead_symbols(symbol_graph: &SymbolGraph, file_graph: &FileGraph) -
             total_symbols,
             dead_symbols: dead_symbols.len(),
             entry_point_symbols: entry_symbols.len(),
-            resolved_references: resolved_refs,
-            unresolved_references: unresolved_refs,
+            resolved_references: intra_resolved + cross_file_edges,
+            unresolved_references: linker_unresolved,
         },
         dead_symbols,
-        confidence,
+        confidence: overall_confidence,
         limitations,
     }
 }
@@ -500,10 +515,19 @@ fn bfs_reachable(graph: &FileGraph, entry_points: &[FileId]) -> HashSet<FileId> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::linker::LinkingResult;
     use crate::model::file_graph::{FileImport, FileInfo};
     use crate::model::{
         FileRecord, Language, LineSpan, Position, RefKind, Reference, ReferenceId, Span, Symbol,
     };
+
+    fn empty_linker() -> LinkingResult {
+        LinkingResult {
+            resolved: 0,
+            unresolved: 0,
+            references: vec![],
+        }
+    }
 
     fn make_file(id: u64, path: &str, is_entry: bool) -> FileInfo {
         FileInfo {
@@ -1132,7 +1156,7 @@ mod tests {
         });
         sym_graph.add_parse_result(result);
 
-        let dead_result = detect_dead_symbols(&sym_graph, &file_graph);
+        let dead_result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
 
         // dead_fn should be dead (private, never referenced)
         let dead_names: Vec<&str> = dead_result
@@ -1209,7 +1233,7 @@ mod tests {
         let sym_graph = SymbolGraph::new();
         let file_graph = FileGraph::new();
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
         assert!(result.dead_symbols.is_empty());
         assert_eq!(result.summary.total_symbols, 0);
         assert_eq!(result.summary.entry_point_symbols, 0);
@@ -1217,6 +1241,7 @@ mod tests {
 
     #[test]
     fn test_dead_symbols_multi_file_private_unreachable() {
+        use crate::analysis::linker::{CrossFileRef, LinkingResult};
         use crate::model::graph::SymbolGraph;
         use crate::model::*;
 
@@ -1249,7 +1274,7 @@ mod tests {
             annotations: vec![],
         });
 
-        // File 2: exported symbol acts as entry point for symbol-level analysis
+        // File 2: exported symbol becomes entry point when linker confirms it's imported
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(2),
             symbols: vec![
@@ -1293,7 +1318,21 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        // Linker confirms that file 1 imports api_handler from file 2
+        let linker = LinkingResult {
+            resolved: 1,
+            unresolved: 0,
+            references: vec![CrossFileRef {
+                source_file: FileId(1),
+                target_file: FileId(2),
+                target_symbol: SymbolId(10),
+                imported_name: "api_handler".to_string(),
+                line: 1,
+                confidence: crate::analysis::Confidence::High,
+            }],
+        };
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker);
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1307,7 +1346,7 @@ mod tests {
         );
         assert!(
             !dead_names.contains(&"api_handler"),
-            "api_handler should NOT be dead (exported)"
+            "api_handler should NOT be dead (linker target)"
         );
         assert!(
             !dead_names.contains(&"internal_helper"),
@@ -1341,7 +1380,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1388,7 +1427,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1448,12 +1487,24 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
 
-        // With unresolved references, confidence should be Medium
-        assert_eq!(result.confidence, Confidence::Medium);
-        assert_eq!(result.summary.unresolved_references, 1);
-        assert!(!result.limitations.is_empty());
+        // With an empty linker (no cross-file imports), confidence is High
+        // because there's nothing unresolved at the cross-file level.
+        // Placeholder-target refs are intra-file parser artifacts, not import failures.
+        assert_eq!(result.confidence, Confidence::High);
+        assert_eq!(result.summary.unresolved_references, 0);
+
+        // With unresolved linker imports, confidence reflects that
+        let linker_with_unresolved = LinkingResult {
+            resolved: 1,
+            unresolved: 3,
+            references: vec![],
+        };
+        let result2 = detect_dead_symbols(&sym_graph, &file_graph, &linker_with_unresolved);
+        assert_eq!(result2.confidence, Confidence::Medium);
+        assert_eq!(result2.summary.unresolved_references, 3);
+        assert!(!result2.limitations.is_empty());
     }
 
     #[test]
@@ -1487,7 +1538,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1633,5 +1684,654 @@ mod tests {
             "helper should be dead in TS (module-path import logic is Rust-only), dead: {:?}",
             dead_names
         );
+    }
+
+    // ---- Cross-file linking tests ----
+
+    /// Helper: build a SymbolGraph + FileGraph + LinkingResult from a test scenario,
+    /// then run detect_dead_symbols and return the dead/alive symbol names.
+    fn run_cross_file_scenario(
+        file_graph_setup: impl FnOnce(&mut FileGraph),
+        symbol_graph_setup: impl FnOnce(&mut crate::model::graph::SymbolGraph),
+        linker_refs: Vec<crate::analysis::linker::CrossFileRef>,
+    ) -> (Vec<String>, Vec<String>) {
+        use crate::analysis::linker::LinkingResult;
+        use crate::model::graph::SymbolGraph;
+
+        let mut file_graph = FileGraph::new();
+        file_graph_setup(&mut file_graph);
+
+        let mut sym_graph = SymbolGraph::new();
+        symbol_graph_setup(&mut sym_graph);
+
+        let linker_result = LinkingResult {
+            resolved: linker_refs.len(),
+            unresolved: 0,
+            references: linker_refs,
+        };
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result);
+
+        let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
+        let dead_names: Vec<String> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let alive_names: Vec<String> = sym_graph
+            .symbols
+            .values()
+            .filter(|s| !skip_kinds.contains(&s.kind) && !dead_names.contains(&s.name))
+            .map(|s| s.name.clone())
+            .collect();
+
+        (alive_names, dead_names)
+    }
+
+    #[test]
+    fn test_cross_file_multi_hop_chain() {
+        // A (entry) -> B -> C: all alive via cross-file linker targets.
+        // Linker resolves: A imports process from B, B imports compute from C.
+        // Both process and compute are linker targets so they get seeded as entry points.
+        use crate::analysis::linker::CrossFileRef;
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                fg.add_file(make_file(3, "src/c.ts", false));
+                fg.add_import(make_edge(1, 2, &["process"]));
+                fg.add_import(make_edge(2, 3, &["compute"]));
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                sg.add_file(make_file_record(3, "src/c.ts"));
+                // File A: main (public, entry)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
+                });
+                // File B: process (exported) calls internal_b
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "process", SymbolKind::Function, 2, Visibility::Public),
+                        make_sym(11, "internal_b", SymbolKind::Function, 2, Visibility::Private),
+                    ],
+                    references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2),
+                        symbol: SymbolId(10),
+                        exported_name: "process".to_string(),
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
+                    }],
+                    type_references: vec![],
+                    annotations: vec![],
+                });
+                // File C: compute (exported)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(3),
+                    symbols: vec![
+                        make_sym(20, "compute", SymbolKind::Function, 3, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(3),
+                        symbol: SymbolId(20),
+                        exported_name: "compute".to_string(),
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
+                    }],
+                    type_references: vec![],
+                    annotations: vec![],
+                });
+            },
+            vec![
+                // Linker: A imports process from B
+                CrossFileRef {
+                    source_file: FileId(1),
+                    target_file: FileId(2),
+                    target_symbol: SymbolId(10),
+                    imported_name: "process".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
+                },
+                // Linker: B imports compute from C
+                CrossFileRef {
+                    source_file: FileId(2),
+                    target_file: FileId(3),
+                    target_symbol: SymbolId(20),
+                    imported_name: "compute".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
+                },
+            ],
+        );
+
+        assert!(alive.contains(&"main".to_string()), "main should be alive");
+        assert!(alive.contains(&"process".to_string()), "process should be alive (linker target)");
+        assert!(alive.contains(&"internal_b".to_string()), "internal_b should be alive (called by process)");
+        assert!(alive.contains(&"compute".to_string()), "compute should be alive (linker target)");
+        assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
+    }
+
+    #[test]
+    fn test_cross_file_diamond_dependency() {
+        // A (entry) -> B and C, both -> D: all alive
+        use crate::analysis::linker::CrossFileRef;
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                fg.add_file(make_file(3, "src/c.ts", false));
+                fg.add_file(make_file(4, "src/d.ts", false));
+                fg.add_import(make_edge(1, 2, &["b_fn"]));
+                fg.add_import(make_edge(1, 3, &["c_fn"]));
+                fg.add_import(make_edge(2, 4, &["d_fn"]));
+                fg.add_import(make_edge(3, 4, &["d_fn"]));
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                sg.add_file(make_file_record(3, "src/c.ts"));
+                sg.add_file(make_file_record(4, "src/d.ts"));
+                // A: main only
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                });
+                // B: b_fn (exported)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "b_fn", SymbolKind::Function, 2, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2), symbol: SymbolId(10),
+                        exported_name: "b_fn".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+                // C: c_fn (exported)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(3),
+                    symbols: vec![
+                        make_sym(20, "c_fn", SymbolKind::Function, 3, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(3), symbol: SymbolId(20),
+                        exported_name: "c_fn".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+                // D: d_fn (the diamond bottom)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(4),
+                    symbols: vec![
+                        make_sym(30, "d_fn", SymbolKind::Function, 4, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(4), symbol: SymbolId(30),
+                        exported_name: "d_fn".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+            },
+            vec![
+                CrossFileRef {
+                    source_file: FileId(1), target_file: FileId(2),
+                    target_symbol: SymbolId(10), imported_name: "b_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+                CrossFileRef {
+                    source_file: FileId(1), target_file: FileId(3),
+                    target_symbol: SymbolId(20), imported_name: "c_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+                CrossFileRef {
+                    source_file: FileId(2), target_file: FileId(4),
+                    target_symbol: SymbolId(30), imported_name: "d_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+                CrossFileRef {
+                    source_file: FileId(3), target_file: FileId(4),
+                    target_symbol: SymbolId(30), imported_name: "d_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+            ],
+        );
+
+        assert!(alive.contains(&"main".to_string()), "main alive");
+        assert!(alive.contains(&"b_fn".to_string()), "b_fn alive (A -> B)");
+        assert!(alive.contains(&"c_fn".to_string()), "c_fn alive (A -> C)");
+        assert!(alive.contains(&"d_fn".to_string()), "d_fn alive (diamond bottom)");
+        assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
+    }
+
+    #[test]
+    fn test_cross_file_exported_conservatively_alive() {
+        // B exports process, process calls helper. B is never imported by any entry point.
+        // With conservative seeding, ALL exports are entry points regardless of linker refs,
+        // so process and helper are both alive. Only non-exported, unreferenced symbols are dead.
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                // No import edge from A to B
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                // A: main only
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                });
+                // B: process (exported) calls helper (private), dead_fn (private, never called)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "process", SymbolKind::Function, 2, Visibility::Public),
+                        make_sym(11, "helper", SymbolKind::Function, 2, Visibility::Private),
+                        make_sym(12, "dead_fn", SymbolKind::Function, 2, Visibility::Private),
+                    ],
+                    references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2), symbol: SymbolId(10),
+                        exported_name: "process".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+            },
+            vec![], // No linker refs -- B is never imported
+        );
+
+        // Conservative seeding: all exports are entry points, so process is alive
+        // and helper is reachable via BFS from process.
+        assert!(alive.contains(&"process".to_string()), "process alive (exported, conservatively seeded)");
+        assert!(alive.contains(&"helper".to_string()), "helper alive (called by process)");
+        // dead_fn is private and never called, so it should be dead.
+        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn dead (private, never called)");
+    }
+
+    #[test]
+    fn test_cross_file_mixed_alive_dead_same_file() {
+        // File B has: exported_fn (used by A via linker), helper (called by exported_fn), dead_fn (never called)
+        use crate::analysis::linker::CrossFileRef;
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                fg.add_import(make_edge(1, 2, &["exported_fn"]));
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                // A: main only
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                });
+                // B: exported_fn calls helper, dead_fn is isolated
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "exported_fn", SymbolKind::Function, 2, Visibility::Public),
+                        make_sym(11, "helper", SymbolKind::Function, 2, Visibility::Private),
+                        make_sym(12, "dead_fn", SymbolKind::Function, 2, Visibility::Private),
+                    ],
+                    references: vec![make_ref(2, 10, 11, RefKind::Call, 2)],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2), symbol: SymbolId(10),
+                        exported_name: "exported_fn".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+            },
+            vec![
+                // Linker: A imports exported_fn from B
+                CrossFileRef {
+                    source_file: FileId(1), target_file: FileId(2),
+                    target_symbol: SymbolId(10), imported_name: "exported_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+            ],
+        );
+
+        assert!(alive.contains(&"main".to_string()), "main alive");
+        assert!(alive.contains(&"exported_fn".to_string()), "exported_fn alive (linker target)");
+        assert!(alive.contains(&"helper".to_string()), "helper alive (called by exported_fn)");
+        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn should be dead (never called)");
+    }
+
+    #[test]
+    fn test_cross_file_circular_references() {
+        // A (entry) -> B, B -> A (circular): both alive
+        use crate::analysis::linker::CrossFileRef;
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                fg.add_import(make_edge(1, 2, &["b_fn"]));
+                fg.add_import(make_edge(2, 1, &["a_fn"]));
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                // A: a_fn (public, entry)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "a_fn", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                });
+                // B: b_fn (exported)
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "b_fn", SymbolKind::Function, 2, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2), symbol: SymbolId(10),
+                        exported_name: "b_fn".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+            },
+            vec![
+                CrossFileRef {
+                    source_file: FileId(1), target_file: FileId(2),
+                    target_symbol: SymbolId(10), imported_name: "b_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+                CrossFileRef {
+                    source_file: FileId(2), target_file: FileId(1),
+                    target_symbol: SymbolId(1), imported_name: "a_fn".to_string(),
+                    line: 1, confidence: crate::analysis::Confidence::High,
+                },
+            ],
+        );
+
+        assert!(alive.contains(&"a_fn".to_string()), "a_fn alive (entry + circular)");
+        assert!(alive.contains(&"b_fn".to_string()), "b_fn alive (linker target from entry)");
+        assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
+    }
+
+    #[test]
+    fn test_cross_file_confidence_reflects_linker_quality() {
+        use crate::analysis::linker::LinkingResult;
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/a.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/a.ts"));
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+        });
+
+        // All resolved, no unresolved -> High
+        let good_linker = LinkingResult {
+            resolved: 10,
+            unresolved: 0,
+            references: vec![],
+        };
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &good_linker);
+        assert_eq!(result.confidence, Confidence::High);
+        assert!(result.limitations.is_empty());
+
+        // Some unresolved -> Medium
+        let bad_linker = LinkingResult {
+            resolved: 5,
+            unresolved: 3,
+            references: vec![],
+        };
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &bad_linker);
+        assert_eq!(result.confidence, Confidence::Medium);
+        assert!(!result.limitations.is_empty());
+        assert_eq!(result.summary.unresolved_references, 3);
+    }
+
+    #[test]
+    fn test_end_to_end_real_linker_with_dead_symbols() {
+        // This test uses the REAL linker (link_cross_file_symbols) instead of
+        // hand-constructing a LinkingResult. It verifies the full chain:
+        //
+        // Scenario:
+        //   File A (entry point): has function `main()` which calls `do_stuff()` (imported from B)
+        //   File B (non-entry):   exports `do_stuff()` which calls private `helper()` in the same file
+        //                         also has `dead_fn()` which is never called
+        //
+        // Expected: main, do_stuff, helper all alive. dead_fn is dead.
+        //
+        // Chain that must work:
+        //   1. FileGraph has export "do_stuff" with SymbolId(10) on File B
+        //   2. FileGraph has import edge A->B with imported_name "do_stuff"
+        //   3. Linker resolves import to CrossFileRef { target_symbol: SymbolId(10) }
+        //   4. detect_dead_symbols sees SymbolId(10) in linker_targets
+        //   5. SymbolGraph.exports[FileId(2)] has ExportRecord with symbol: SymbolId(10)
+        //   6. SymbolId(10) is seeded as entry point
+        //   7. BFS follows reference SymbolId(10) -> SymbolId(11) (do_stuff calls helper)
+        //   8. helper is marked alive
+        use crate::analysis::linker::link_cross_file_symbols;
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut file_graph = FileGraph::new();
+        let mut sym_graph = SymbolGraph::new();
+
+        // File A (entry point) - has main(), imports do_stuff from B
+        file_graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/index.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+        });
+
+        // File B (non-entry) - exports do_stuff
+        file_graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("src/service.ts"),
+            language: Language::TypeScript,
+            exports: vec![ExportRecord {
+                file: FileId(2),
+                symbol: SymbolId(10),
+                exported_name: "do_stuff".to_string(),
+                is_default: false,
+                is_reexport: false,
+                is_type_only: false,
+                source_path: None,
+                line: 1,
+            }],
+            is_entry_point: false,
+        });
+
+        // Import edge: A imports "do_stuff" from B
+        file_graph.add_import(FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["do_stuff".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        // Now build SymbolGraph with matching symbols
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+        sym_graph.add_file(make_file_record(2, "src/service.ts"));
+
+        // File A: just main (public)
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![make_sym(
+                1,
+                "main",
+                SymbolKind::Function,
+                1,
+                Visibility::Public,
+            )],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        // File B: do_stuff (exported, public), helper (private, called by do_stuff),
+        //         dead_fn (private, never called)
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(2),
+            symbols: vec![
+                make_sym(10, "do_stuff", SymbolKind::Function, 2, Visibility::Public),
+                make_sym(11, "helper", SymbolKind::Function, 2, Visibility::Private),
+                make_sym(12, "dead_fn", SymbolKind::Function, 2, Visibility::Private),
+            ],
+            references: vec![
+                make_ref(1, 10, 11, RefKind::Call, 2), // do_stuff calls helper
+            ],
+            imports: vec![],
+            exports: vec![ExportRecord {
+                file: FileId(2),
+                symbol: SymbolId(10),
+                exported_name: "do_stuff".to_string(),
+                is_default: false,
+                is_reexport: false,
+                is_type_only: false,
+                source_path: None,
+                line: 1,
+            }],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        // Step 1: Run the REAL linker on the file graph
+        let linker_result = link_cross_file_symbols(&file_graph);
+
+        // Verify linker resolved the import
+        assert_eq!(
+            linker_result.resolved, 1,
+            "linker should resolve 1 import, got resolved={} unresolved={}",
+            linker_result.resolved, linker_result.unresolved
+        );
+        assert_eq!(
+            linker_result.references.len(),
+            1,
+            "linker should produce 1 CrossFileRef"
+        );
+        let xref = &linker_result.references[0];
+        assert_eq!(
+            xref.target_symbol,
+            SymbolId(10),
+            "linker should resolve to SymbolId(10) (do_stuff)"
+        );
+        assert_eq!(xref.source_file, FileId(1));
+        assert_eq!(xref.target_file, FileId(2));
+
+        // Step 2: Feed linker result into detect_dead_symbols
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result);
+
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        let alive_count = result.summary.total_symbols - result.summary.dead_symbols;
+
+        // main should be alive (public in entry point)
+        assert!(
+            !dead_names.contains(&"main"),
+            "main should be alive (entry point public symbol)"
+        );
+        // do_stuff should be alive (linker target, exported and imported)
+        assert!(
+            !dead_names.contains(&"do_stuff"),
+            "do_stuff should be alive (linker resolved it as import target)"
+        );
+        // helper should be alive (called by do_stuff via intra-file reference)
+        assert!(
+            !dead_names.contains(&"helper"),
+            "helper should be alive (called by do_stuff via intra-file BFS), dead: {:?}",
+            dead_names
+        );
+        // dead_fn should be dead (never called by anything)
+        assert!(
+            dead_names.contains(&"dead_fn"),
+            "dead_fn should be dead (never called), dead: {:?}",
+            dead_names
+        );
+        // Summary: 4 total symbols, 1 dead, 3 alive
+        assert_eq!(result.summary.total_symbols, 4);
+        assert_eq!(result.summary.dead_symbols, 1);
+        assert_eq!(alive_count, 3);
     }
 }

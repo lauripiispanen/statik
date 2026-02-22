@@ -238,6 +238,7 @@ fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
     let all_symbols = db.all_symbols()?;
     let all_refs = db.all_references()?;
     let all_files = db.all_files()?;
+    let all_exports = db.all_exports()?;
 
     for file in &all_files {
         graph.add_file(file.clone());
@@ -261,16 +262,23 @@ fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
         }
     }
 
+    // Group exports by file
+    let mut file_exports: HashMap<FileId, Vec<crate::model::ExportRecord>> = HashMap::new();
+    for export in all_exports {
+        file_exports.entry(export.file).or_default().push(export);
+    }
+
     for file in &all_files {
         let symbols = file_symbols.remove(&file.id).unwrap_or_default();
         let references = file_refs.remove(&file.id).unwrap_or_default();
-        if !symbols.is_empty() || !references.is_empty() {
+        let exports = file_exports.remove(&file.id).unwrap_or_default();
+        if !symbols.is_empty() || !references.is_empty() || !exports.is_empty() {
             graph.add_parse_result(ParseResult {
                 file_id: file.id,
                 symbols,
                 references,
                 imports: vec![],
-                exports: vec![],
+                exports,
                 type_references: vec![],
                 annotations: vec![],
             });
@@ -595,7 +603,12 @@ pub fn run_dead_code(
         let file_graph = build_file_graph(&db, project_path)?;
         let file_graph = maybe_filter_paths(file_graph, path_glob, project_path)?;
         let symbol_graph = build_symbol_graph(&db)?;
-        let result = crate::analysis::dead_code::detect_dead_symbols(&symbol_graph, &file_graph);
+        let linker_result = crate::analysis::linker::link_cross_file_symbols(&file_graph);
+        let result = crate::analysis::dead_code::detect_dead_symbols(
+            &symbol_graph,
+            &file_graph,
+            &linker_result,
+        );
         return Ok(match format {
             OutputFormat::Text => format_dead_symbols_text(&result),
             _ => format_json(&result, format),
