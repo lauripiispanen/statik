@@ -487,7 +487,7 @@ fn primary_arrays(command: &str) -> Vec<&'static str> {
         "symbols" => vec!["symbols"],
         "references" => vec!["references"],
         "callers" => vec!["callers"],
-        "diff" => vec!["changes"],
+        "diff" => vec!["changes", "import_edge_changes", "cycle_changes"],
         "summary" => vec!["directories"],
         "graph" => vec!["nodes", "edges"],
         _ => vec![],
@@ -1014,7 +1014,7 @@ mod tests {
         assert_eq!(primary_arrays("symbols"), vec!["symbols"]);
         assert_eq!(primary_arrays("references"), vec!["references"]);
         assert_eq!(primary_arrays("callers"), vec!["callers"]);
-        assert_eq!(primary_arrays("diff"), vec!["changes"]);
+        assert_eq!(primary_arrays("diff"), vec!["changes", "import_edge_changes", "cycle_changes"]);
     }
 
     #[test]
@@ -1579,5 +1579,46 @@ mod tests {
             "summary": {"dead_files": 1, "dead_exports": 1, "dead_symbols": 2}
         });
         assert_eq!(extract_count(&json, "dead-code"), 4);
+    }
+
+    // =========================================================================
+    // CI integration tests for diff
+    // =========================================================================
+
+    #[test]
+    fn test_extract_count_diff() {
+        let json = json!({
+            "summary": {"breaking_changes": 3, "expanding_changes": 2}
+        });
+        assert_eq!(extract_count(&json, "diff"), 5);
+    }
+
+    #[test]
+    fn test_extract_count_diff_no_breaking() {
+        let json = json!({
+            "summary": {"breaking_changes": 0, "expanding_changes": 5}
+        });
+        assert_eq!(extract_count(&json, "diff"), 5);
+    }
+
+    #[test]
+    fn test_extract_count_diff_empty_summary() {
+        let json = json!({});
+        assert_eq!(extract_count(&json, "diff"), 0);
+    }
+
+    #[test]
+    fn test_primary_arrays_diff_includes_all_sections() {
+        let arrays = primary_arrays("diff");
+        assert!(arrays.contains(&"changes"));
+        assert!(arrays.contains(&"import_edge_changes"));
+        assert!(arrays.contains(&"cycle_changes"));
+    }
+
+    #[test]
+    fn test_diff_not_problem_command_by_default() {
+        // diff is NOT a problem command in normal mode (only in --ci mode,
+        // which is handled directly in the match arm)
+        assert!(!is_problem_command("diff"));
     }
 }
