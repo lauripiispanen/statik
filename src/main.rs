@@ -227,6 +227,24 @@ fn main() -> Result<()> {
             )?;
             emit_output(&output, command_name, &post_opts);
         }
+
+        Commands::Graph {
+            ref graph_format,
+            ref focus,
+            depth,
+        } => {
+            let output = commands::run_graph(
+                &project_path,
+                graph_format,
+                focus.as_deref(),
+                depth,
+                format,
+                cli.no_index,
+                cli.runtime_only,
+                path_glob,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
     }
 
     Ok(())
@@ -247,6 +265,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Symbols { .. } => "symbols",
         Commands::References { .. } => "references",
         Commands::Callers { .. } => "callers",
+        Commands::Graph { .. } => "graph",
     }
 }
 
@@ -422,6 +441,7 @@ fn primary_arrays(command: &str) -> Vec<&'static str> {
         "callers" => vec!["callers"],
         "diff" => vec!["changes"],
         "summary" => vec!["directories"],
+        "graph" => vec!["nodes", "edges"],
         _ => vec![],
     }
 }

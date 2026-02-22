@@ -1548,6 +1548,400 @@ pub fn run_callers(
     })
 }
 
+/// Run the `graph` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_graph(
+    project_path: &Path,
+    graph_format: &str,
+    focus: Option<&str>,
+    depth: Option<usize>,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    let (graph, focus_id) = if let Some(focus_path) = focus {
+        let abs_path = project_path.join(focus_path);
+        let fid = graph
+            .file_by_path(&abs_path)
+            .or_else(|| {
+                graph
+                    .files
+                    .values()
+                    .find(|f| f.path.ends_with(focus_path))
+                    .map(|f| f.id)
+            })
+            .context(format!("Focus file not found in index: {}", focus_path))?;
+        let subgraph = extract_subgraph(&graph, fid, depth);
+        (subgraph, Some(fid))
+    } else {
+        (graph, None)
+    };
+
+    match graph_format {
+        "dot" => Ok(generate_dot(&graph, project_path, focus_id)),
+        "svg" => generate_svg(&graph, project_path, focus_id),
+        "html" => Ok(generate_html(&graph, project_path, focus_id)),
+        _ => match format {
+            OutputFormat::Text => Ok(generate_dot(&graph, project_path, focus_id)),
+            _ => {
+                let result = build_graph_json(&graph, project_path, focus_id);
+                Ok(format_json(&result, format))
+            }
+        },
+    }
+}
+
+/// Extract a subgraph around a focus file using BFS in both directions.
+fn extract_subgraph(graph: &FileGraph, focus: FileId, max_depth: Option<usize>) -> FileGraph {
+    use std::collections::{HashSet, VecDeque};
+
+    let max_depth = max_depth.unwrap_or(usize::MAX);
+    let mut visited: HashSet<FileId> = HashSet::new();
+    let mut queue: VecDeque<(FileId, usize)> = VecDeque::new();
+
+    visited.insert(focus);
+    queue.push_back((focus, 0));
+
+    while let Some((file_id, current_depth)) = queue.pop_front() {
+        if current_depth >= max_depth {
+            continue;
+        }
+        for target in graph.direct_imports(file_id) {
+            if visited.insert(target) {
+                queue.push_back((target, current_depth + 1));
+            }
+        }
+        for source in graph.direct_importers(file_id) {
+            if visited.insert(source) {
+                queue.push_back((source, current_depth + 1));
+            }
+        }
+    }
+
+    let mut new_graph = FileGraph::new();
+    for &file_id in &visited {
+        if let Some(info) = graph.get_file(file_id) {
+            new_graph.add_file(info.clone());
+        }
+    }
+    for (&_from_id, edges) in graph.all_import_edges() {
+        for edge in edges {
+            if visited.contains(&edge.from) && visited.contains(&edge.to) {
+                new_graph.add_import(edge.clone());
+            }
+        }
+    }
+    new_graph
+}
+
+/// Generate DOT format output.
+fn generate_dot(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>) -> String {
+    let mut out = String::new();
+    out.push_str("digraph dependencies {\n");
+    out.push_str("  rankdir=LR;\n");
+    out.push_str("  node [shape=box, style=filled, fillcolor=\"#e8e8e8\"];\n");
+    out.push('\n');
+
+    let mut files: Vec<_> = graph.all_files().collect();
+    files.sort_by_key(|(id, _)| **id);
+
+    for (_, info) in &files {
+        let rel_path = relative_path(&info.path, project_root);
+        let color = if Some(info.id) == focus_id {
+            "#8888ff"
+        } else if info.is_entry_point {
+            "#a8d8a8"
+        } else {
+            "#e8e8e8"
+        };
+        out.push_str(&format!(
+            "  \"{}\" [fillcolor=\"{}\"];\n",
+            rel_path, color
+        ));
+    }
+    out.push('\n');
+
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for (_, info) in &files {
+        if let Some(import_edges) = graph.import_edges(info.id) {
+            for edge in import_edges {
+                if let Some(target) = graph.get_file(edge.to) {
+                    let from = relative_path(&info.path, project_root);
+                    let to = relative_path(&target.path, project_root);
+                    edges.push((from, to));
+                }
+            }
+        }
+    }
+    edges.sort();
+    edges.dedup();
+
+    for (from, to) in &edges {
+        out.push_str(&format!("  \"{}\" -> \"{}\";\n", from, to));
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// Generate SVG by shelling out to the `dot` command.
+fn generate_svg(
+    graph: &FileGraph,
+    project_root: &Path,
+    focus_id: Option<FileId>,
+) -> Result<String> {
+    let dot = generate_dot(graph, project_root, focus_id);
+
+    let result = std::process::Command::new("dot")
+        .arg("-Tsvg")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    match result {
+        Ok(mut child) => {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(dot.as_bytes())?;
+            }
+            let output = child.wait_with_output()?;
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("dot command failed: {}", stderr);
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "graphviz `dot` command not found. Install graphviz:\n  \
+                 macOS:  brew install graphviz\n  \
+                 Ubuntu: sudo apt install graphviz\n  \
+                 Or use --graph-format dot to get raw DOT output."
+            );
+        }
+        Err(e) => anyhow::bail!("Failed to run dot command: {}", e),
+    }
+}
+
+/// Build the JSON representation for the graph.
+fn build_graph_json(
+    graph: &FileGraph,
+    project_root: &Path,
+    focus_id: Option<FileId>,
+) -> serde_json::Value {
+    let mut nodes = Vec::new();
+    let mut edges_out = Vec::new();
+    let mut files: Vec<_> = graph.all_files().collect();
+    files.sort_by_key(|(id, _)| **id);
+
+    for (_, info) in &files {
+        let rel = relative_path(&info.path, project_root);
+        let lang = format!("{:?}", info.language);
+        let mut node = serde_json::json!({
+            "path": rel,
+            "is_entry_point": info.is_entry_point,
+            "language": lang,
+        });
+        if Some(info.id) == focus_id {
+            node["is_focus"] = serde_json::json!(true);
+        }
+        nodes.push(node);
+    }
+
+    let mut edge_set: Vec<(String, String, Vec<String>)> = Vec::new();
+    for (_, info) in &files {
+        if let Some(import_edges) = graph.import_edges(info.id) {
+            let mut by_target: HashMap<FileId, Vec<String>> = HashMap::new();
+            for edge in import_edges {
+                by_target
+                    .entry(edge.to)
+                    .or_default()
+                    .extend(edge.imported_names.clone());
+            }
+            for (target_id, mut names) in by_target {
+                if let Some(target) = graph.get_file(target_id) {
+                    let from = relative_path(&info.path, project_root);
+                    let to = relative_path(&target.path, project_root);
+                    names.sort();
+                    names.dedup();
+                    edge_set.push((from, to, names));
+                }
+            }
+        }
+    }
+    edge_set.sort();
+
+    for (from, to, names) in &edge_set {
+        edges_out.push(serde_json::json!({
+            "from": from,
+            "to": to,
+            "imported_names": names,
+        }));
+    }
+
+    serde_json::json!({
+        "nodes": nodes,
+        "edges": edges_out,
+        "summary": {
+            "node_count": nodes.len(),
+            "edge_count": edges_out.len(),
+        }
+    })
+}
+
+/// Generate a self-contained HTML file with a force-directed graph visualization.
+fn generate_html(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>) -> String {
+    let graph_json = build_graph_json(graph, project_root, focus_id);
+    let json_str = serde_json::to_string(&graph_json).unwrap_or_default();
+    HTML_TEMPLATE.replace("/*GRAPH_DATA*/", &format!("const graphData = {};", json_str))
+}
+
+const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>statik - Dependency Graph</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: #1a1a2e; overflow: hidden; }
+  svg { width: 100vw; height: 100vh; display: block; }
+  #tooltip { position: absolute; background: #16213e; color: #e8e8e8; border: 1px solid #0f3460; border-radius: 6px; padding: 10px 14px; font-size: 13px; pointer-events: none; display: none; max-width: 400px; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  #tooltip .path { font-weight: bold; color: #e2b714; margin-bottom: 4px; }
+  #tooltip .meta { color: #a8a8b8; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="tooltip"></div>
+<svg id="graph"></svg>
+<script>
+/*GRAPH_DATA*/
+
+const svg = document.getElementById("graph");
+const tooltip = document.getElementById("tooltip");
+const width = window.innerWidth;
+const height = window.innerHeight;
+const ns = "http://www.w3.org/2000/svg";
+
+const mainGroup = document.createElementNS(ns, "g");
+svg.appendChild(mainGroup);
+const edgeGroup = document.createElementNS(ns, "g");
+mainGroup.appendChild(edgeGroup);
+const nodeGroup = document.createElementNS(ns, "g");
+mainGroup.appendChild(nodeGroup);
+
+const nodes = graphData.nodes.map((n, i) => ({
+  ...n, x: width/2 + (Math.random()-0.5)*Math.min(width,600),
+  y: height/2 + (Math.random()-0.5)*Math.min(height,400), vx: 0, vy: 0, index: i
+}));
+const nodeByPath = {};
+nodes.forEach(n => { nodeByPath[n.path] = n; });
+const edges = graphData.edges.map(e => ({
+  source: nodeByPath[e.from], target: nodeByPath[e.to], imported_names: e.imported_names
+})).filter(e => e.source && e.target);
+
+const edgeEls = [];
+edges.forEach(e => {
+  const line = document.createElementNS(ns, "line");
+  line.style.stroke = "#555"; line.style.strokeWidth = "1"; line.style.strokeOpacity = "0.5";
+  edgeGroup.appendChild(line);
+  edgeEls.push({ el: line, data: e });
+});
+
+function textWidth(t) { return t.length * 6.8 + 16; }
+
+const nodeEls = [];
+nodes.forEach(n => {
+  const g = document.createElementNS(ns, "g");
+  const label = n.path.split("/").pop() || n.path;
+  const w = Math.max(textWidth(label), 60), h = 26;
+  const rect = document.createElementNS(ns, "rect");
+  rect.setAttribute("width", w); rect.setAttribute("height", h);
+  rect.setAttribute("rx", 4); rect.setAttribute("ry", 4);
+  rect.setAttribute("x", -w/2); rect.setAttribute("y", -h/2);
+  rect.style.fill = n.is_focus ? "#8888ff" : n.is_entry_point ? "#a8d8a8" : "#e8e8e8";
+  rect.style.stroke = "#555"; rect.style.strokeWidth = "1"; rect.style.cursor = "pointer";
+  const text = document.createElementNS(ns, "text");
+  text.setAttribute("text-anchor", "middle"); text.setAttribute("dominant-baseline", "central");
+  text.style.fontSize = "11px"; text.style.fill = "#222"; text.style.pointerEvents = "none";
+  text.textContent = label;
+  g.appendChild(rect); g.appendChild(text); nodeGroup.appendChild(g);
+
+  g.addEventListener("mouseenter", () => {
+    const imp = edges.filter(e => e.source === n).map(e => e.target.path);
+    const by = edges.filter(e => e.target === n).map(e => e.source.path);
+    let html = '<div class="path">'+n.path+'</div><div class="meta">Language: '+n.language+'</div>';
+    if (n.is_entry_point) html += '<div class="meta">Entry point</div>';
+    if (imp.length) html += '<div class="meta">Imports: '+imp.join(", ")+'</div>';
+    if (by.length) html += '<div class="meta">Imported by: '+by.join(", ")+'</div>';
+    tooltip.innerHTML = html; tooltip.style.display = "block";
+    edgeEls.forEach(ee => { if (ee.data.source===n||ee.data.target===n) { ee.el.style.stroke="#ff6b6b"; ee.el.style.strokeWidth="2"; ee.el.style.strokeOpacity="1"; }});
+    rect.style.stroke = "#ff6b6b"; rect.style.strokeWidth = "2.5";
+  });
+  g.addEventListener("mousemove", ev => { tooltip.style.left=(ev.pageX+14)+"px"; tooltip.style.top=(ev.pageY+14)+"px"; });
+  g.addEventListener("mouseleave", () => {
+    tooltip.style.display = "none";
+    edgeEls.forEach(ee => { ee.el.style.stroke="#555"; ee.el.style.strokeWidth="1"; ee.el.style.strokeOpacity="0.5"; });
+    rect.style.stroke = "#555"; rect.style.strokeWidth = "1";
+  });
+  nodeEls.push({ el: g, data: n, w, h });
+});
+
+let dragNode = null, dragOffX = 0, dragOffY = 0;
+svg.addEventListener("mousedown", ev => {
+  const t = ev.target.closest("g"); if (!t) return;
+  const ne = nodeEls.find(n => n.el === t); if (!ne) return;
+  dragNode = ne.data; dragOffX = ev.clientX - dragNode.x; dragOffY = ev.clientY - dragNode.y;
+  dragNode.fx = dragNode.x; dragNode.fy = dragNode.y;
+});
+svg.addEventListener("mousemove", ev => { if (!dragNode) return; dragNode.fx=ev.clientX-dragOffX; dragNode.fy=ev.clientY-dragOffY; dragNode.x=dragNode.fx; dragNode.y=dragNode.fy; });
+svg.addEventListener("mouseup", () => { if (dragNode) { delete dragNode.fx; delete dragNode.fy; } dragNode = null; });
+
+let transform = { x: 0, y: 0, k: 1 };
+svg.addEventListener("wheel", ev => {
+  ev.preventDefault(); const f = ev.deltaY > 0 ? 0.92 : 1.08;
+  transform.k *= f; transform.x = ev.clientX-(ev.clientX-transform.x)*f; transform.y = ev.clientY-(ev.clientY-transform.y)*f;
+  mainGroup.setAttribute("transform", "translate("+transform.x+","+transform.y+") scale("+transform.k+")");
+});
+let isPanning = false, panSX, panSY;
+svg.addEventListener("mousedown", ev => { if (ev.target===svg) { isPanning=true; panSX=ev.clientX-transform.x; panSY=ev.clientY-transform.y; }});
+svg.addEventListener("mousemove", ev => { if (!isPanning) return; transform.x=ev.clientX-panSX; transform.y=ev.clientY-panSY; mainGroup.setAttribute("transform","translate("+transform.x+","+transform.y+") scale("+transform.k+")"); });
+svg.addEventListener("mouseup", () => { isPanning = false; });
+
+function tick() {
+  const rep=800, ld=120, ls=0.05, cs=0.01;
+  for (let i=0;i<nodes.length;i++) for (let j=i+1;j<nodes.length;j++) {
+    let dx=nodes[j].x-nodes[i].x, dy=nodes[j].y-nodes[i].y, d2=dx*dx+dy*dy; if(d2<1) d2=1;
+    let f=rep/d2, fx=dx*f, fy=dy*f;
+    if(!nodes[i].fx){nodes[i].vx-=fx;nodes[i].vy-=fy;} if(!nodes[j].fx){nodes[j].vx+=fx;nodes[j].vy+=fy;}
+  }
+  edges.forEach(e => { let dx=e.target.x-e.source.x, dy=e.target.y-e.source.y, d=Math.sqrt(dx*dx+dy*dy)||1, f=(d-ld)*ls, fx=dx/d*f, fy=dy/d*f; if(!e.source.fx){e.source.vx+=fx;e.source.vy+=fy;} if(!e.target.fx){e.target.vx-=fx;e.target.vy-=fy;} });
+  nodes.forEach(n => { if(!n.fx){n.vx+=(width/2-n.x)*cs;n.vy+=(height/2-n.y)*cs;} });
+  nodes.forEach(n => { if(n.fx!==undefined){n.x=n.fx;n.y=n.fy;return;} n.vx*=0.6;n.vy*=0.6;n.x+=n.vx*0.3;n.y+=n.vy*0.3; });
+  nodeEls.forEach(ne => ne.el.setAttribute("transform","translate("+ne.data.x+","+ne.data.y+")"));
+  edgeEls.forEach(ee => { ee.el.setAttribute("x1",ee.data.source.x); ee.el.setAttribute("y1",ee.data.source.y); ee.el.setAttribute("x2",ee.data.target.x); ee.el.setAttribute("y2",ee.data.target.y); });
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>
+"##;
+
+/// Get a relative path from a file path and project root.
+fn relative_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// Format any serializable analysis result as JSON.
 fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
     match format {
@@ -2076,8 +2470,47 @@ fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
     ));
     if result.summary.import_edges_added > 0 || result.summary.import_edges_removed > 0 {
         out.push_str(&format!(
-            "  {} edges added, {} edges removed",
+            "  {} edges added, {} edges removed\n",
             result.summary.import_edges_added, result.summary.import_edges_removed,
+        ));
+    }
+
+    if !result.cycle_changes.is_empty() {
+        use crate::analysis::diff::CycleChangeKind;
+
+        let introduced: Vec<_> = result
+            .cycle_changes
+            .iter()
+            .filter(|c| c.change == CycleChangeKind::Introduced)
+            .collect();
+        let resolved: Vec<_> = result
+            .cycle_changes
+            .iter()
+            .filter(|c| c.change == CycleChangeKind::Resolved)
+            .collect();
+
+        if !introduced.is_empty() {
+            out.push_str(&format!(
+                "\nNew cycles introduced ({}):\n",
+                introduced.len()
+            ));
+            for c in &introduced {
+                let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
+                out.push_str(&format!("  ! {} (length {})\n", paths.join(" -> "), c.length));
+            }
+        }
+
+        if !resolved.is_empty() {
+            out.push_str(&format!("\nCycles resolved ({}):\n", resolved.len()));
+            for c in &resolved {
+                let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
+                out.push_str(&format!("  * {} (length {})\n", paths.join(" -> "), c.length));
+            }
+        }
+
+        out.push_str(&format!(
+            "  {} introduced, {} resolved\n",
+            result.summary.cycles_introduced, result.summary.cycles_resolved,
         ));
     }
 
@@ -2587,5 +3020,204 @@ mod tests {
         // The real cycle is a <-> b (1 cycle, 2 files)
         assert_eq!(cycles_result.cycles.len(), 1);
         assert_eq!(cycles_result.summary.files_in_cycles, 2);
+    }
+
+    // =========================================================================
+    // Graph command tests
+    // =========================================================================
+
+    fn make_test_graph() -> (FileGraph, PathBuf) {
+        let root = PathBuf::from("/project");
+        let mut graph = FileGraph::new();
+        graph.add_file(crate::model::file_graph::FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/main.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+        });
+        graph.add_file(crate::model::file_graph::FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("/project/src/utils.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(crate::model::file_graph::FileInfo {
+            id: FileId(3),
+            path: PathBuf::from("/project/src/db.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_import(crate::model::file_graph::FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["helper".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        graph.add_import(crate::model::file_graph::FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["query".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 2,
+        });
+        (graph, root)
+    }
+
+    #[test]
+    fn test_generate_dot_basic() {
+        let (graph, root) = make_test_graph();
+        let dot = generate_dot(&graph, &root, None);
+
+        assert!(dot.starts_with("digraph dependencies {"));
+        assert!(dot.contains("rankdir=LR"));
+        assert!(dot.contains("\"src/main.ts\""));
+        assert!(dot.contains("\"src/utils.ts\""));
+        assert!(dot.contains("\"src/db.ts\""));
+        assert!(dot.contains("\"src/main.ts\" -> \"src/utils.ts\""));
+        assert!(dot.contains("\"src/utils.ts\" -> \"src/db.ts\""));
+        assert!(dot.ends_with("}\n"));
+    }
+
+    #[test]
+    fn test_generate_dot_entry_point_coloring() {
+        let (graph, root) = make_test_graph();
+        let dot = generate_dot(&graph, &root, None);
+
+        // main.ts is entry point -> green
+        assert!(dot.contains("\"src/main.ts\" [fillcolor=\"#a8d8a8\"]"));
+        // utils.ts is not entry point -> default gray
+        assert!(dot.contains("\"src/utils.ts\" [fillcolor=\"#e8e8e8\"]"));
+    }
+
+    #[test]
+    fn test_generate_dot_focus_coloring() {
+        let (graph, root) = make_test_graph();
+        let dot = generate_dot(&graph, &root, Some(FileId(2)));
+
+        // Focus file gets blue color
+        assert!(dot.contains("\"src/utils.ts\" [fillcolor=\"#8888ff\"]"));
+        // Entry point still green (not focus)
+        assert!(dot.contains("\"src/main.ts\" [fillcolor=\"#a8d8a8\"]"));
+    }
+
+    #[test]
+    fn test_extract_subgraph_depth_1() {
+        let (graph, _root) = make_test_graph();
+        // Focus on utils.ts (FileId(2)) with depth 1
+        let sub = extract_subgraph(&graph, FileId(2), Some(1));
+
+        // Should include: utils(2), main(1) because main imports utils,
+        // and db(3) because utils imports db
+        assert_eq!(sub.file_count(), 3);
+        assert!(sub.get_file(FileId(1)).is_some());
+        assert!(sub.get_file(FileId(2)).is_some());
+        assert!(sub.get_file(FileId(3)).is_some());
+    }
+
+    #[test]
+    fn test_extract_subgraph_depth_limited() {
+        // Build a longer chain: A -> B -> C -> D
+        let mut graph = FileGraph::new();
+        for i in 1..=4u64 {
+            graph.add_file(crate::model::file_graph::FileInfo {
+                id: FileId(i),
+                path: PathBuf::from(format!("/project/f{}.ts", i)),
+                language: Language::TypeScript,
+                exports: vec![],
+                is_entry_point: i == 1,
+            });
+        }
+        graph.add_import(crate::model::file_graph::FileImport {
+            from: FileId(1),
+            to: FileId(2),
+            imported_names: vec!["a".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        graph.add_import(crate::model::file_graph::FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["b".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        graph.add_import(crate::model::file_graph::FileImport {
+            from: FileId(3),
+            to: FileId(4),
+            imported_names: vec!["c".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        // Focus on FileId(2) with depth 1: should get 1, 2, 3 but NOT 4
+        let sub = extract_subgraph(&graph, FileId(2), Some(1));
+        assert_eq!(sub.file_count(), 3);
+        assert!(sub.get_file(FileId(1)).is_some());
+        assert!(sub.get_file(FileId(2)).is_some());
+        assert!(sub.get_file(FileId(3)).is_some());
+        assert!(sub.get_file(FileId(4)).is_none());
+    }
+
+    #[test]
+    fn test_build_graph_json_structure() {
+        let (graph, root) = make_test_graph();
+        let json = build_graph_json(&graph, &root, None);
+
+        let nodes = json["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3);
+
+        let edges = json["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 2);
+
+        // Check summary
+        assert_eq!(json["summary"]["node_count"], 3);
+        assert_eq!(json["summary"]["edge_count"], 2);
+
+        // Check node structure
+        let node0 = &nodes[0];
+        assert!(node0["path"].as_str().is_some());
+        assert!(node0["is_entry_point"].as_bool().is_some());
+        assert!(node0["language"].as_str().is_some());
+
+        // Check edge structure
+        let edge0 = &edges[0];
+        assert!(edge0["from"].as_str().is_some());
+        assert!(edge0["to"].as_str().is_some());
+        assert!(edge0["imported_names"].as_array().is_some());
+    }
+
+    #[test]
+    fn test_build_graph_json_focus_flag() {
+        let (graph, root) = make_test_graph();
+        let json = build_graph_json(&graph, &root, Some(FileId(2)));
+
+        let nodes = json["nodes"].as_array().unwrap();
+        let focus_node = nodes.iter().find(|n| n["path"] == "src/utils.ts").unwrap();
+        assert_eq!(focus_node["is_focus"], true);
+
+        // Non-focus node should not have is_focus
+        let other_node = nodes.iter().find(|n| n["path"] == "src/main.ts").unwrap();
+        assert!(other_node.get("is_focus").is_none());
+    }
+
+    #[test]
+    fn test_generate_html_contains_json() {
+        let (graph, root) = make_test_graph();
+        let html = generate_html(&graph, &root, None);
+
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("const graphData ="));
+        assert!(html.contains("src/main.ts"));
+        assert!(html.contains("src/utils.ts"));
+        assert!(html.contains("requestAnimationFrame"));
     }
 }

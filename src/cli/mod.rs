@@ -176,6 +176,19 @@ pub enum Commands {
         #[arg(long)]
         file: Option<String>,
     },
+
+    /// Visualize dependency graph
+    Graph {
+        /// Output format: dot, svg, html (default: dot)
+        #[arg(long, default_value = "dot")]
+        graph_format: String,
+        /// Focus on a specific file (show only its neighborhood)
+        #[arg(long)]
+        focus: Option<String>,
+        /// Maximum depth from focus file (default: unlimited)
+        #[arg(long)]
+        depth: Option<usize>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
