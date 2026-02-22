@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::cycles::detect_cycles;
 use crate::db::Database;
 use crate::model::file_graph::FileGraph;
 
@@ -57,6 +58,25 @@ pub enum EdgeChangeKind {
     Removed,
 }
 
+/// A change in circular dependency cycles between two snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CycleChange {
+    /// Whether this cycle was introduced or resolved.
+    pub change: CycleChangeKind,
+    /// File paths in the cycle (sorted for deterministic output).
+    pub files: Vec<PathBuf>,
+    /// Number of files in the cycle.
+    pub length: usize,
+}
+
+/// Whether a cycle was introduced or resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CycleChangeKind {
+    Introduced,
+    Resolved,
+}
+
 /// Summary statistics for the diff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSummary {
@@ -69,6 +89,8 @@ pub struct DiffSummary {
     pub restructuring_changes: usize,
     pub import_edges_added: usize,
     pub import_edges_removed: usize,
+    pub cycles_introduced: usize,
+    pub cycles_resolved: usize,
 }
 
 /// Result of comparing two index snapshots.
@@ -76,6 +98,7 @@ pub struct DiffSummary {
 pub struct DiffResult {
     pub changes: Vec<ExportChange>,
     pub import_edge_changes: Vec<ImportEdgeChange>,
+    pub cycle_changes: Vec<CycleChange>,
     pub summary: DiffSummary,
 }
 
@@ -393,9 +416,26 @@ fn compare_snapshots_inner(
         .filter(|e| e.change == EdgeChangeKind::Removed)
         .count();
 
+    // Cycle comparison (only when graphs are provided)
+    let cycle_changes =
+        if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
+            compute_cycle_changes(g_before, g_after)
+        } else {
+            Vec::new()
+        };
+    let cycles_introduced = cycle_changes
+        .iter()
+        .filter(|c| c.change == CycleChangeKind::Introduced)
+        .count();
+    let cycles_resolved = cycle_changes
+        .iter()
+        .filter(|c| c.change == CycleChangeKind::Resolved)
+        .count();
+
     Ok(DiffResult {
         changes,
         import_edge_changes,
+        cycle_changes,
         summary: DiffSummary {
             files_added,
             files_removed,
@@ -406,6 +446,8 @@ fn compare_snapshots_inner(
             restructuring_changes,
             import_edges_added,
             import_edges_removed,
+            cycles_introduced,
+            cycles_resolved,
         },
     })
 }
@@ -495,6 +537,89 @@ fn collect_edges(graph: &FileGraph) -> HashMap<EdgeKey, Vec<String>> {
     }
 
     edges
+}
+
+/// Normalize a cycle to a canonical form for comparison: sorted set of file paths.
+fn normalize_cycle(cycle: &crate::analysis::cycles::Cycle) -> BTreeSet<PathBuf> {
+    cycle.files.iter().map(|f| f.path.clone()).collect()
+}
+
+/// Check if a graph has any Rust files (determines whether to filter mod declaration edges).
+fn has_rust_files(graph: &FileGraph) -> bool {
+    graph
+        .all_files()
+        .any(|(_, info)| info.language == crate::model::Language::Rust)
+}
+
+/// Compare cycles between two FileGraphs and produce change records.
+fn compute_cycle_changes(graph_before: &FileGraph, graph_after: &FileGraph) -> Vec<CycleChange> {
+    // For Rust projects, filter mod declaration edges before cycle detection
+    let before_for_cycles = if has_rust_files(graph_before) {
+        graph_before.without_mod_declaration_edges()
+    } else {
+        // Clone is not available on FileGraph, so we detect directly
+        // We'll detect on the original and on filtered versions
+        graph_before.without_mod_declaration_edges()
+    };
+    let after_for_cycles = if has_rust_files(graph_after) {
+        graph_after.without_mod_declaration_edges()
+    } else {
+        graph_after.without_mod_declaration_edges()
+    };
+
+    let cycles_before = detect_cycles(&before_for_cycles);
+    let cycles_after = detect_cycles(&after_for_cycles);
+
+    let normalized_before: HashSet<BTreeSet<PathBuf>> = cycles_before
+        .cycles
+        .iter()
+        .map(|c| normalize_cycle(c))
+        .collect();
+    let normalized_after: HashSet<BTreeSet<PathBuf>> = cycles_after
+        .cycles
+        .iter()
+        .map(|c| normalize_cycle(c))
+        .collect();
+
+    let mut changes = Vec::new();
+
+    // Introduced cycles: in after but not in before
+    for cycle_set in normalized_after.difference(&normalized_before) {
+        let mut files: Vec<PathBuf> = cycle_set.iter().cloned().collect();
+        files.sort();
+        let length = files.len();
+        changes.push(CycleChange {
+            change: CycleChangeKind::Introduced,
+            files,
+            length,
+        });
+    }
+
+    // Resolved cycles: in before but not in after
+    for cycle_set in normalized_before.difference(&normalized_after) {
+        let mut files: Vec<PathBuf> = cycle_set.iter().cloned().collect();
+        files.sort();
+        let length = files.len();
+        changes.push(CycleChange {
+            change: CycleChangeKind::Resolved,
+            files,
+            length,
+        });
+    }
+
+    // Sort by change kind (introduced first), then by first file path
+    changes.sort_by(|a, b| {
+        let kind_ord = match (&a.change, &b.change) {
+            (CycleChangeKind::Introduced, CycleChangeKind::Resolved) => std::cmp::Ordering::Less,
+            (CycleChangeKind::Resolved, CycleChangeKind::Introduced) => {
+                std::cmp::Ordering::Greater
+            }
+            _ => std::cmp::Ordering::Equal,
+        };
+        kind_ord.then_with(|| a.files.cmp(&b.files))
+    });
+
+    changes
 }
 
 #[cfg(test)]
@@ -1187,5 +1312,174 @@ mod tests {
             foo_change.affected_importers,
             vec![PathBuf::from("src/a.ts")]
         );
+    }
+
+    // =========================================================================
+    // Cycle introduction tracking tests
+    // =========================================================================
+
+    #[test]
+    fn test_cycle_introduced() {
+        let db = Database::in_memory().unwrap();
+
+        // Before: no cycle (a -> b)
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "a.ts"));
+        graph_before.add_file(make_file_info(2, "b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+
+        // After: cycle (a -> b -> a)
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "a.ts"));
+        graph_after.add_file(make_file_info(2, "b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"]));
+        graph_after.add_import(make_edge(2, 1, &["y"])); // introduces cycle
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert_eq!(result.cycle_changes.len(), 1);
+        assert_eq!(
+            result.cycle_changes[0].change,
+            CycleChangeKind::Introduced
+        );
+        assert_eq!(result.cycle_changes[0].length, 2);
+        assert!(result.cycle_changes[0].files.contains(&PathBuf::from("a.ts")));
+        assert!(result.cycle_changes[0].files.contains(&PathBuf::from("b.ts")));
+        assert_eq!(result.summary.cycles_introduced, 1);
+        assert_eq!(result.summary.cycles_resolved, 0);
+    }
+
+    #[test]
+    fn test_cycle_resolved() {
+        let db = Database::in_memory().unwrap();
+
+        // Before: cycle (a <-> b)
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "a.ts"));
+        graph_before.add_file(make_file_info(2, "b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+        graph_before.add_import(make_edge(2, 1, &["y"]));
+
+        // After: no cycle (a -> b only)
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "a.ts"));
+        graph_after.add_file(make_file_info(2, "b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert_eq!(result.cycle_changes.len(), 1);
+        assert_eq!(result.cycle_changes[0].change, CycleChangeKind::Resolved);
+        assert_eq!(result.cycle_changes[0].length, 2);
+        assert_eq!(result.summary.cycles_introduced, 0);
+        assert_eq!(result.summary.cycles_resolved, 1);
+    }
+
+    #[test]
+    fn test_cycle_unchanged() {
+        let db = Database::in_memory().unwrap();
+
+        // Same cycle in both
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "a.ts"));
+        graph_before.add_file(make_file_info(2, "b.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+        graph_before.add_import(make_edge(2, 1, &["y"]));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "a.ts"));
+        graph_after.add_file(make_file_info(2, "b.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"]));
+        graph_after.add_import(make_edge(2, 1, &["y"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert!(result.cycle_changes.is_empty());
+        assert_eq!(result.summary.cycles_introduced, 0);
+        assert_eq!(result.summary.cycles_resolved, 0);
+    }
+
+    #[test]
+    fn test_multiple_cycle_changes() {
+        let db = Database::in_memory().unwrap();
+
+        // Before: cycle a<->b
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "a.ts"));
+        graph_before.add_file(make_file_info(2, "b.ts"));
+        graph_before.add_file(make_file_info(3, "c.ts"));
+        graph_before.add_file(make_file_info(4, "d.ts"));
+        graph_before.add_import(make_edge(1, 2, &["x"]));
+        graph_before.add_import(make_edge(2, 1, &["y"])); // cycle a<->b
+
+        // After: cycle a<->b is gone, new cycle c<->d
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "a.ts"));
+        graph_after.add_file(make_file_info(2, "b.ts"));
+        graph_after.add_file(make_file_info(3, "c.ts"));
+        graph_after.add_file(make_file_info(4, "d.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"])); // a->b (no cycle)
+        graph_after.add_import(make_edge(3, 4, &["z"]));
+        graph_after.add_import(make_edge(4, 3, &["w"])); // new cycle c<->d
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert_eq!(result.cycle_changes.len(), 2);
+        assert_eq!(result.summary.cycles_introduced, 1);
+        assert_eq!(result.summary.cycles_resolved, 1);
+
+        // Introduced should be listed before resolved
+        let introduced: Vec<_> = result
+            .cycle_changes
+            .iter()
+            .filter(|c| c.change == CycleChangeKind::Introduced)
+            .collect();
+        let resolved: Vec<_> = result
+            .cycle_changes
+            .iter()
+            .filter(|c| c.change == CycleChangeKind::Resolved)
+            .collect();
+        assert_eq!(introduced.len(), 1);
+        assert_eq!(resolved.len(), 1);
+        assert!(introduced[0].files.contains(&PathBuf::from("c.ts")));
+        assert!(resolved[0].files.contains(&PathBuf::from("a.ts")));
+    }
+
+    #[test]
+    fn test_no_cycle_changes_without_graphs() {
+        let before = Database::in_memory().unwrap();
+        let after = Database::in_memory().unwrap();
+
+        let result = compare_snapshots(&before, &after).unwrap();
+        assert!(result.cycle_changes.is_empty());
+        assert_eq!(result.summary.cycles_introduced, 0);
+        assert_eq!(result.summary.cycles_resolved, 0);
+    }
+
+    #[test]
+    fn test_cycle_files_sorted_in_output() {
+        let db = Database::in_memory().unwrap();
+
+        let mut graph_before = FileGraph::new();
+        graph_before.add_file(make_file_info(1, "z.ts"));
+        graph_before.add_file(make_file_info(2, "a.ts"));
+
+        let mut graph_after = FileGraph::new();
+        graph_after.add_file(make_file_info(1, "z.ts"));
+        graph_after.add_file(make_file_info(2, "a.ts"));
+        graph_after.add_import(make_edge(1, 2, &["x"]));
+        graph_after.add_import(make_edge(2, 1, &["y"]));
+
+        let result =
+            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+
+        assert_eq!(result.cycle_changes.len(), 1);
+        // Files should be sorted: a.ts before z.ts
+        assert_eq!(result.cycle_changes[0].files[0], PathBuf::from("a.ts"));
+        assert_eq!(result.cycle_changes[0].files[1], PathBuf::from("z.ts"));
     }
 }
