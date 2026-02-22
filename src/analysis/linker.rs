@@ -279,6 +279,13 @@ pub fn link_cross_file_symbols(
         }
     }
 
+    // Deduplicate references from grouped use imports (e.g. `use crate::model::{A, B, C}`)
+    // where the same (source_file, target_symbol, line) can appear multiple times.
+    {
+        let mut seen = HashSet::new();
+        references.retain(|r| seen.insert((r.source_file, r.target_symbol, r.line)));
+    }
+
     LinkingResult {
         resolved,
         unresolved,
@@ -854,5 +861,34 @@ mod tests {
             .collect();
         assert_eq!(refs_from_b.len(), 1);
         assert_eq!(refs_from_b[0].confidence, Confidence::High);
+    }
+
+    #[test]
+    fn test_grouped_use_import_deduplicated() {
+        // Simulate a grouped use import like `use crate::model::{A, B}` where
+        // multiple edge imported_names resolve to the same target symbol.
+        // Two edges from the same file/line importing the same name should be deduped.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file_info(FileId(1), "src/a.rs", vec![], false));
+        graph.add_file(make_file_info(
+            FileId(2),
+            "src/b.rs",
+            vec![make_export(FileId(2), SymbolId(100), "Foo", false, false, None)],
+            false,
+        ));
+
+        // Two separate edges from the same line importing "Foo" (simulates grouped use)
+        graph.add_import(make_edge(FileId(1), FileId(2), vec!["Foo"], 8));
+        graph.add_import(make_edge(FileId(1), FileId(2), vec!["Foo"], 8));
+
+        let result = link_cross_file_symbols(&graph);
+
+        // Should be deduplicated to 1 reference
+        let refs_from_a: Vec<_> = result
+            .references
+            .iter()
+            .filter(|r| r.source_file == FileId(1) && r.imported_name == "Foo")
+            .collect();
+        assert_eq!(refs_from_a.len(), 1);
     }
 }
