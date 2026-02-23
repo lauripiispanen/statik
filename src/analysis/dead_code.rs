@@ -168,14 +168,12 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
             }
         }
 
-        // Rust module-path imports: when code does `use crate::cli::commands`
-        // and calls `commands::run_deps()`, the imported_name is "commands"
-        // (the module name) but exports are individual symbols like "run_deps".
-        // If the imported name matches the target file's stem, mark all exports used.
+        // Module-path imports: when the imported name matches the target file's
+        // stem, mark all exports as used (e.g. Rust's `use crate::cli::commands`).
         for edges in graph.imports.values() {
             for edge in edges {
                 if let Some(target_info) = graph.files.get(&edge.to) {
-                    if target_info.language == crate::model::Language::Rust {
+                    if super::supports_module_stem_import(target_info.language) {
                         let file_stem = target_info
                             .path
                             .file_stem()
@@ -183,7 +181,6 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
                             .unwrap_or("");
                         for name in &edge.imported_names {
                             if name == file_stem {
-                                // Module-level import: mark all exports as used
                                 for export in &target_info.exports {
                                     imported_names
                                         .insert((edge.to, export.exported_name.clone()));

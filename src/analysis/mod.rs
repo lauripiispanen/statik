@@ -46,6 +46,16 @@ pub struct Limitation {
     pub count: usize,
 }
 
+/// Check if a language supports module-level imports where importing a name
+/// that matches the file stem implicitly imports all of the module's exports.
+///
+/// Example: Rust's `use crate::cli::commands` imports the module name "commands"
+/// but the actual exports are individual symbols like "run_deps", "build_file_graph".
+pub fn supports_module_stem_import(lang: crate::model::Language) -> bool {
+    matches!(lang, crate::model::Language::Rust)
+    // Go and Python will be added here when their parsers are implemented
+}
+
 /// Compute overall confidence from the state of the graph.
 pub fn compute_confidence(
     total_imports: usize,

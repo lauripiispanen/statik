@@ -273,11 +273,9 @@ pub fn link_cross_file_symbols(
                     });
                     resolved += 1;
                 } else if let Some(target_info) = file_graph.get_file(edge.to) {
-                    // Rust module-path imports: `use crate::cli::commands` imports the
-                    // module name "commands" but actual exports are "run_deps" etc.
-                    // When the imported name matches the target file's stem, resolve
-                    // to all exports of that file.
-                    if target_info.language == Language::Rust {
+                    // Module-path imports: when the imported name matches the target
+                    // file's stem, resolve to all exports (e.g. Rust's `use crate::foo`).
+                    if super::supports_module_stem_import(target_info.language) {
                         let file_stem = target_info
                             .path
                             .file_stem()
