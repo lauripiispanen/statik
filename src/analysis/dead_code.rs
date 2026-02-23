@@ -390,10 +390,20 @@ pub fn detect_dead_symbols(
     };
 
     for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
+        for &sym_id in symbol_ids {
+            if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
+                // Symbols inside `mod tests` blocks are always test infrastructure,
+                // regardless of whether the file is an entry point.
+                if is_in_test_module(symbol) {
+                    entry_symbols.push(sym_id);
+                    continue;
+                }
+            }
+        }
+
         if entry_file_ids.contains(&file_id) {
             // All non-private symbols in entry point files are entry points.
-            // Additionally: main() at file scope is always seeded (private in Rust),
-            // and all symbols inside `mod tests` blocks are seeded (inline test modules).
+            // Additionally: main() at file scope is always seeded (private in Rust).
             for &sym_id in symbol_ids {
                 if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
                     if symbol.visibility != Visibility::Private {
@@ -402,8 +412,6 @@ pub fn detect_dead_symbols(
                         && symbol.parent.is_none()
                         && matches!(symbol.kind, SymbolKind::Function)
                     {
-                        entry_symbols.push(sym_id);
-                    } else if is_in_test_module(symbol) {
                         entry_symbols.push(sym_id);
                     }
                 }
