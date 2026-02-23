@@ -511,7 +511,7 @@ impl<'a> Extractor<'a> {
         });
 
         // Export if pub at file scope or in pub parent
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -560,7 +560,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("struct {}", name)),
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -596,7 +596,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("enum {}", name)),
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -665,7 +665,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("trait {}", name)),
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -749,7 +749,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("type {}", name)),
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -785,7 +785,7 @@ impl<'a> Extractor<'a> {
             signature: None,
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -821,7 +821,7 @@ impl<'a> Extractor<'a> {
             signature: None,
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -857,7 +857,7 @@ impl<'a> Extractor<'a> {
             signature: Some(format!("mod {}", name)),
         });
 
-        if vis == Visibility::Public && self.parent_stack.is_empty() {
+        if vis != Visibility::Private && self.parent_stack.is_empty() {
             self.exports.push(ExportRecord {
                 file: self.file_id,
                 symbol: id,
@@ -1690,13 +1690,16 @@ impl Foo {
     }
 
     #[test]
-    fn test_pub_crate_not_exported() {
+    fn test_pub_crate_is_exported() {
         let result = parse_rust("pub(crate) fn internal() {}");
-        // pub(crate) items are Protected, not exported at file scope
-        assert!(
-            result.exports.is_empty(),
-            "pub(crate) functions should not be exported"
+        // pub(crate) items are accessible within the crate, so they must be exported
+        // for the cross-file linker to resolve imports of them.
+        assert_eq!(
+            result.exports.len(),
+            1,
+            "pub(crate) functions should be exported for intra-crate linking"
         );
+        assert_eq!(result.exports[0].exported_name, "internal");
     }
 
     #[test]

@@ -378,10 +378,13 @@ pub fn detect_dead_symbols(
 
     for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
         if entry_file_ids.contains(&file_id) {
-            // All public symbols in entry point files are entry points
+            // All non-private symbols in entry point files are entry points.
+            // This includes Public and Protected (pub(crate), pub(super), Java protected).
+            // Private symbols in entry files are NOT seeded — they must be reachable
+            // from a non-private symbol via intra-file references.
             for &sym_id in symbol_ids {
                 if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
-                    if symbol.visibility == Visibility::Public {
+                    if symbol.visibility != Visibility::Private {
                         entry_symbols.push(sym_id);
                     }
                 }
