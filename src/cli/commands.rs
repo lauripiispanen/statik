@@ -35,6 +35,10 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         )?)
     };
 
+    // Build language semantics for entry point detection
+    let registry = crate::parser::ParserRegistry::with_defaults();
+    let semantics = registry.semantics_map();
+
     // Collect all known file paths for resolvers
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
@@ -60,16 +64,19 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     }
 
     // Pre-scan all files for annotation/attribute-based entry points.
-    // Java uses @Test, @SpringBootApplication, etc. Rust uses #[test], etc.
-    // The annotation mechanism is language-agnostic: parsers emit @annotation:
-    // synthetic imports, and we check them against a universal list.
+    // Each language defines its own entry point annotations via LanguageSemantics.
+    // Parsers emit @annotation: synthetic imports which we check here.
     let mut annotation_entry_files: std::collections::HashSet<FileId> =
         std::collections::HashSet::new();
     for file in &files {
         if let Some(imports) = imports_by_file.get(&file.id) {
+            let lang_annotations = semantics
+                .get(&file.language)
+                .map(|s| s.entry_point_annotations())
+                .unwrap_or(&[]);
             for import in imports {
                 if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                    if is_entry_point_annotation(ann)
+                    if lang_annotations.iter().any(|a| *a == ann)
                         || ep_config.annotations.iter().any(|a| a == ann)
                     {
                         annotation_entry_files.insert(file.id);
@@ -84,7 +91,8 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     for file in &files {
         let exports = exports_by_file.remove(&file.id).unwrap_or_default();
         let rel_path = crate::linting::matcher::to_relative(&file.path, project_root);
-        let is_entry = is_entry_point(&file.path)
+        let lang_sem = semantics.get(&file.language).copied();
+        let is_entry = is_entry_point(&file.path, lang_sem)
             || annotation_entry_files.contains(&file.id)
             || custom_pattern_matcher
                 .as_ref()
@@ -289,35 +297,17 @@ fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
     Ok(graph)
 }
 
-const ENTRY_POINT_ANNOTATIONS: &[&str] = &[
-    // Universal
-    "test",  // Rust #[test], pytest conventions
-    // Java / Spring
-    "SpringBootApplication",
-    "Test",
-    "ParameterizedTest",
-    "RepeatedTest",
-    "Component",
-    "Service",
-    "Repository",
-    "Controller",
-    "RestController",
-    "Configuration",
-    "Bean",
-    "Endpoint",
-    "WebServlet",
-];
-
-fn is_entry_point_annotation(name: &str) -> bool {
-    ENTRY_POINT_ANNOTATIONS.contains(&name)
-}
-
 /// Check if a file is an entry point.
-fn is_entry_point(path: &Path) -> bool {
+///
+/// Universal patterns (index, main, app, server, cli) are checked first.
+/// Language-specific patterns are delegated to `LanguageSemantics`.
+fn is_entry_point(
+    path: &Path,
+    semantics: Option<&dyn crate::model::LanguageSemantics>,
+) -> bool {
     let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let file_name_with_ext = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
+    // Universal entry point patterns
     let entry_patterns = ["index", "main", "app", "server", "cli"];
     for pattern in &entry_patterns {
         if file_name == *pattern {
@@ -325,54 +315,9 @@ fn is_entry_point(path: &Path) -> bool {
         }
     }
 
-    // TS/JS test files are entry points
-    if file_name_with_ext.contains(".test.")
-        || file_name_with_ext.contains(".spec.")
-        || file_name.ends_with("_test")
-        || file_name.ends_with("_spec")
-    {
-        return true;
-    }
-
-    // Java-specific entry points
-    if ext == "java" {
-        // JUnit test conventions
-        if file_name.ends_with("Test")
-            || file_name.ends_with("Tests")
-            || file_name.ends_with("IT")
-            || file_name.starts_with("Test")
-        {
-            return true;
-        }
-        // Spring Boot entry point
-        if file_name == "Application" {
-            return true;
-        }
-    }
-
-    // Rust-specific entry points
-    if ext == "rs" {
-        if file_name == "lib" {
-            return true;
-        }
-        // Files in src/bin/ are binary entry points
-        if path.components().any(|c| c.as_os_str() == "bin") {
-            return true;
-        }
-        // Integration test directory
-        if path.components().any(|c| c.as_os_str() == "tests") {
-            return true;
-        }
-        // Examples
-        if path.components().any(|c| c.as_os_str() == "examples") {
-            return true;
-        }
-        // Benchmark files
-        if path.components().any(|c| c.as_os_str() == "benches") {
-            return true;
-        }
-        // Build script
-        if file_name == "build" {
+    // Language-specific entry point detection
+    if let Some(sem) = semantics {
+        if sem.is_entry_point_file(path) {
             return true;
         }
     }
