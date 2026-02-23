@@ -380,6 +380,51 @@ fn is_entry_point(path: &Path) -> bool {
     false
 }
 
+/// Build the set of file IDs where ALL symbols should be seeded as alive.
+///
+/// Combines two sources:
+/// 1. Language defaults: files under directories named in `seed_all_symbols_dirs()`
+///    (e.g., `tests/`, `examples/`, `benches/` for Rust, `test/` for Java)
+/// 2. User config: files matching `entry_points.seed_all_patterns` globs
+fn build_seed_all_file_ids(file_graph: &FileGraph, project_root: &Path) -> HashSet<FileId> {
+    let registry = crate::parser::ParserRegistry::with_defaults();
+    let semantics = registry.semantics_map();
+    let ep_config = crate::linting::config::load_entry_point_config(project_root);
+
+    let config_matcher = if ep_config.seed_all_patterns.is_empty() {
+        None
+    } else {
+        crate::linting::matcher::FileMatcher::new(&ep_config.seed_all_patterns).ok()
+    };
+
+    let mut seed_all = HashSet::new();
+    for (file_id, info) in &file_graph.files {
+        let rel_path = crate::linting::matcher::to_relative(&info.path, project_root);
+
+        // Check language-specific seed-all directories
+        if let Some(sem) = semantics.get(&info.language) {
+            let dirs = sem.seed_all_symbols_dirs();
+            if !dirs.is_empty()
+                && info.path.components().any(|c| {
+                    dirs.iter()
+                        .any(|d| c.as_os_str().to_str().is_some_and(|s| s == *d))
+                })
+            {
+                seed_all.insert(*file_id);
+                continue;
+            }
+        }
+
+        // Check user-configured seed-all patterns
+        if let Some(ref matcher) = config_matcher {
+            if matcher.matches(rel_path) {
+                seed_all.insert(*file_id);
+            }
+        }
+    }
+    seed_all
+}
+
 /// Ensure index exists, creating it if needed.
 pub fn ensure_index(project_path: &Path, no_index: bool) -> Result<Database> {
     let statik_dir = project_path.join(".statik");
@@ -608,10 +653,16 @@ pub fn run_dead_code(
         let file_graph = maybe_filter_paths(file_graph, path_glob, project_path)?;
         let symbol_graph = build_symbol_graph(&db)?;
         let linker_result = crate::analysis::linker::link_cross_file_symbols(&file_graph);
+
+        // Build the set of files where ALL symbols should be seeded as alive.
+        // This combines language-specific test directories and user config patterns.
+        let seed_all_file_ids = build_seed_all_file_ids(&file_graph, project_path);
+
         let result = crate::analysis::dead_code::detect_dead_symbols(
             &symbol_graph,
             &file_graph,
             &linker_result,
+            &seed_all_file_ids,
         );
         return Ok(match format {
             OutputFormat::Text => format_dead_symbols_text(&result),

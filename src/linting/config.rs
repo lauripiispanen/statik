@@ -209,6 +209,11 @@ pub struct EntryPointConfig {
     /// Annotation names that mark entry points (e.g., `"Scheduled"`).
     #[serde(default)]
     pub annotations: Vec<String>,
+    /// Glob patterns matching files where ALL symbols should be seeded as alive.
+    /// Use for test fixtures, test utilities, and other directories where every
+    /// symbol is considered live infrastructure (e.g., `"test-fixtures/**"`).
+    #[serde(default)]
+    pub seed_all_patterns: Vec<String>,
 }
 
 /// Wrapper for deserializing the optional `[entry_points]` section.

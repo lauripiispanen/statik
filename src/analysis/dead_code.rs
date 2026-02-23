@@ -353,10 +353,15 @@ fn propagate_through_reexports(graph: &FileGraph, imported_names: &mut HashSet<(
 /// For non-entry files, only exports that are actually imported (per linker results)
 /// are seeded as entry points. BFS through intra-file references from entry points.
 /// Unreachable symbols (excluding Import/Export/Package synthetic kinds) are dead.
+///
+/// `seed_all_file_ids` contains files where ALL symbols should be seeded as alive,
+/// regardless of visibility. This covers test directories (from language semantics)
+/// and user-configured patterns (e.g., test fixtures).
 pub fn detect_dead_symbols(
     symbol_graph: &SymbolGraph,
     file_graph: &FileGraph,
     linker_result: &LinkingResult,
+    seed_all_file_ids: &HashSet<FileId>,
 ) -> DeadSymbolResult {
     // Determine entry point file IDs from the file graph
     let entry_file_ids: HashSet<FileId> = file_graph.entry_points().into_iter().collect();
@@ -401,7 +406,13 @@ pub fn detect_dead_symbols(
             }
         }
 
-        if entry_file_ids.contains(&file_id) {
+        if seed_all_file_ids.contains(&file_id) {
+            // Files in seed-all directories (test dirs, fixtures, etc.):
+            // ALL symbols are considered alive regardless of visibility.
+            for &sym_id in symbol_ids {
+                entry_symbols.push(sym_id);
+            }
+        } else if entry_file_ids.contains(&file_id) {
             // All non-private symbols in entry point files are entry points.
             // Additionally: main() at file scope is always seeded (private in Rust).
             for &sym_id in symbol_ids {
@@ -1203,7 +1214,7 @@ mod tests {
         });
         sym_graph.add_parse_result(result);
 
-        let dead_result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let dead_result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
 
         // dead_fn should be dead (private, never referenced)
         let dead_names: Vec<&str> = dead_result
@@ -1281,7 +1292,7 @@ mod tests {
         let sym_graph = SymbolGraph::new();
         let file_graph = FileGraph::new();
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
         assert!(result.dead_symbols.is_empty());
         assert_eq!(result.summary.total_symbols, 0);
         assert_eq!(result.summary.entry_point_symbols, 0);
@@ -1380,7 +1391,7 @@ mod tests {
             }],
         };
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1428,7 +1439,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1475,7 +1486,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1536,7 +1547,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
 
         // With an empty linker (no cross-file imports), confidence is High
         // because there's nothing unresolved at the cross-file level.
@@ -1550,7 +1561,7 @@ mod tests {
             unresolved: 3,
             references: vec![],
         };
-        let result2 = detect_dead_symbols(&sym_graph, &file_graph, &linker_with_unresolved);
+        let result2 = detect_dead_symbols(&sym_graph, &file_graph, &linker_with_unresolved, &HashSet::new());
         assert_eq!(result2.confidence, Confidence::Medium);
         assert_eq!(result2.summary.unresolved_references, 3);
         assert!(!result2.limitations.is_empty());
@@ -1587,7 +1598,7 @@ mod tests {
             annotations: vec![],
         });
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker());
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_symbols
             .iter()
@@ -1759,7 +1770,7 @@ mod tests {
             references: linker_refs,
         };
 
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result, &HashSet::new());
 
         let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
         let dead_names: Vec<String> = result
@@ -2249,7 +2260,7 @@ mod tests {
             unresolved: 0,
             references: vec![],
         };
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &good_linker);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &good_linker, &HashSet::new());
         assert_eq!(result.confidence, Confidence::High);
         assert!(result.limitations.is_empty());
 
@@ -2259,7 +2270,7 @@ mod tests {
             unresolved: 3,
             references: vec![],
         };
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &bad_linker);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &bad_linker, &HashSet::new());
         assert_eq!(result.confidence, Confidence::Medium);
         assert!(!result.limitations.is_empty());
         assert_eq!(result.summary.unresolved_references, 3);
@@ -2402,7 +2413,7 @@ mod tests {
         assert_eq!(xref.target_file, FileId(2));
 
         // Step 2: Feed linker result into detect_dead_symbols
-        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result);
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result, &HashSet::new());
 
         let dead_names: Vec<&str> = result
             .dead_symbols
