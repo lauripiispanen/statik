@@ -1697,13 +1697,13 @@ because `resolve_fqn()` tries `{wrong_root}/com/example/Foo.java`.
    Config takes precedence when present; auto-detection is the fallback.
 
 Tasks:
-- [ ] Add `detect_all_source_roots()` that walks known files to find all
+- [x] Add `detect_all_source_roots()` that walks known files to find all
   `src/main/java` (etc.) directories, not just at the project root
-- [ ] Verify detected roots using package declarations from known files
-- [ ] Add `[java]` config section with `source_roots: Vec<String>`
-- [ ] Pass configured source roots to `JavaResolver::new()` when available
-- [ ] Add unit tests for multi-root detection
-- [ ] Add integration test using `tests/fixtures/java_monorepo/`
+- [x] Verify detected roots using package declarations from known files
+- [x] Add `[java]` config section with `source_roots: Vec<String>`
+- [x] Pass configured source roots to `JavaResolver::new()` when available
+- [x] Add unit tests for multi-root detection
+- [x] Add integration test using `tests/fixtures/java_monorepo/`
 
 **Acceptance**: `statik deps` on a multi-module Java monorepo correctly resolves
 cross-module imports. Unresolved import ratio drops from 86% to <5% for
@@ -1724,10 +1724,10 @@ dead code analysis.
 returned 8,888 dead files (the global total).
 
 Tasks:
-- [ ] Trace the `--lang` filter path through `run_dead_code()` and identify
+- [x] Trace the `--lang` filter path through `run_dead_code()` and identify
   where it's dropped
-- [ ] Apply language filter to dead file and dead export results before output
-- [ ] Add test: `dead-code --lang java` on a mixed project returns only Java files
+- [x] Apply language filter to dead file and dead export results before output
+- [x] Add test: `dead-code --lang java` on a mixed project returns only Java files
 
 **Acceptance**: `statik dead-code --lang java` returns only dead Java files.
 
@@ -1746,9 +1746,9 @@ query, not to assert. If the intent is "fail when count > 0", that should be
 a separate flag (e.g., `--fail-on-findings`).
 
 Tasks:
-- [ ] Audit exit code logic for `--count` across all commands
-- [ ] Exit 0 when `--count` is used (informational mode)
-- [ ] Add test: `dead-code --count` exits 0 even when dead code exists
+- [x] Audit exit code logic for `--count` across all commands
+- [x] Exit 0 when `--count` is used (informational mode)
+- [x] Add test: `dead-code --count` exits 0 even when dead code exists
 
 **Acceptance**: `statik dead-code --count` exits 0.
 
@@ -1771,10 +1771,10 @@ cycles:
 ```
 
 Tasks:
-- [ ] Debug the text formatter for cycles — likely a rendering bug where
+- [x] Debug the text formatter for cycles — likely a rendering bug where
   cycles are present in the data but the text formatter doesn't iterate them
-- [ ] Ensure text format shows cycle chains (A -> B -> C -> A) for each cycle
-- [ ] Add test: `cycles --format text` on a project with cycles shows file paths
+- [x] Ensure text format shows cycle chains (A -> B -> C -> A) for each cycle
+- [x] Add test: `cycles --format text` on a project with cycles shows file paths
 
 **Acceptance**: `statik cycles` (text format) shows cycle chains, not just
 the summary line.
@@ -1796,7 +1796,7 @@ when the project root isn't a JS project itself (e.g., a Java monorepo with
 a nested JS tool).
 
 Tasks:
-- [ ] Add `**/node_modules/**` to the global default exclude list (not just
+- [x] Add `**/node_modules/**` to the global default exclude list (not just
   TS-specific)
 - [ ] Consider also excluding `**/vendor/**`, `**/third_party/**`,
   `**/external/**` by default
@@ -1833,6 +1833,50 @@ Tasks:
 **Acceptance**: Running statik on a project with high unresolved imports
 shows a clear warning rather than silently reporting thousands of false
 positives.
+
+---
+
+### 9.7 Dead file confidence incorrectly downgraded by outgoing imports
+**Complexity**: S | **Status**: DONE
+**Files**: `src/analysis/dead_code.rs`
+
+Files with unresolved *outgoing* imports (e.g., `import java.util.HashMap`) were
+marked `Medium` confidence. This was wrong — outgoing edges don't affect
+reachability. Removed the per-file Medium branch; graph-level `High` already
+handles the uncertainty correctly. Added 3 tests.
+
+---
+
+### 9.8 Java same-package references without import statements
+**Complexity**: M
+**Files**: `src/parser/java.rs`, `src/resolver/java.rs`
+
+In Java, same-package classes can be referenced without an import statement.
+The parser only creates edges from `import` lines, so these references are
+invisible. The `@type-ref:` mechanism handles some cases already.
+
+Dogfooding suggests the actual false-positive rate is low (dead clusters are
+correctly dead), but the gap needs quantification. See `DOGFOOD_NOTES.md`.
+
+Tasks:
+- [ ] Audit `resolve_type_ref()` coverage for all Java reference patterns
+- [ ] Quantify impact: how many dead files would become alive with full
+  same-package resolution?
+- [ ] If significant, expand `@type-ref:` or add implicit same-package edges
+
+---
+
+### 9.9 `unresolved_imports` count conflates external and truly unresolved
+**Complexity**: S
+**Files**: `src/cli/commands.rs`
+
+The summary `unresolved_imports` includes both `External` (correctly classified
+third-party libs) and `FileNotFound` (genuinely broken). This produces confusing
+numbers where unresolved exceeds total. See `DOGFOOD_NOTES.md` for details.
+
+Tasks:
+- [ ] Split count into `external_imports` and `unresolved_imports`
+- [ ] Only flag `FileNotFound` as a problem in the summary
 
 ---
 

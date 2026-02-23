@@ -143,16 +143,15 @@ pub fn detect_dead_code(
             if !reachable.contains(file_id) {
                 let info = &graph.files[file_id];
 
-                // Determine confidence for this specific finding
+                // Determine confidence for this specific finding.
+                // A file's own unresolved outgoing imports (e.g. java.util.*)
+                // don't affect whether it's reachable — only incoming edges
+                // matter. Confidence is reduced only at the graph level: if
+                // other files have unresolved imports, one of them might
+                // reference this file.
                 let file_confidence = if unresolved_count == 0 {
                     Confidence::Certain
-                } else if unresolved_file_set.contains(file_id) {
-                    // This file itself has unresolved imports, so something
-                    // might be importing it that we can't see
-                    Confidence::Medium
                 } else if files_with_unresolvable > 0 {
-                    // Some other files have unresolved imports that might
-                    // point to this file
                     Confidence::High
                 } else {
                     Confidence::Certain
@@ -684,7 +683,7 @@ fn bfs_reachable(graph: &FileGraph, entry_points: &[FileId]) -> HashSet<FileId> 
 mod tests {
     use super::*;
     use crate::analysis::linker::LinkingResult;
-    use crate::model::file_graph::{FileImport, FileInfo};
+    use crate::model::file_graph::{FileImport, FileInfo, UnresolvedImport, UnresolvedReason};
     use crate::model::{
         FileRecord, Language, LineSpan, Position, RefKind, Reference, ReferenceId, Span, Symbol,
     };
@@ -1223,6 +1222,85 @@ mod tests {
         let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
         // With wildcards and no unresolved, confidence should be High (not Certain)
         assert_eq!(result.confidence, Confidence::High);
+    }
+
+    #[test]
+    fn test_dead_file_with_own_unresolved_outgoing_imports_still_high_confidence() {
+        // A dead file that has unresolved outgoing imports (e.g. `import java.util.HashMap`)
+        // should NOT have reduced confidence. Its own outgoing edges are irrelevant
+        // to whether it's reachable — only incoming edges matter.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "src/used.ts", false));
+        graph.add_file(make_file(3, "src/orphan.ts", false)); // dead
+
+        graph.add_import(make_edge(1, 2, &["helper"]));
+
+        // The orphan file has an unresolved outgoing import (e.g. external lib)
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(3),
+            import_path: "java.util.HashMap".to_string(),
+            reason: UnresolvedReason::External("java.util".to_string()),
+            line: 1,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
+        assert_eq!(result.dead_files.len(), 1);
+        assert_eq!(result.dead_files[0].path, PathBuf::from("src/orphan.ts"));
+        // Should be High, not Medium — the orphan's own outgoing imports
+        // don't affect whether it's reachable
+        assert_eq!(
+            result.dead_files[0].confidence,
+            Confidence::High,
+            "Dead file's own unresolved outgoing imports should not reduce confidence to Medium"
+        );
+    }
+
+    #[test]
+    fn test_dead_file_confidence_high_when_other_files_have_unresolved() {
+        // If some other file has unresolved imports, a dead file should be High
+        // confidence (not Certain), because the unresolved import might point here.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "src/used.ts", false));
+        graph.add_file(make_file(3, "src/orphan.ts", false)); // dead
+
+        graph.add_import(make_edge(1, 2, &["helper"]));
+
+        // A different file (the used one) has an unresolved import
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(2),
+            import_path: "some-missing-module".to_string(),
+            reason: UnresolvedReason::FileNotFound("some-missing-module".to_string()),
+            line: 5,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
+        assert_eq!(result.dead_files.len(), 1);
+        assert_eq!(
+            result.dead_files[0].confidence,
+            Confidence::High,
+            "Should be High when other files have unresolved imports"
+        );
+    }
+
+    #[test]
+    fn test_dead_file_confidence_certain_when_no_unresolved() {
+        // With no unresolved imports anywhere, dead files should be Certain.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "src/used.ts", false));
+        graph.add_file(make_file(3, "src/orphan.ts", false)); // dead
+
+        graph.add_import(make_edge(1, 2, &["helper"]));
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
+        assert_eq!(result.dead_files.len(), 1);
+        assert_eq!(
+            result.dead_files[0].confidence,
+            Confidence::Certain,
+            "Should be Certain when no unresolved imports exist"
+        );
     }
 
     #[test]
