@@ -1088,65 +1088,11 @@ impl<'a> Extractor<'a> {
     // --- Intra-file resolution ---
 
     fn resolve_intra_file_refs(&mut self) {
-        use std::collections::HashMap;
-
-        let mut name_to_id: HashMap<&str, Option<SymbolId>> = HashMap::new();
-        for symbol in &self.symbols {
-            match name_to_id.get(symbol.name.as_str()) {
-                None => {
-                    name_to_id.insert(&symbol.name, Some(symbol.id));
-                }
-                Some(Some(_)) => {
-                    name_to_id.insert(&symbol.name, None);
-                }
-                Some(None) => {}
-            }
-        }
-
-        // Build scoped lookup: (name, parent) -> Vec<SymbolId> for ambiguous names
-        let mut scoped: HashMap<(&str, Option<SymbolId>), Vec<SymbolId>> = HashMap::new();
-        for symbol in &self.symbols {
-            if name_to_id.get(symbol.name.as_str()) == Some(&None) {
-                scoped
-                    .entry((&symbol.name, symbol.parent))
-                    .or_default()
-                    .push(symbol.id);
-            }
-        }
-
-        // Build source -> parent lookup
-        let sym_parent: HashMap<SymbolId, Option<SymbolId>> = self
-            .symbols
-            .iter()
-            .map(|s| (s.id, s.parent))
-            .collect();
-
-        for (i, reference) in self.references.iter_mut().enumerate() {
-            if reference.target.0 >= u64::MAX - 1_000_000 {
-                if let Some(target_name) = self.ref_target_names.get(i) {
-                    match name_to_id.get(target_name.as_str()) {
-                        Some(Some(resolved_id)) => {
-                            reference.target = *resolved_id;
-                        }
-                        Some(None) => {
-                            // Ambiguous: try scoped resolution via parent
-                            let source_parent = sym_parent
-                                .get(&reference.source)
-                                .copied()
-                                .flatten();
-                            if let Some(candidates) =
-                                scoped.get(&(target_name.as_str(), source_parent))
-                            {
-                                if candidates.len() == 1 {
-                                    reference.target = candidates[0];
-                                }
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
+        super::resolve::resolve_intra_file_refs(
+            &self.symbols,
+            &mut self.references,
+            &self.ref_target_names,
+        );
     }
 }
 

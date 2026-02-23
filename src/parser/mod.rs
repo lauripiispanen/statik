@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::model::{FileId, Language, ParseResult};
 
 pub mod java;
+pub mod resolve;
 pub mod rust;
 pub mod typescript;
 
