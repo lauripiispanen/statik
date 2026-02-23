@@ -172,3 +172,4 @@ max_fan_out = 15
 [entry_points]
 patterns = []
 annotations = []
+seed_all_patterns = ["test-fixtures/**", "tests/fixtures/**"]
