@@ -373,13 +373,7 @@ pub fn detect_dead_symbols(
         .collect();
 
     // Entry point symbols: all public symbols in entry point files,
-    // plus all exported symbols in non-entry files.
-    //
-    // We conservatively seed ALL exports as entry points because the linker
-    // cannot resolve every calling pattern (e.g., Rust qualified-path calls
-    // like `crate::analysis::dead_code::detect_dead_symbols(...)` don't
-    // appear in the imports table). Once linker coverage is complete, this
-    // can be tightened to only linker-resolved targets.
+    // plus exports in non-entry files that are actually imported (linker targets).
     let mut entry_symbols: Vec<SymbolId> = Vec::new();
 
     for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
@@ -393,12 +387,13 @@ pub fn detect_dead_symbols(
                 }
             }
         } else {
-            // All exported symbols in non-entry files are entry points.
-            // This is conservative: some may be truly unused, but we can't
-            // distinguish them until the linker handles all call patterns.
+            // Only exports that are actually imported by other files (linker targets)
+            // are seeded as entry points. Exports nobody imports are dead.
             if let Some(exports) = symbol_graph.exports.get(&file_id) {
                 for export in exports {
-                    entry_symbols.push(export.symbol);
+                    if linker_targets.contains(&export.symbol) {
+                        entry_symbols.push(export.symbol);
+                    }
                 }
             }
         }
@@ -1948,10 +1943,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_file_exported_conservatively_alive() {
+    fn test_cross_file_unexported_export_is_dead() {
         // B exports process, process calls helper. B is never imported by any entry point.
-        // With conservative seeding, ALL exports are entry points regardless of linker refs,
-        // so process and helper are both alive. Only non-exported, unreferenced symbols are dead.
+        // With precise seeding, only linker-resolved exports are entry points.
+        // Since nobody imports B, process is NOT seeded, so process, helper, and dead_fn are all dead.
         use crate::model::*;
 
         let (alive, dead) = run_cross_file_scenario(
@@ -1994,12 +1989,67 @@ mod tests {
             vec![], // No linker refs -- B is never imported
         );
 
-        // Conservative seeding: all exports are entry points, so process is alive
-        // and helper is reachable via BFS from process.
-        assert!(alive.contains(&"process".to_string()), "process alive (exported, conservatively seeded)");
-        assert!(alive.contains(&"helper".to_string()), "helper alive (called by process)");
-        // dead_fn is private and never called, so it should be dead.
+        // Precise seeding: nobody imports process, so it's not an entry point.
+        // All symbols in B are unreachable.
+        assert!(dead.contains(&"process".to_string()), "process dead (exported but never imported)");
+        assert!(dead.contains(&"helper".to_string()), "helper dead (caller process is also dead)");
         assert!(dead.contains(&"dead_fn".to_string()), "dead_fn dead (private, never called)");
+        assert!(alive.contains(&"main".to_string()), "main alive (entry point)");
+    }
+
+    #[test]
+    fn test_cross_file_imported_export_stays_alive() {
+        // B exports process, A imports it via linker. process and its helper are alive.
+        // dead_fn is still dead because nobody calls it.
+        use crate::analysis::linker::CrossFileRef;
+        use crate::model::*;
+
+        let (alive, dead) = run_cross_file_scenario(
+            |fg| {
+                fg.add_file(make_file(1, "src/a.ts", true));
+                fg.add_file(make_file(2, "src/b.ts", false));
+                fg.add_import(make_edge(1, 2, &["process"]));
+            },
+            |sg| {
+                sg.add_file(make_file_record(1, "src/a.ts"));
+                sg.add_file(make_file_record(2, "src/b.ts"));
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(1),
+                    symbols: vec![
+                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                    ],
+                    references: vec![],
+                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                });
+                sg.add_parse_result(ParseResult {
+                    file_id: FileId(2),
+                    symbols: vec![
+                        make_sym(10, "process", SymbolKind::Function, 2, Visibility::Public),
+                        make_sym(11, "helper", SymbolKind::Function, 2, Visibility::Private),
+                        make_sym(12, "dead_fn", SymbolKind::Function, 2, Visibility::Private),
+                    ],
+                    references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
+                    imports: vec![],
+                    exports: vec![ExportRecord {
+                        file: FileId(2), symbol: SymbolId(10),
+                        exported_name: "process".to_string(),
+                        is_default: false, is_reexport: false, is_type_only: false,
+                        source_path: None, line: 1,
+                    }],
+                    type_references: vec![], annotations: vec![],
+                });
+            },
+            vec![CrossFileRef {
+                source_file: FileId(1), target_file: FileId(2),
+                target_symbol: SymbolId(10), imported_name: "process".to_string(),
+                line: 1, confidence: crate::analysis::Confidence::High,
+            }],
+        );
+
+        assert!(alive.contains(&"main".to_string()), "main alive");
+        assert!(alive.contains(&"process".to_string()), "process alive (imported via linker)");
+        assert!(alive.contains(&"helper".to_string()), "helper alive (called by process)");
+        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn dead (never called)");
     }
 
     #[test]
