@@ -963,16 +963,18 @@ than `statik deps src/types.ts` when the file has `import type` statements.
 **Files**: `src/parser/java.rs`
 
 Tasks:
-- [ ] Extract `extends` and `implements` relationships as references with
+- [x] Extract `extends` and `implements` relationships as references with
   `RefKind::Inheritance`
-- [ ] Extract annotation usage (`@Override`, `@Autowired`, etc.) as references
+- [x] Extract annotation usage (`@Override`, `@Autowired`, etc.) as references
   with `RefKind::TypeUsage`
-- [ ] Add `statik deps --direction in` support for Java inheritance (what extends
+- [x] Add `statik deps --direction in` support for Java inheritance (what extends
   this class?)
-- [ ] Add tests for Java inheritance hierarchies
+- [x] Add tests for Java inheritance hierarchies
 
 **Acceptance**: `statik impact UserService.java` includes files that extend
 `UserService` in the affected list.
+
+**Status**: Phase 4 complete. All items (4.1–4.7) implemented and verified.
 
 ---
 
