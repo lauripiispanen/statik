@@ -95,11 +95,22 @@ pub struct DeadCodeSummary {
 ///
 /// Precision over recall: we never report entry point exports as dead.
 /// If confidence is low, we say so rather than asserting.
-pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResult {
+pub fn detect_dead_code(
+    graph: &FileGraph,
+    scope: DeadCodeScope,
+    seed_all_file_ids: &HashSet<FileId>,
+) -> DeadCodeResult {
     let mut dead_files = Vec::new();
     let mut dead_exports = Vec::new();
 
-    let entry_points = graph.entry_points();
+    let mut entry_points = graph.entry_points();
+    // Treat seed_all files as additional entry points for BFS so they
+    // and their imports become reachable (test fixtures, test dirs, etc.).
+    for &fid in seed_all_file_ids {
+        if !entry_points.contains(&fid) {
+            entry_points.push(fid);
+        }
+    }
     let all_files = graph.all_file_ids();
     let total_files = all_files.len();
 
@@ -761,7 +772,7 @@ mod tests {
         graph.add_file(make_file(2, "src/utils.ts", false));
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert!(result.dead_files.is_empty());
         assert_eq!(result.confidence, Confidence::Certain);
     }
@@ -775,7 +786,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert_eq!(result.dead_files.len(), 1);
         assert_eq!(result.dead_files[0].path, PathBuf::from("src/orphan.ts"));
         assert_eq!(result.dead_files[0].confidence, Confidence::Certain);
@@ -786,7 +797,7 @@ mod tests {
         let mut graph = FileGraph::new();
         graph.add_file(make_file(1, "src/index.ts", true));
         // Entry point with no imports is NOT dead
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert!(result.dead_files.is_empty());
     }
 
@@ -803,7 +814,7 @@ mod tests {
         graph.add_import(make_edge(2, 3, &["b"]));
         graph.add_import(make_edge(3, 4, &["c"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert!(result.dead_files.is_empty());
     }
 
@@ -820,7 +831,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["used_fn"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         assert_eq!(result.dead_exports.len(), 1);
         assert_eq!(result.dead_exports[0].export_name, "unused_fn");
     }
@@ -835,7 +846,7 @@ mod tests {
             &["main", "config"],
         ));
         // Entry point exports are never dead (may be consumed externally)
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         assert!(result.dead_exports.is_empty());
     }
 
@@ -853,7 +864,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Both);
+        let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
         assert_eq!(result.dead_files.len(), 1); // orphan.ts
         assert!(result.dead_exports.is_empty()); // helper is used
     }
@@ -861,7 +872,7 @@ mod tests {
     #[test]
     fn test_empty_graph() {
         let graph = FileGraph::new();
-        let result = detect_dead_code(&graph, DeadCodeScope::Both);
+        let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
         assert!(result.dead_files.is_empty());
         assert!(result.dead_exports.is_empty());
         assert_eq!(result.summary.total_files, 0);
@@ -879,7 +890,7 @@ mod tests {
         graph.add_import(make_edge(2, 3, &["b"]));
         graph.add_import(make_edge(3, 2, &["a"])); // cycle: a <-> b
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert!(result.dead_files.is_empty());
     }
 
@@ -897,7 +908,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["foo"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Both);
+        let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
         assert_eq!(result.summary.total_files, 3);
         assert_eq!(result.summary.dead_files, 1);
         assert_eq!(result.summary.total_exports, 3); // main + foo + bar
@@ -937,7 +948,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         // Re-exports should be skipped by the dead export detector
         assert!(
             result.dead_exports.is_empty(),
@@ -984,7 +995,7 @@ mod tests {
         // Entry point imports barrel for some other reason but NOT "helper"
         graph.add_import(make_edge(1, 2, &["somethingElse"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         // The unconsumed re-export should NOT appear as dead -- re-exports are skipped
         assert!(
             result.dead_exports.is_empty(),
@@ -1014,7 +1025,7 @@ mod tests {
         graph.add_import(make_edge(2, 3, &["shared"])); // cli -> shared
         graph.add_import(make_edge(2, 5, &["cli"])); // cli -> cli-only
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Files);
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert_eq!(result.dead_files.len(), 1, "only orphan.ts should be dead");
         assert_eq!(result.dead_files[0].path, PathBuf::from("src/orphan.ts"));
     }
@@ -1062,7 +1073,7 @@ mod tests {
         // Barrel re-export creates edge to utils
         graph.add_import(make_edge(2, 3, &["*"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -1117,7 +1128,7 @@ mod tests {
         graph.add_import(make_edge(1, 2, &["helper"]));
         graph.add_import(make_edge(2, 3, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -1188,7 +1199,7 @@ mod tests {
         graph.add_import(make_edge(2, 3, &["*"]));
         graph.add_import(make_edge(3, 4, &["*"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -1227,7 +1238,7 @@ mod tests {
         graph.add_file(barrel);
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Both);
+        let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
         // With wildcards and no unresolved, confidence should be High (not Certain)
         assert_eq!(result.confidence, Confidence::High);
     }
@@ -2007,7 +2018,7 @@ mod tests {
             line: 1,
         });
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_export_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -2041,7 +2052,7 @@ mod tests {
             line: 1,
         });
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_export_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -2052,6 +2063,63 @@ mod tests {
             dead_export_names.contains(&"foo"),
             "mod re-export 'foo' SHOULD be dead when lib.rs is unreachable, got: {:?}",
             dead_export_names
+        );
+    }
+
+    #[test]
+    fn test_seed_all_files_not_reported_dead() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "tests/fixture.ts", false)); // orphan normally
+
+        let seed_all: HashSet<FileId> = [FileId(2)].into_iter().collect();
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &seed_all);
+        assert!(
+            result.dead_files.is_empty(),
+            "seed_all files should not be reported dead, got: {:?}",
+            result.dead_files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_seed_all_exports_not_reported_dead() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file_with_exports(
+            2,
+            "tests/fixture.ts",
+            false,
+            &["helper"],
+        ));
+
+        let seed_all: HashSet<FileId> = [FileId(2)].into_iter().collect();
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &seed_all);
+        let dead_export_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+        assert!(
+            !dead_export_names.contains(&"helper"),
+            "exports from seed_all files should not be reported dead"
+        );
+    }
+
+    #[test]
+    fn test_seed_all_imports_make_targets_reachable() {
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "tests/fixture.ts", false));
+        graph.add_file(make_file(3, "src/utils.ts", false)); // only reachable from fixture
+
+        graph.add_import(make_edge(2, 3, &["util"]));
+
+        let seed_all: HashSet<FileId> = [FileId(2)].into_iter().collect();
+        let result = detect_dead_code(&graph, DeadCodeScope::Files, &seed_all);
+        assert!(
+            result.dead_files.is_empty(),
+            "files imported by seed_all files should be reachable, got dead: {:?}",
+            result.dead_files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
     }
 
@@ -2114,7 +2182,7 @@ mod tests {
             line: 1,
         });
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_exports
             .iter()
@@ -2173,7 +2241,7 @@ mod tests {
             line: 1,
         });
 
-        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
         let dead_names: Vec<&str> = result
             .dead_exports
             .iter()

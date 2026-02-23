@@ -625,7 +625,8 @@ pub fn run_dead_code(
         _ => DeadCodeScope::Both,
     };
 
-    let result = detect_dead_code(&graph, scope);
+    let seed_all_file_ids = build_seed_all_file_ids(&graph, project_path);
+    let result = detect_dead_code(&graph, scope, &seed_all_file_ids);
     Ok(match format {
         OutputFormat::Text => format_dead_code_text(&result),
         _ => format_json(&result, format),
@@ -817,7 +818,8 @@ pub fn run_summary(
         return run_summary_by_directory(&graph, project_path, format);
     }
 
-    let dead = detect_dead_code(&graph, DeadCodeScope::Both);
+    let seed_all_file_ids = build_seed_all_file_ids(&graph, project_path);
+    let dead = detect_dead_code(&graph, DeadCodeScope::Both, &seed_all_file_ids);
     let graph_no_mod = graph.without_mod_declaration_edges();
     let cycles = detect_cycles(&graph_no_mod);
 
@@ -906,7 +908,8 @@ fn run_summary_by_directory(
 ) -> Result<String> {
     use std::collections::HashSet;
 
-    let dead = detect_dead_code(graph, DeadCodeScope::Both);
+    let seed_all_file_ids = build_seed_all_file_ids(graph, project_root);
+    let dead = detect_dead_code(graph, DeadCodeScope::Both, &seed_all_file_ids);
 
     // Build set of dead export keys for quick lookup
     let dead_export_keys: HashSet<(FileId, String)> = dead
