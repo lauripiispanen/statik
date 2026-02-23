@@ -239,6 +239,9 @@ impl<'a> Extractor<'a> {
             "type_identifier" => {
                 self.extract_type_reference(node);
             }
+            "identifier" => {
+                self.maybe_extract_identifier_reference(node);
+            }
             _ => self.visit_children(node),
         }
     }
@@ -1153,6 +1156,127 @@ impl<'a> Extractor<'a> {
             });
             self.ref_target_names.push(target_name);
             self.ref_qualifiers.push(None);
+        }
+    }
+
+    /// Emit a reference for a bare identifier in expression position, e.g.
+    /// `let x = MY_CONSTANT;` or `let f = some_fn;`. Skips identifiers that
+    /// are declaration names, already-handled contexts (call/struct expressions),
+    /// common keywords, and primitive names.
+    fn maybe_extract_identifier_reference(&mut self, node: Node) {
+        // Must be inside a function/method body
+        let source_id = match self.find_enclosing_symbol() {
+            Some(id) => id,
+            None => return,
+        };
+
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Skip if this identifier is the function field of a call_expression,
+        // the name field of a struct_expression, or a scoped_identifier
+        // (these are already handled by dedicated extractors)
+        match parent.kind() {
+            "call_expression" => {
+                // Skip if this is the function being called
+                if parent.child_by_field_name("function").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            "struct_expression" => {
+                if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            // Scoped identifiers are handled as part of call/type resolution
+            "scoped_identifier" | "scoped_type_identifier" => return,
+            // Field expressions: the field name is not a standalone reference
+            "field_expression" => {
+                if parent.child_by_field_name("field").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        // Skip identifiers that are declaration names (not value references)
+        if Self::is_rust_declaration_name(parent, node) {
+            return;
+        }
+
+        let name = self.node_text(node).to_string();
+
+        // Skip keywords, primitives, and common enum variants that are always in scope
+        if matches!(
+            name.as_str(),
+            "self" | "Self" | "super" | "crate"
+                | "true" | "false"
+                | "None" | "Some" | "Ok" | "Err"
+                | "_"
+        ) {
+            return;
+        }
+
+        let ref_id = self.alloc_ref_id();
+        let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
+        self.references.push(Reference {
+            id: ref_id,
+            source: source_id,
+            target: placeholder_target,
+            kind: RefKind::FieldAccess,
+            file: self.file_id,
+            span: self.node_span(node),
+            line_span: self.node_line_span(node),
+            target_name: Some(name.clone()),
+        });
+        self.ref_target_names.push(name);
+        self.ref_qualifiers.push(None);
+    }
+
+    /// Check whether `node` is the name being *declared* (not *used*) in a
+    /// declaration-kind parent node.
+    fn is_rust_declaration_name(parent: Node, node: Node) -> bool {
+        match parent.kind() {
+            "function_item" | "function_signature_item" | "struct_item" | "enum_item"
+            | "trait_item" | "const_item" | "static_item" | "type_item" | "mod_item" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "field_declaration" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "let_declaration" => {
+                // The pattern side of let — `let x = ...;`, x is the pattern/name
+                parent.child_by_field_name("pattern").map(|n| n.id()) == Some(node.id())
+            }
+            "parameter" | "closure_parameters" => true,
+            "use_declaration" | "use_as_clause" | "use_list" | "use_wildcard" | "self" => true,
+            "enum_variant" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            // Tuple struct pattern: `Foo(x, y)` — x,y are bindings
+            "tuple_struct_pattern" => {
+                // The first child (the name) is a reference, subsequent are bindings
+                parent.child(0).map(|n| n.id()) != Some(node.id())
+            }
+            // Label names in loops
+            "loop_label" | "label" => true,
+            // Lifetime identifiers
+            "lifetime" => true,
+            // For loop variable
+            "for_expression" => {
+                parent.child_by_field_name("pattern").map(|n| n.id()) == Some(node.id())
+            }
+            // Match arm patterns
+            "match_pattern" | "or_pattern" => true,
+            // Attribute items
+            "attribute_item" | "attribute" | "meta_item" => true,
+            // Macro definitions and invocations
+            "macro_definition" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            _ => false,
         }
     }
 
@@ -2280,6 +2404,74 @@ fn not_a_test() {}
             annotation_imports.len() >= 2,
             "Should emit @annotation:test for both #[test] and #[tokio::test], got {}",
             annotation_imports.len()
+        );
+    }
+
+    #[test]
+    fn test_constant_reference_creates_edge() {
+        let result = parse_rust(
+            r#"
+const FOO: u32 = 1;
+fn bar() { let x = FOO; }
+"#,
+        );
+
+        let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == bar.id && r.target == foo.id);
+        assert!(
+            has_ref,
+            "bar should reference FOO, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_function_value_reference() {
+        let result = parse_rust(
+            r#"
+fn baz() {}
+fn bar() { let f = baz; }
+"#,
+        );
+
+        let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
+        let baz = result.symbols.iter().find(|s| s.name == "baz").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == bar.id && r.target == baz.id);
+        assert!(
+            has_ref,
+            "bar should reference baz, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_declaration_name_not_self_referenced() {
+        let result = parse_rust(
+            r#"
+const FOO: u32 = 1;
+"#,
+        );
+
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        // FOO should NOT have a self-reference
+        let self_ref = result
+            .references
+            .iter()
+            .any(|r| r.target == foo.id && r.source == foo.id);
+        assert!(
+            !self_ref,
+            "FOO should not self-reference, refs: {:?}",
+            result.references
         );
     }
 }

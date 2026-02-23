@@ -258,6 +258,9 @@ impl<'a> Extractor<'a> {
                 self.extract_new_reference(node);
                 self.visit_children(node);
             }
+            "identifier" => {
+                self.maybe_extract_identifier_reference(node);
+            }
             _ => {
                 self.visit_children(node);
             }
@@ -1403,6 +1406,125 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    /// Emit a reference for a bare identifier in expression position.
+    /// Covers constants, function values, and other identifier references not
+    /// handled by call_expression or new_expression extractors.
+    fn maybe_extract_identifier_reference(&mut self, node: Node) {
+        let source_id = match self.current_parent() {
+            Some(id) => id,
+            None => return,
+        };
+
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Skip if this identifier is the function field of a call_expression
+        // or the constructor of a new_expression (already handled)
+        match parent.kind() {
+            "call_expression" => {
+                if parent.child_by_field_name("function").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            "new_expression" => {
+                if parent.child_by_field_name("constructor").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            // member_expression property is not a standalone reference
+            "member_expression" => {
+                if parent.child_by_field_name("property").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            _ => {}
+        }
+
+        // Skip identifiers that are declaration names
+        if Self::is_ts_declaration_name(parent, node) {
+            return;
+        }
+
+        let name = self.node_text(node).to_string();
+
+        // Skip common JS/TS globals and keywords
+        if matches!(
+            name.as_str(),
+            "undefined" | "null" | "true" | "false" | "this" | "super"
+                | "console" | "window" | "document" | "global" | "globalThis"
+                | "require" | "module" | "exports" | "process" | "__dirname" | "__filename"
+                | "Promise" | "Array" | "Object" | "String" | "Number" | "Boolean"
+                | "Map" | "Set" | "Error" | "Date" | "JSON" | "Math" | "RegExp"
+                | "Symbol" | "BigInt" | "Buffer" | "URL" | "URLSearchParams"
+                | "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval"
+                | "parseInt" | "parseFloat" | "isNaN" | "isFinite"
+                | "arguments" | "NaN" | "Infinity" | "void"
+        ) {
+            return;
+        }
+
+        let ref_id = self.alloc_ref_id();
+        let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
+        self.references.push(Reference {
+            id: ref_id,
+            source: source_id,
+            target: placeholder_target,
+            kind: RefKind::FieldAccess,
+            file: self.file_id,
+            span: self.node_span(node),
+            line_span: self.node_line_span(node),
+            target_name: Some(name.clone()),
+        });
+        self.ref_target_names.push(name);
+        self.ref_qualifiers.push(None);
+    }
+
+    fn is_ts_declaration_name(parent: Node, node: Node) -> bool {
+        match parent.kind() {
+            "function_declaration" | "generator_function_declaration"
+            | "class_declaration" | "interface_declaration"
+            | "type_alias_declaration" | "enum_declaration" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "variable_declarator" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "formal_parameters" | "required_parameter" | "optional_parameter"
+            | "rest_pattern" => true,
+            "import_specifier" | "export_specifier" | "namespace_import" => true,
+            "property_signature" | "method_definition" | "public_field_definition" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "shorthand_property_identifier_pattern" => true,
+            // Object pattern destructuring: const { a, b } = obj;
+            "object_pattern" => true,
+            // Array pattern: const [a, b] = arr;
+            "array_pattern" => true,
+            // For-in/for-of variable
+            "for_in_statement" => {
+                parent.child_by_field_name("left").map(|n| n.id()) == Some(node.id())
+            }
+            // Catch clause parameter
+            "catch_clause" => {
+                parent.child_by_field_name("parameter").map(|n| n.id()) == Some(node.id())
+            }
+            // Arrow function parameters when written without parens
+            "arrow_function" => {
+                parent.child_by_field_name("parameter").map(|n| n.id()) == Some(node.id())
+            }
+            // Label
+            "labeled_statement" => {
+                parent.child_by_field_name("label").map(|n| n.id()) == Some(node.id())
+            }
+            "enum_assignment" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            _ => false,
+        }
+    }
+
     /// Post-pass: resolve placeholder reference targets to actual symbols defined in this file.
     fn resolve_intra_file_refs(&mut self) {
         super::resolve::resolve_intra_file_refs(
@@ -2419,6 +2541,73 @@ class Beta {
         assert_eq!(
             beta_call.unwrap().target, beta_process.id,
             "Beta.run() should resolve to Beta.process()"
+        );
+    }
+
+    #[test]
+    fn test_constant_reference_creates_edge() {
+        let result = parse_ts(
+            r#"
+const FOO = 42;
+function bar() { const x = FOO; }
+"#,
+        );
+
+        let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == bar.id && r.target == foo.id);
+        assert!(
+            has_ref,
+            "bar should reference FOO, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_function_value_reference() {
+        let result = parse_ts(
+            r#"
+function baz() {}
+function bar() { const f = baz; }
+"#,
+        );
+
+        let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
+        let baz = result.symbols.iter().find(|s| s.name == "baz").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == bar.id && r.target == baz.id);
+        assert!(
+            has_ref,
+            "bar should reference baz, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_declaration_name_not_self_referenced() {
+        let result = parse_ts(
+            r#"
+const FOO = 42;
+"#,
+        );
+
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        let self_ref = result
+            .references
+            .iter()
+            .any(|r| r.target == foo.id && r.source == foo.id);
+        assert!(
+            !self_ref,
+            "FOO should not self-reference, refs: {:?}",
+            result.references
         );
     }
 }

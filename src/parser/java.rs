@@ -412,6 +412,9 @@ impl<'a> Extractor<'a> {
             "type_identifier" => {
                 self.note_type_identifier(node);
             }
+            "identifier" => {
+                self.maybe_extract_identifier_reference(node);
+            }
             _ => {
                 self.visit_children(node);
             }
@@ -1213,6 +1216,121 @@ impl<'a> Extractor<'a> {
             });
             self.ref_target_names.push(target_name);
             self.ref_qualifiers.push(None);
+        }
+    }
+
+    /// Emit a reference for a bare identifier in expression position.
+    fn maybe_extract_identifier_reference(&mut self, node: Node) {
+        let source_id = match self.current_parent() {
+            Some(id) => id,
+            None => return,
+        };
+
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Skip if this identifier is the method name of a method_invocation
+        // or the type of object_creation_expression (already handled)
+        match parent.kind() {
+            "method_invocation" => {
+                if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            "object_creation_expression" => {
+                if parent.child_by_field_name("type").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            // Field access: the field name is not a standalone reference
+            "field_access" => {
+                if parent.child_by_field_name("field").map(|n| n.id()) == Some(node.id()) {
+                    return;
+                }
+            }
+            // Scoped type identifiers already handled
+            "scoped_identifier" | "scoped_type_identifier" => return,
+            _ => {}
+        }
+
+        // Skip identifiers that are declaration names
+        if Self::is_java_declaration_name(parent, node) {
+            return;
+        }
+
+        let name = self.node_text(node).to_string();
+
+        // Skip Java keywords and common globals
+        if matches!(
+            name.as_str(),
+            "this" | "super" | "null" | "true" | "false"
+                | "System" | "String" | "Integer" | "Long" | "Double" | "Float"
+                | "Boolean" | "Byte" | "Short" | "Character" | "Void"
+                | "Object" | "Class" | "Enum" | "Comparable" | "Iterable"
+                | "Override" | "Deprecated" | "SuppressWarnings"
+                | "Exception" | "RuntimeException" | "Throwable"
+                | "Thread" | "Runnable"
+                | "var" | "args"
+        ) {
+            return;
+        }
+
+        let ref_id = self.alloc_ref_id();
+        let placeholder_target = SymbolId(u64::MAX - self.references.len() as u64);
+        self.references.push(Reference {
+            id: ref_id,
+            source: source_id,
+            target: placeholder_target,
+            kind: RefKind::FieldAccess,
+            file: self.file_id,
+            span: self.node_span(node),
+            line_span: self.node_line_span(node),
+            target_name: Some(name.clone()),
+        });
+        self.ref_target_names.push(name);
+        self.ref_qualifiers.push(None);
+    }
+
+    fn is_java_declaration_name(parent: Node, node: Node) -> bool {
+        match parent.kind() {
+            "class_declaration" | "interface_declaration" | "enum_declaration"
+            | "annotation_type_declaration" | "record_declaration" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "method_declaration" | "constructor_declaration" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "field_declaration" | "constant_declaration" => {
+                // Field declarations can have multiple declarators
+                false // The declarator handles name matching
+            }
+            "variable_declarator" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "formal_parameter" | "spread_parameter" | "catch_formal_parameter"
+            | "inferred_parameters" | "lambda_expression" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            "import_declaration" => true,
+            // Package name
+            "package_declaration" => true,
+            // Enum constant
+            "enum_constant" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            // Enhanced for loop variable
+            "enhanced_for_statement" => {
+                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
+            }
+            // Type parameter (generics)
+            "type_parameter" => true,
+            // Annotation usage
+            "marker_annotation" | "annotation" => true,
+            // Label
+            "labeled_statement" => true,
+            _ => false,
         }
     }
 
@@ -2719,6 +2837,54 @@ public class Beta {
         assert_eq!(
             beta_call.unwrap().target, beta_process.id,
             "Beta.run() should resolve to Beta.process()"
+        );
+    }
+
+    #[test]
+    fn test_constant_reference_creates_edge() {
+        let result = parse_java(
+            r#"
+public class Test {
+    static final int FOO = 42;
+    void bar() { int x = FOO; }
+}
+"#,
+        );
+
+        let bar = result.symbols.iter().find(|s| s.name == "bar").unwrap();
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == bar.id && r.target == foo.id);
+        assert!(
+            has_ref,
+            "bar should reference FOO, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_declaration_name_not_self_referenced() {
+        let result = parse_java(
+            r#"
+public class Test {
+    static final int FOO = 42;
+}
+"#,
+        );
+
+        let foo = result.symbols.iter().find(|s| s.name == "FOO").unwrap();
+
+        let self_ref = result
+            .references
+            .iter()
+            .any(|r| r.target == foo.id && r.source == foo.id);
+        assert!(
+            !self_ref,
+            "FOO should not self-reference, refs: {:?}",
+            result.references
         );
     }
 }

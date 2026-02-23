@@ -2124,6 +2124,69 @@ mod tests {
     }
 
     #[test]
+    fn test_constant_alive_when_referenced() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // main references MY_CONST via a FieldAccess reference (identifier reference)
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "MY_CONST", SymbolKind::Constant, 1, Visibility::Private),
+            ],
+            references: vec![
+                make_ref(1, 1, 2, RefKind::FieldAccess, 1), // main -> MY_CONST
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(!dead_names.contains(&"MY_CONST"), "MY_CONST should be alive (referenced by main)");
+    }
+
+    #[test]
+    fn test_constant_dead_when_unreferenced() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+                make_sym(2, "UNUSED_CONST", SymbolKind::Constant, 1, Visibility::Private),
+            ],
+            references: vec![], // no references to UNUSED_CONST
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(dead_names.contains(&"UNUSED_CONST"), "UNUSED_CONST should be dead (no references)");
+    }
+
+    #[test]
     fn test_rust_module_path_import_marks_exports_used() {
         // In Rust, `use crate::cli::commands` imports the module name "commands"
         // from the file commands.rs. When code does `commands::run_deps()`,
