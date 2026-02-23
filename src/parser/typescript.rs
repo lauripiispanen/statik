@@ -1367,21 +1367,53 @@ impl<'a> Extractor<'a> {
                     name_to_id.insert(&symbol.name, Some(symbol.id));
                 }
                 Some(Some(_)) => {
-                    // Ambiguous: multiple symbols with same name
                     name_to_id.insert(&symbol.name, None);
                 }
-                Some(None) => {
-                    // Already marked ambiguous
-                }
+                Some(None) => {}
             }
         }
+
+        // Build scoped lookup: (name, parent) -> Vec<SymbolId> for ambiguous names
+        let mut scoped: HashMap<(&str, Option<SymbolId>), Vec<SymbolId>> = HashMap::new();
+        for symbol in &self.symbols {
+            if name_to_id.get(symbol.name.as_str()) == Some(&None) {
+                scoped
+                    .entry((&symbol.name, symbol.parent))
+                    .or_default()
+                    .push(symbol.id);
+            }
+        }
+
+        // Build source -> parent lookup
+        let sym_parent: HashMap<SymbolId, Option<SymbolId>> = self
+            .symbols
+            .iter()
+            .map(|s| (s.id, s.parent))
+            .collect();
 
         // Resolve each reference that still has a placeholder target
         for (i, reference) in self.references.iter_mut().enumerate() {
             if reference.target.0 >= u64::MAX - 1_000_000 {
                 if let Some(target_name) = self.ref_target_names.get(i) {
-                    if let Some(Some(resolved_id)) = name_to_id.get(target_name.as_str()) {
-                        reference.target = *resolved_id;
+                    match name_to_id.get(target_name.as_str()) {
+                        Some(Some(resolved_id)) => {
+                            reference.target = *resolved_id;
+                        }
+                        Some(None) => {
+                            // Ambiguous: try scoped resolution via parent
+                            let source_parent = sym_parent
+                                .get(&reference.source)
+                                .copied()
+                                .flatten();
+                            if let Some(candidates) =
+                                scoped.get(&(target_name.as_str(), source_parent))
+                            {
+                                if candidates.len() == 1 {
+                                    reference.target = candidates[0];
+                                }
+                            }
+                        }
+                        None => {}
                     }
                 }
             }

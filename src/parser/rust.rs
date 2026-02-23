@@ -1099,11 +1099,46 @@ impl<'a> Extractor<'a> {
             }
         }
 
+        // Build scoped lookup: (name, parent) -> Vec<SymbolId> for ambiguous names
+        let mut scoped: HashMap<(&str, Option<SymbolId>), Vec<SymbolId>> = HashMap::new();
+        for symbol in &self.symbols {
+            if name_to_id.get(symbol.name.as_str()) == Some(&None) {
+                scoped
+                    .entry((&symbol.name, symbol.parent))
+                    .or_default()
+                    .push(symbol.id);
+            }
+        }
+
+        // Build source -> parent lookup
+        let sym_parent: HashMap<SymbolId, Option<SymbolId>> = self
+            .symbols
+            .iter()
+            .map(|s| (s.id, s.parent))
+            .collect();
+
         for (i, reference) in self.references.iter_mut().enumerate() {
             if reference.target.0 >= u64::MAX - 1_000_000 {
                 if let Some(target_name) = self.ref_target_names.get(i) {
-                    if let Some(Some(resolved_id)) = name_to_id.get(target_name.as_str()) {
-                        reference.target = *resolved_id;
+                    match name_to_id.get(target_name.as_str()) {
+                        Some(Some(resolved_id)) => {
+                            reference.target = *resolved_id;
+                        }
+                        Some(None) => {
+                            // Ambiguous: try scoped resolution via parent
+                            let source_parent = sym_parent
+                                .get(&reference.source)
+                                .copied()
+                                .flatten();
+                            if let Some(candidates) =
+                                scoped.get(&(target_name.as_str(), source_parent))
+                            {
+                                if candidates.len() == 1 {
+                                    reference.target = candidates[0];
+                                }
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -1966,5 +2001,77 @@ pub type Result<T> = std::result::Result<T, Error>;
                 export.exported_name, export.line
             );
         }
+    }
+
+    #[test]
+    fn test_scoped_intra_file_resolution_two_impls_same_method() {
+        // Two structs each implement a method named "process". Calls within each
+        // impl should resolve to the correct struct's method via parent scoping.
+        let result = parse_rust(
+            r#"
+struct Alpha;
+impl Alpha {
+    fn process(&self) {}
+    fn run(&self) {
+        self.process();
+    }
+}
+struct Beta;
+impl Beta {
+    fn process(&self) {}
+    fn run(&self) {
+        self.process();
+    }
+}
+"#,
+        );
+
+        let alpha = result.symbols.iter().find(|s| s.name == "Alpha" && s.kind == SymbolKind::Struct).unwrap();
+        let beta = result.symbols.iter().find(|s| s.name == "Beta" && s.kind == SymbolKind::Struct).unwrap();
+
+        // Find process methods by parent
+        let alpha_process = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "process" && s.parent == Some(alpha.id))
+            .unwrap();
+        let beta_process = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "process" && s.parent == Some(beta.id))
+            .unwrap();
+
+        let alpha_run = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "run" && s.parent == Some(alpha.id))
+            .unwrap();
+        let beta_run = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "run" && s.parent == Some(beta.id))
+            .unwrap();
+
+        // Alpha.run() should call Alpha.process()
+        let alpha_call = result
+            .references
+            .iter()
+            .find(|r| r.source == alpha_run.id && r.kind == RefKind::Call);
+        assert!(alpha_call.is_some(), "Alpha.run() should have a call ref");
+        assert_eq!(
+            alpha_call.unwrap().target, alpha_process.id,
+            "Alpha.run() should resolve to Alpha.process()"
+        );
+
+        // Beta.run() should call Beta.process()
+        let beta_call = result
+            .references
+            .iter()
+            .find(|r| r.source == beta_run.id && r.kind == RefKind::Call);
+        assert!(beta_call.is_some(), "Beta.run() should have a call ref");
+        assert_eq!(
+            beta_call.unwrap().target, beta_process.id,
+            "Beta.run() should resolve to Beta.process()"
+        );
     }
 }
