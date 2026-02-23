@@ -433,7 +433,28 @@ pub fn detect_dead_symbols(
 
 
     // BFS from entry points through intra-file references to find all reachable symbols
-    let reachable = symbol_graph.reachable_from(&entry_symbols);
+    let mut reachable = symbol_graph.reachable_from(&entry_symbols);
+
+    // Post-BFS: propagate reachability from alive enums to their variants.
+    // Enum variants are children (via `parent`) but not connected by reference edges,
+    // so BFS doesn't reach them. This is language-generic.
+    let alive_enums: Vec<SymbolId> = reachable
+        .iter()
+        .filter(|id| {
+            symbol_graph
+                .symbols
+                .get(id)
+                .is_some_and(|s| s.kind == SymbolKind::Enum)
+        })
+        .copied()
+        .collect();
+    for enum_id in alive_enums {
+        for sym in symbol_graph.symbols.values() {
+            if sym.parent == Some(enum_id) && sym.kind == SymbolKind::EnumVariant {
+                reachable.insert(sym.id);
+            }
+        }
+    }
 
     // Count references
     let intra_resolved = symbol_graph
