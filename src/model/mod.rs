@@ -173,6 +173,7 @@ pub struct Reference {
     pub file: FileId,
     pub span: Span,
     pub line_span: LineSpan,
+    pub target_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

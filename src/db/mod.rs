@@ -117,6 +117,11 @@ impl Database {
             )
             .context("failed to initialize database schema")?;
 
+        // Migrations for columns added after initial schema
+        self.conn
+            .execute("ALTER TABLE refs ADD COLUMN target_name TEXT", [])
+            .ok();
+
         Ok(())
     }
 
@@ -321,8 +326,8 @@ impl Database {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO refs (id, source_id, target_id, kind, file_id,
-                 span_start, span_end, line_start, col_start, line_end, col_end)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 span_start, span_end, line_start, col_start, line_end, col_end, target_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     reference.id.0,
                     reference.source.0,
@@ -335,6 +340,7 @@ impl Database {
                     reference.line_span.start.column,
                     reference.line_span.end.line,
                     reference.line_span.end.column,
+                    reference.target_name,
                 ],
             )
             .context("failed to insert reference")?;
@@ -344,7 +350,8 @@ impl Database {
     pub fn all_references(&self) -> Result<Vec<Reference>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, target_id, kind, file_id,
-                    span_start, span_end, line_start, col_start, line_end, col_end
+                    span_start, span_end, line_start, col_start, line_end, col_end,
+                    target_name
              FROM refs",
         )?;
 
@@ -380,6 +387,7 @@ impl Database {
                             column: row.get(10)?,
                         },
                     },
+                    target_name: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -754,6 +762,7 @@ mod tests {
                     column: 14,
                 },
             },
+            target_name: Some("helper".to_string()),
         };
         db.insert_reference(&reference).unwrap();
 
@@ -762,6 +771,59 @@ mod tests {
         assert_eq!(all_refs[0].source, SymbolId(1));
         assert_eq!(all_refs[0].target, SymbolId(2));
         assert_eq!(all_refs[0].kind, RefKind::Call);
+        assert_eq!(all_refs[0].target_name.as_deref(), Some("helper"));
+    }
+
+    #[test]
+    fn test_reference_target_name_roundtrip() {
+        let db = test_db();
+        db.upsert_file(&sample_file()).unwrap();
+
+        let sym1 = sample_symbol(1, "caller", SymbolKind::Function);
+        let sym2 = sample_symbol(2, "callee", SymbolKind::Function);
+        db.insert_symbol(&sym1).unwrap();
+        db.insert_symbol(&sym2).unwrap();
+
+        // With target_name
+        let ref_with = Reference {
+            id: ReferenceId(1),
+            source: SymbolId(1),
+            target: SymbolId(2),
+            kind: RefKind::Call,
+            file: FileId(1),
+            span: Span { start: 0, end: 5 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position { line: 1, column: 5 },
+            },
+            target_name: Some("callee".to_string()),
+        };
+        db.insert_reference(&ref_with).unwrap();
+
+        // Without target_name
+        let ref_without = Reference {
+            id: ReferenceId(2),
+            source: SymbolId(2),
+            target: SymbolId(1),
+            kind: RefKind::Call,
+            file: FileId(1),
+            span: Span { start: 10, end: 15 },
+            line_span: LineSpan {
+                start: Position { line: 2, column: 0 },
+                end: Position { line: 2, column: 5 },
+            },
+            target_name: None,
+        };
+        db.insert_reference(&ref_without).unwrap();
+
+        let all_refs = db.all_references().unwrap();
+        assert_eq!(all_refs.len(), 2);
+
+        let r1 = all_refs.iter().find(|r| r.id == ReferenceId(1)).unwrap();
+        assert_eq!(r1.target_name.as_deref(), Some("callee"));
+
+        let r2 = all_refs.iter().find(|r| r.id == ReferenceId(2)).unwrap();
+        assert!(r2.target_name.is_none());
     }
 
     #[test]

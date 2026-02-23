@@ -1141,6 +1141,7 @@ mod tests {
                         column: 15,
                     },
                 },
+                target_name: None,
             }],
             imports: vec![],
             exports: vec![],
@@ -1214,6 +1215,7 @@ mod tests {
                 start: Position { line: 1, column: 0 },
                 end: Position { line: 1, column: 5 },
             },
+            target_name: None,
         }
     }
 
@@ -1479,6 +1481,7 @@ mod tests {
                         start: Position { line: 1, column: 0 },
                         end: Position { line: 1, column: 5 },
                     },
+                    target_name: None,
                 },
             ],
             imports: vec![],

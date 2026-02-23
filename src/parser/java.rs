@@ -430,6 +430,7 @@ impl<'a> Extractor<'a> {
                 file: self.file_id,
                 span: self.node_span(name_n),
                 line_span: self.node_line_span(name_n),
+                target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
         }
@@ -1085,6 +1086,7 @@ impl<'a> Extractor<'a> {
             file: self.file_id,
             span: self.node_span(target_node),
             line_span: self.node_line_span(target_node),
+            target_name: Some(target_name.clone()),
         });
         self.ref_target_names.push(target_name);
     }
@@ -1107,6 +1109,7 @@ impl<'a> Extractor<'a> {
                 file: self.file_id,
                 span: self.node_span(node),
                 line_span: self.node_line_span(node),
+                target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
         }
@@ -1130,6 +1133,7 @@ impl<'a> Extractor<'a> {
                 file: self.file_id,
                 span: self.node_span(node),
                 line_span: self.node_line_span(node),
+                target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
         }
