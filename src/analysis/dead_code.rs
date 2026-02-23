@@ -534,6 +534,24 @@ pub fn detect_dead_symbols(
         }
     }
 
+    // Post-BFS: reverse parent propagation.
+    // If any child symbol is alive, its parent type symbol should be alive too.
+    // Iterate until stable (parent becoming alive might activate grandparent).
+    loop {
+        let mut changed = false;
+        for sym in symbol_graph.symbols.values() {
+            if let Some(parent_id) = sym.parent {
+                if reachable.contains(&sym.id) && !reachable.contains(&parent_id) {
+                    reachable.insert(parent_id);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
     // Count references
     let intra_resolved = symbol_graph
         .references
@@ -1771,6 +1789,136 @@ mod tests {
 
         assert!(dead_names.contains(&"DeadTrait"), "DeadTrait should be dead");
         assert!(dead_names.contains(&"trait_method"), "trait_method should be dead when trait is dead");
+    }
+
+    #[test]
+    fn test_parent_alive_when_child_alive() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Struct with a method that is alive (via call from main).
+        // The struct itself has no direct incoming edge.
+        let mut method = make_sym(2, "do_thing", SymbolKind::Method, 1, Visibility::Private);
+        method.parent = Some(SymbolId(1));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "MyStruct", SymbolKind::Struct, 1, Visibility::Private),
+                method,
+                make_sym(3, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![
+                make_ref(1, 3, 2, RefKind::Call, 1), // main -> do_thing
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(!dead_names.contains(&"do_thing"), "do_thing should be alive (called by main)");
+        assert!(!dead_names.contains(&"MyStruct"), "MyStruct should be alive (child is alive)");
+    }
+
+    #[test]
+    fn test_grandparent_propagation() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Module -> Struct -> Method, method is alive
+        let mut my_struct = make_sym(2, "MyStruct", SymbolKind::Struct, 1, Visibility::Private);
+        my_struct.parent = Some(SymbolId(1));
+        let mut method = make_sym(3, "do_thing", SymbolKind::Method, 1, Visibility::Private);
+        method.parent = Some(SymbolId(2));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "my_mod", SymbolKind::Module, 1, Visibility::Private),
+                my_struct,
+                method,
+                make_sym(4, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![
+                make_ref(1, 4, 3, RefKind::Call, 1), // main -> do_thing
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(!dead_names.contains(&"do_thing"), "do_thing should be alive");
+        assert!(!dead_names.contains(&"MyStruct"), "MyStruct should be alive (child is alive)");
+        assert!(!dead_names.contains(&"my_mod"), "my_mod should be alive (grandchild is alive)");
+    }
+
+    #[test]
+    fn test_parent_dead_when_no_alive_children() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        file_graph.add_file(make_file(2, "src/utils.ts", false));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+        sym_graph.add_file(make_file_record(2, "src/utils.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        // Unreachable struct with dead children in non-entry file
+        let mut method = make_sym(12, "dead_method", SymbolKind::Method, 2, Visibility::Public);
+        method.parent = Some(SymbolId(11));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(2),
+            symbols: vec![
+                make_sym(11, "UnusedStruct", SymbolKind::Struct, 2, Visibility::Public),
+                method,
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(dead_names.contains(&"UnusedStruct"), "UnusedStruct should be dead");
+        assert!(dead_names.contains(&"dead_method"), "dead_method should be dead");
     }
 
     #[test]
