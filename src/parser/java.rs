@@ -9,6 +9,8 @@ use crate::model::{
     Reference, ReferenceId, Span, Symbol, SymbolId, SymbolKind, Visibility,
 };
 
+use crate::model::LanguageSemantics;
+
 use super::LanguageParser;
 
 #[derive(Default)]
@@ -25,6 +27,44 @@ impl JavaParser {
             .set_language(&tree_sitter_java::LANGUAGE.into())
             .context("failed to set Java parser language")?;
         Ok(parser)
+    }
+}
+
+impl LanguageSemantics for JavaParser {
+    fn languages(&self) -> &[Language] {
+        &[Language::Java]
+    }
+
+    fn is_entry_point_file(&self, path: &std::path::Path) -> bool {
+        let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        // JUnit test conventions
+        file_name.ends_with("Test")
+            || file_name.ends_with("Tests")
+            || file_name.ends_with("IT")
+            || file_name.starts_with("Test")
+            || file_name == "Application"
+    }
+
+    fn entry_point_annotations(&self) -> &[&str] {
+        &[
+            "SpringBootApplication",
+            "Test",
+            "ParameterizedTest",
+            "RepeatedTest",
+            "Component",
+            "Service",
+            "Repository",
+            "Controller",
+            "RestController",
+            "Configuration",
+            "Bean",
+            "Endpoint",
+            "WebServlet",
+        ]
+    }
+
+    fn seed_all_symbols_dirs(&self) -> &[&str] {
+        &["test"]
     }
 }
 

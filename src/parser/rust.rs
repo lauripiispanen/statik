@@ -8,6 +8,8 @@ use crate::model::{
     Reference, ReferenceId, Span, Symbol, SymbolId, SymbolKind, Visibility,
 };
 
+use crate::model::LanguageSemantics;
+
 use super::LanguageParser;
 
 #[derive(Default)]
@@ -24,6 +26,40 @@ impl RustParser {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .context("failed to set Rust parser language")?;
         Ok(parser)
+    }
+}
+
+impl LanguageSemantics for RustParser {
+    fn languages(&self) -> &[Language] {
+        &[Language::Rust]
+    }
+
+    fn is_entry_point_file(&self, path: &std::path::Path) -> bool {
+        let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if file_name == "lib" || file_name == "build" {
+            return true;
+        }
+        // Files in src/bin/, tests/, examples/, benches/ are entry points
+        path.components().any(|c| {
+            let s = c.as_os_str();
+            s == "bin" || s == "tests" || s == "examples" || s == "benches"
+        })
+    }
+
+    fn entry_point_annotations(&self) -> &[&str] {
+        &["test"]
+    }
+
+    fn supports_module_stem_import(&self) -> bool {
+        true
+    }
+
+    fn seed_all_symbols_dirs(&self) -> &[&str] {
+        &["tests", "examples", "benches"]
+    }
+
+    fn is_test_module(&self, name: &str) -> bool {
+        name == "tests"
     }
 }
 

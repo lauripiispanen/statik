@@ -1,7 +1,8 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 
-use crate::model::{FileId, Language, ParseResult};
+use crate::model::{FileId, Language, LanguageSemantics, ParseResult};
 
 pub mod java;
 pub mod resolve;
@@ -12,7 +13,8 @@ pub mod typescript;
 ///
 /// Each language implements this trait to walk a tree-sitter CST and produce
 /// a unified set of symbols, references, imports, and exports.
-pub trait LanguageParser: Send + Sync {
+/// Also provides language-specific semantic rules via the `LanguageSemantics` supertrait.
+pub trait LanguageParser: LanguageSemantics {
     /// Parse a source file and extract symbols, references, imports, exports.
     fn parse(&self, file_id: FileId, source: &str, path: &Path) -> Result<ParseResult>;
 
@@ -51,6 +53,25 @@ impl ParserRegistry {
             .iter()
             .find(|p| p.supported_languages().contains(&language))
             .map(|p| p.as_ref())
+    }
+
+    /// Get language semantics for a given language.
+    pub fn semantics_for(&self, language: Language) -> Option<&dyn LanguageSemantics> {
+        self.parsers
+            .iter()
+            .find(|p| p.languages().contains(&language))
+            .map(|p| p.as_ref() as &dyn LanguageSemantics)
+    }
+
+    /// Build a lookup table of language semantics for passing to analysis functions.
+    pub fn semantics_map(&self) -> HashMap<Language, &dyn LanguageSemantics> {
+        let mut map = HashMap::new();
+        for parser in &self.parsers {
+            for &lang in parser.languages() {
+                map.insert(lang, parser.as_ref() as &dyn LanguageSemantics);
+            }
+        }
+        map
     }
 
     /// Parse a source file using the appropriate language parser.

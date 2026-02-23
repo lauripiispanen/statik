@@ -281,3 +281,41 @@ pub struct ParseResult {
 
 pub mod file_graph;
 pub mod graph;
+
+/// Language-specific semantic rules for analysis.
+///
+/// Each language provides metadata about its conventions for entry points,
+/// test detection, and import resolution. This keeps language-specific
+/// knowledge in the parser crate while letting the analysis crate
+/// remain language-agnostic.
+pub trait LanguageSemantics: Send + Sync {
+    /// Which languages does this implementation cover?
+    fn languages(&self) -> &[Language];
+
+    /// Is this file path a language-specific entry point?
+    fn is_entry_point_file(&self, _path: &std::path::Path) -> bool {
+        false
+    }
+
+    /// Annotations that mark a file as an entry point.
+    fn entry_point_annotations(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Does this language support module-stem imports?
+    /// (e.g., Rust's `use crate::cli::commands` imports the module name)
+    fn supports_module_stem_import(&self) -> bool {
+        false
+    }
+
+    /// Directory component names where ALL symbols should be seeded as alive.
+    /// Files under these directories are considered test/infrastructure code.
+    fn seed_all_symbols_dirs(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Is this module name a test module whose symbols should always be seeded?
+    fn is_test_module(&self, _name: &str) -> bool {
+        false
+    }
+}

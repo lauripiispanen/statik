@@ -8,6 +8,8 @@ use crate::model::{
     Reference, ReferenceId, Span, Symbol, SymbolId, SymbolKind, Visibility,
 };
 
+use crate::model::LanguageSemantics;
+
 use super::LanguageParser;
 
 #[derive(Default)]
@@ -38,6 +40,25 @@ impl TypeScriptParser {
             Some("ts" | "tsx") => Language::TypeScript,
             _ => Language::JavaScript,
         }
+    }
+}
+
+impl LanguageSemantics for TypeScriptParser {
+    fn languages(&self) -> &[Language] {
+        &[Language::TypeScript, Language::JavaScript]
+    }
+
+    fn is_entry_point_file(&self, path: &std::path::Path) -> bool {
+        let file_name_with_ext = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        file_name_with_ext.contains(".test.")
+            || file_name_with_ext.contains(".spec.")
+            || file_name.ends_with("_test")
+            || file_name.ends_with("_spec")
+    }
+
+    fn seed_all_symbols_dirs(&self) -> &[&str] {
+        &["__tests__"]
     }
 }
 
