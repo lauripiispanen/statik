@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::linker::LinkingResult;
 use crate::model::file_graph::FileGraph;
 use crate::model::graph::SymbolGraph;
-use crate::model::{FileId, SymbolId, SymbolKind, Visibility};
+use crate::model::{FileId, RefKind, SymbolId, SymbolKind, Visibility};
 
 use super::{compute_confidence, Confidence, Limitation};
 
@@ -464,6 +464,50 @@ pub fn detect_dead_symbols(
             if sym.parent == Some(enum_id) && sym.kind == SymbolKind::EnumVariant {
                 reachable.insert(sym.id);
             }
+        }
+    }
+
+    // Post-BFS: inheritance propagation for trait/interface dispatch.
+    // When a trait/interface is alive, find all structs/classes that implement it
+    // (via RefKind::Inheritance references) and seed them plus their children.
+    // This handles dynamic dispatch patterns (e.g., &dyn LanguageParser).
+    let alive_trait_names: HashSet<&str> = reachable
+        .iter()
+        .filter_map(|id| {
+            symbol_graph.symbols.get(id).and_then(|s| {
+                if s.kind == SymbolKind::Interface {
+                    Some(s.name.as_str())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    if !alive_trait_names.is_empty() {
+        // Find implementing structs/classes via inheritance references
+        let mut new_seeds: Vec<SymbolId> = Vec::new();
+        for reference in &symbol_graph.references {
+            if reference.kind == RefKind::Inheritance {
+                if let Some(target_name) = &reference.target_name {
+                    if alive_trait_names.contains(target_name.as_str()) {
+                        // Seed the implementing type
+                        new_seeds.push(reference.source);
+                        // Seed all children (methods in the impl block)
+                        for sym in symbol_graph.symbols.values() {
+                            if sym.parent == Some(reference.source) {
+                                new_seeds.push(sym.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !new_seeds.is_empty() {
+            // Re-run BFS from newly seeded symbols
+            let extra_reachable = symbol_graph.reachable_from(&new_seeds);
+            reachable.extend(extra_reachable);
         }
     }
 
