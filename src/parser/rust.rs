@@ -239,6 +239,10 @@ impl<'a> Extractor<'a> {
             "identifier" => {
                 self.maybe_extract_identifier_reference(node);
             }
+            "scoped_identifier" => {
+                self.maybe_extract_cross_module_import(node);
+                self.visit_children(node);
+            }
             _ => self.visit_children(node),
         }
     }
@@ -1230,6 +1234,67 @@ impl<'a> Extractor<'a> {
         });
         self.ref_target_names.push(name);
         self.ref_qualifiers.push(None);
+    }
+
+    /// For scoped paths starting with `super::`, `crate::`, or `self::` that
+    /// appear in expression context (not `use` declarations), create an import
+    /// record so that cross-file symbol linking can track the dependency.
+    ///
+    /// This complements `extract_use` (which handles `use` declarations) by
+    /// capturing inline cross-module references like `super::foo()` or
+    /// `crate::model::SomeType { .. }`.
+    ///
+    /// Only processes the outermost scoped_identifier (skips nested ones).
+    fn maybe_extract_cross_module_import(&mut self, node: Node) {
+        // Only process the outermost scoped_identifier to avoid duplicates
+        if node
+            .parent()
+            .map_or(false, |p| p.kind() == "scoped_identifier")
+        {
+            return;
+        }
+
+        // Fast check: inspect the leftmost child to see if this is a
+        // cross-module path before doing a full text extraction.
+        let first_child = match node.child(0) {
+            Some(c) => c,
+            None => return,
+        };
+        let first_text = self.node_text(first_child);
+        if !matches!(first_text, "super" | "crate" | "self") {
+            // Check if the first child is itself a scoped_identifier starting
+            // with one of these prefixes (e.g., `super::resolve::func`).
+            if first_child.kind() != "scoped_identifier" {
+                return;
+            }
+            let nested_first = match first_child.child(0) {
+                Some(c) => c,
+                None => return,
+            };
+            if !matches!(self.node_text(nested_first), "super" | "crate" | "self") {
+                return;
+            }
+        }
+
+        let text = self.node_text(node).to_string();
+
+        // Extract the imported name (last segment after ::)
+        let imported_name = match text.rsplit("::").next() {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => return,
+        };
+
+        // Skip keywords that aren't symbol references
+        if matches!(
+            imported_name.as_str(),
+            "self" | "Self" | "super" | "crate"
+        ) {
+            return;
+        }
+
+        let span = self.node_span(node);
+        let line_span = self.node_line_span(node);
+        self.add_import(&text, &imported_name, None, false, span, line_span);
     }
 
     /// Check whether `node` is the name being *declared* (not *used*) in a
@@ -2475,6 +2540,43 @@ impl Foo {
             "check should reference ITEMS via ITEMS.contains(), refs: {:?}",
             result.references
         );
+    }
+
+    #[test]
+    fn test_cross_module_path_call_creates_import() {
+        // `super::some_fn()` in a function body should create an import record
+        let result = parse_rust(
+            r#"
+fn caller() {
+    let x = super::helper_fn(42);
+    if crate::utils::check() { }
+}
+"#,
+        );
+
+        let super_import = result
+            .imports
+            .iter()
+            .find(|i| i.imported_name == "helper_fn");
+        assert!(
+            super_import.is_some(),
+            "should create import for super::helper_fn(), imports: {:?}",
+            result.imports
+        );
+        let imp = super_import.unwrap();
+        assert_eq!(imp.source_path, "super::helper_fn");
+
+        let crate_import = result
+            .imports
+            .iter()
+            .find(|i| i.imported_name == "check");
+        assert!(
+            crate_import.is_some(),
+            "should create import for crate::utils::check(), imports: {:?}",
+            result.imports
+        );
+        let imp2 = crate_import.unwrap();
+        assert_eq!(imp2.source_path, "crate::utils::check");
     }
 
     #[test]

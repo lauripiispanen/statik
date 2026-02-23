@@ -5,6 +5,14 @@ use super::{Resolution, ResolutionCaveat, Resolver, UnresolvedReason};
 
 const RUST_STDLIB_CRATES: &[&str] = &["std", "core", "alloc", "proc_macro", "test"];
 
+/// File stems that represent module-level files (they "own" their directory).
+const MODULE_FILE_STEMS: &[&str] = &["mod", "lib", "main"];
+
+/// Module files to try when falling back from unresolved path segments to the
+/// parent module's file.  Ordered by likelihood: mod.rs (most common),
+/// then lib.rs / main.rs (at crate root).
+const MODULE_FILE_NAMES: &[&str] = &["mod.rs", "lib.rs", "main.rs"];
+
 pub struct RustResolver {
     known_files: HashSet<PathBuf>,
     /// Crate root files (lib.rs, main.rs, src/bin/*.rs)
@@ -66,6 +74,10 @@ impl RustResolver {
     fn crate_src_dir(&self, from_file: &Path) -> Option<PathBuf> {
         self.find_crate_root_for(from_file)
             .and_then(|root| root.parent().map(|p| p.to_path_buf()))
+    }
+
+    fn is_module_file_stem(stem: &str) -> bool {
+        MODULE_FILE_STEMS.contains(&stem)
     }
 
     fn find_lib_root(&self) -> Option<&PathBuf> {
@@ -185,6 +197,17 @@ impl RustResolver {
                     return Resolution::Resolved(resolved);
                 }
             }
+
+            // Segments couldn't be resolved as files — they're likely symbol names
+            // at the crate root (e.g., `use crate::SomeType` defined in lib.rs).
+            // Skip if from_file is itself a crate root (those are intra-file refs).
+            if !self.crate_roots.contains(&from_file.to_path_buf()) {
+                for root in &self.crate_roots {
+                    if root.parent() == Some(src_dir.as_path()) {
+                        return Resolution::Resolved(root.clone());
+                    }
+                }
+            }
         }
 
         Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
@@ -219,7 +242,7 @@ impl RustResolver {
 
         // Determine the starting module directory
         let file_name = from_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let mut module_dir = if file_name == "mod" || file_name == "lib" || file_name == "main" {
+        let mut module_dir = if Self::is_module_file_stem(file_name) {
             // In foo/mod.rs, the first super goes to parent of foo/
             parent_dir.parent().unwrap_or(parent_dir)
         } else {
@@ -245,6 +268,16 @@ impl RustResolver {
             return Resolution::Resolved(resolved);
         }
 
+        // Segments couldn't be resolved as files — they're likely symbol names
+        // (e.g., `use super::SomeType` where SomeType is in the parent mod.rs).
+        // Fall back to the module file of module_dir.
+        for name in MODULE_FILE_NAMES {
+            let module_file = module_dir.join(name);
+            if self.known_files.contains(&module_file) && module_file != *from_file {
+                return Resolution::Resolved(module_file);
+            }
+        }
+
         Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
             "super path '{}' not found",
             path
@@ -267,7 +300,7 @@ impl RustResolver {
 
         // For mod.rs/lib.rs/main.rs, self:: refers to sibling modules in the same directory
         // For leaf files like bar.rs, self:: refers to submodules in a bar/ directory
-        let module_dir = if file_stem == "mod" || file_stem == "lib" || file_stem == "main" {
+        let module_dir = if Self::is_module_file_stem(file_stem) {
             parent_dir.to_path_buf()
         } else {
             // bar.rs -> look in bar/ directory for submodules
@@ -277,6 +310,16 @@ impl RustResolver {
         let segments: Vec<&str> = stripped.split("::").collect();
         if let Some(resolved) = self.resolve_path_segments(&module_dir, &segments) {
             return Resolution::Resolved(resolved);
+        }
+
+        // Segments are symbol names (not submodules). For mod.rs/lib.rs/main.rs,
+        // self:: symbols are in the file itself (intra-file, no import needed).
+        // For leaf files, self:: symbols would be in a submodule directory's mod.rs.
+        if !Self::is_module_file_stem(file_stem) {
+            let sub_mod = module_dir.join("mod.rs");
+            if self.known_files.contains(&sub_mod) {
+                return Resolution::Resolved(sub_mod);
+            }
         }
 
         Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
@@ -652,6 +695,49 @@ serde = "1"
                 assert!(path.ends_with("model/user.rs"), "got {:?}", path);
             }
             other => panic!("expected Resolved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_super_symbol_in_mod_file() {
+        // `use super::SomeType` from a leaf file should resolve to the parent mod.rs
+        // (SomeType is a symbol, not a submodule)
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("resolver")).unwrap();
+        fs::write(src.join("lib.rs"), "mod resolver;").unwrap();
+        fs::write(
+            src.join("resolver/mod.rs"),
+            "pub enum Caveat { A, B } pub mod rust;",
+        )
+        .unwrap();
+        fs::write(
+            src.join("resolver/rust.rs"),
+            "use super::Caveat;",
+        )
+        .unwrap();
+
+        let known = vec![
+            src.join("lib.rs"),
+            src.join("resolver/mod.rs"),
+            src.join("resolver/rust.rs"),
+        ];
+        let resolver = RustResolver::new(dir.path().to_path_buf(), known);
+        let from = src.join("resolver/rust.rs");
+
+        let result = resolver.resolve("super::Caveat", &from);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(
+                    path.ends_with("resolver/mod.rs"),
+                    "super::Caveat should resolve to mod.rs, got {:?}",
+                    path
+                );
+            }
+            other => panic!(
+                "expected Resolved for super::Symbol, got {:?}",
+                other
+            ),
         }
     }
 
