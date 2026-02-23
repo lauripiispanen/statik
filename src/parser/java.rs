@@ -134,6 +134,8 @@ struct Extractor<'a> {
     annotations: Vec<String>,
     /// Target names parallel to `references`, used for intra-file resolution post-pass.
     ref_target_names: Vec<String>,
+    /// Optional qualifier parallel to `references` (e.g. class name for `this.method()`).
+    ref_qualifiers: Vec<Option<String>>,
 }
 
 impl<'a> Extractor<'a> {
@@ -154,6 +156,7 @@ impl<'a> Extractor<'a> {
             type_params: HashSet::new(),
             annotations: Vec::new(),
             ref_target_names: Vec::new(),
+            ref_qualifiers: Vec::new(),
         }
     }
 
@@ -197,6 +200,19 @@ impl<'a> Extractor<'a> {
 
     fn current_parent(&self) -> Option<SymbolId> {
         self.parent_stack.last().copied()
+    }
+
+    /// Find the name of the enclosing class from the parent stack.
+    /// Used for this.method() and implicit-this qualifier resolution.
+    fn enclosing_class_name(&self) -> Option<String> {
+        for &parent_id in self.parent_stack.iter().rev() {
+            if let Some(sym) = self.symbols.iter().find(|s| s.id == parent_id) {
+                if matches!(sym.kind, SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum) {
+                    return Some(sym.name.clone());
+                }
+            }
+        }
+        None
     }
 
     fn all_parents_public(&self) -> bool {
@@ -433,6 +449,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(None);
         }
     }
 
@@ -1089,6 +1106,7 @@ impl<'a> Extractor<'a> {
             target_name: Some(target_name.clone()),
         });
         self.ref_target_names.push(target_name);
+        self.ref_qualifiers.push(None);
     }
 
     fn extract_call_reference(&mut self, node: Node) {
@@ -1097,6 +1115,23 @@ impl<'a> Extractor<'a> {
             return;
         }
         let target_name = self.node_text(name_node.unwrap()).to_string();
+
+        // Check for this.method() or implicit this (no object = same-class call)
+        let qualifier = node.child_by_field_name("object").and_then(|obj| {
+            let text = self.node_text(obj);
+            if text == "this" {
+                self.enclosing_class_name()
+            } else {
+                None
+            }
+        }).or_else(|| {
+            // No explicit object means implicit this in Java
+            if node.child_by_field_name("object").is_none() {
+                self.enclosing_class_name()
+            } else {
+                None
+            }
+        });
 
         if let Some(source_id) = self.current_parent() {
             let ref_id = self.alloc_ref_id();
@@ -1112,6 +1147,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(qualifier);
         }
     }
 
@@ -1136,6 +1172,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(None);
         }
     }
 
@@ -1145,6 +1182,7 @@ impl<'a> Extractor<'a> {
             &self.symbols,
             &mut self.references,
             &self.ref_target_names,
+            &self.ref_qualifiers,
         );
     }
 }

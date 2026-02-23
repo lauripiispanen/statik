@@ -84,6 +84,8 @@ struct Extractor<'a> {
     parent_stack: Vec<SymbolId>,
     /// Target names parallel to `references`, used for intra-file resolution post-pass.
     ref_target_names: Vec<String>,
+    /// Optional qualifier parallel to `references` (e.g. class name for `this.method()`).
+    ref_qualifiers: Vec<Option<String>>,
 }
 
 impl<'a> Extractor<'a> {
@@ -100,6 +102,7 @@ impl<'a> Extractor<'a> {
             next_ref_id: file_id.0 * 100_000 + 1,
             parent_stack: Vec::new(),
             ref_target_names: Vec::new(),
+            ref_qualifiers: Vec::new(),
         }
     }
 
@@ -154,6 +157,19 @@ impl<'a> Extractor<'a> {
 
     fn current_parent(&self) -> Option<SymbolId> {
         self.parent_stack.last().copied()
+    }
+
+    /// Find the name of the enclosing class from the parent stack.
+    /// Used for this.method() qualifier resolution.
+    fn enclosing_class_name(&self) -> Option<String> {
+        for &parent_id in self.parent_stack.iter().rev() {
+            if let Some(sym) = self.symbols.iter().find(|s| s.id == parent_id) {
+                if matches!(sym.kind, SymbolKind::Class | SymbolKind::Interface) {
+                    return Some(sym.name.clone());
+                }
+            }
+        }
+        None
     }
 
     fn qualified_name(&self, name: &str) -> String {
@@ -1241,6 +1257,7 @@ impl<'a> Extractor<'a> {
             target_name: Some(target_name.clone()),
         });
         self.ref_target_names.push(target_name);
+        self.ref_qualifiers.push(None);
     }
 
     /// Try to extract a dynamic import expression: `import('./module')`.
@@ -1304,16 +1321,22 @@ impl<'a> Extractor<'a> {
         }
         let func_node = func_node.unwrap();
 
-        // Extract the target name for intra-file resolution.
-        // For member_expression (obj.method), use the rightmost identifier.
-        // For plain identifier (foo), use the whole text.
-        let target_name = if func_node.kind() == "member_expression" {
-            func_node
+        // Extract the target name and optional qualifier for intra-file resolution.
+        let (target_name, qualifier) = if func_node.kind() == "member_expression" {
+            let name = func_node
                 .child_by_field_name("property")
                 .map(|n| self.node_text(n).to_string())
-                .unwrap_or_else(|| self.node_text(func_node).to_string())
+                .unwrap_or_else(|| self.node_text(func_node).to_string());
+            let qual = func_node.child_by_field_name("object").and_then(|obj| {
+                if self.node_text(obj) == "this" {
+                    self.enclosing_class_name()
+                } else {
+                    None
+                }
+            });
+            (name, qual)
         } else {
-            self.node_text(func_node).to_string()
+            (self.node_text(func_node).to_string(), None)
         };
 
         // Only record call references if we have a parent context
@@ -1331,6 +1354,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(qualifier);
         }
     }
 
@@ -1353,6 +1377,7 @@ impl<'a> Extractor<'a> {
                     target_name: Some(target_name.clone()),
                 });
                 self.ref_target_names.push(target_name);
+                self.ref_qualifiers.push(None);
             }
         }
     }
@@ -1363,6 +1388,7 @@ impl<'a> Extractor<'a> {
             &self.symbols,
             &mut self.references,
             &self.ref_target_names,
+            &self.ref_qualifiers,
         );
     }
 }

@@ -66,6 +66,7 @@ struct Extractor<'a> {
     next_ref_id: u64,
     parent_stack: Vec<SymbolId>,
     ref_target_names: Vec<String>,
+    ref_qualifiers: Vec<Option<String>>,
 }
 
 impl<'a> Extractor<'a> {
@@ -82,6 +83,7 @@ impl<'a> Extractor<'a> {
             next_ref_id: file_id.0 * 100_000 + 1,
             parent_stack: Vec::new(),
             ref_target_names: Vec::new(),
+            ref_qualifiers: Vec::new(),
         }
     }
 
@@ -933,6 +935,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(base_trait.to_string()),
             });
             self.ref_target_names.push(base_trait.to_string());
+            self.ref_qualifiers.push(None);
         }
 
         // Visit impl body with the type as parent
@@ -987,12 +990,20 @@ impl<'a> Extractor<'a> {
             None => return,
         };
 
-        let target_name = match func.kind() {
-            "identifier" => self.node_text(func).to_string(),
+        let (target_name, qualifier) = match func.kind() {
+            "identifier" => (self.node_text(func).to_string(), None),
             "field_expression" => {
                 // method call: obj.method()
                 if let Some(field) = func.child_by_field_name("field") {
-                    self.node_text(field).to_string()
+                    let qual = func.child_by_field_name("value").and_then(|v| {
+                        let text = self.node_text(v);
+                        if text == "self" || text == "Self" {
+                            self.enclosing_type_name()
+                        } else {
+                            None
+                        }
+                    });
+                    (self.node_text(field).to_string(), qual)
                 } else {
                     return;
                 }
@@ -1000,7 +1011,12 @@ impl<'a> Extractor<'a> {
             "scoped_identifier" => {
                 // qualified call: Foo::bar()
                 let text = self.node_text(func);
-                text.rsplit("::").next().unwrap_or(text).to_string()
+                let target = text.rsplit("::").next().unwrap_or(text).to_string();
+                // Qualifier is the segment before the last ::
+                let qual = text.rsplit_once("::").map(|(prefix, _)| {
+                    prefix.rsplit("::").next().unwrap_or(prefix).to_string()
+                });
+                (target, qual)
             }
             _ => return,
         };
@@ -1019,6 +1035,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(qualifier);
         }
     }
 
@@ -1028,10 +1045,11 @@ impl<'a> Extractor<'a> {
             None => return,
         };
 
-        let target_name = {
-            let text = self.node_text(name_node);
-            text.rsplit("::").next().unwrap_or(text).to_string()
-        };
+        let text = self.node_text(name_node);
+        let target_name = text.rsplit("::").next().unwrap_or(text).to_string();
+        let qualifier = text.rsplit_once("::").map(|(prefix, _)| {
+            prefix.rsplit("::").next().unwrap_or(prefix).to_string()
+        });
 
         if let Some(source_id) = self.find_enclosing_symbol() {
             let ref_id = self.alloc_ref_id();
@@ -1047,6 +1065,7 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(qualifier);
         }
     }
 
@@ -1066,11 +1085,25 @@ impl<'a> Extractor<'a> {
                 target_name: Some(target_name.clone()),
             });
             self.ref_target_names.push(target_name);
+            self.ref_qualifiers.push(None);
         }
     }
 
     fn find_enclosing_symbol(&self) -> Option<SymbolId> {
         self.parent_stack.last().copied()
+    }
+
+    /// Find the name of the enclosing type (struct/enum) from the parent stack.
+    /// Used for self.method() qualifier resolution.
+    fn enclosing_type_name(&self) -> Option<String> {
+        for &parent_id in self.parent_stack.iter().rev() {
+            if let Some(sym) = self.symbols.iter().find(|s| s.id == parent_id) {
+                if matches!(sym.kind, SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Interface) {
+                    return Some(sym.name.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Recursively scan a subtree for type_identifier nodes, emitting TypeUsage references.
@@ -1092,6 +1125,7 @@ impl<'a> Extractor<'a> {
             &self.symbols,
             &mut self.references,
             &self.ref_target_names,
+            &self.ref_qualifiers,
         );
     }
 }
@@ -2022,6 +2056,98 @@ impl Beta {
         assert_eq!(
             beta_call.unwrap().target, beta_process.id,
             "Beta.run() should resolve to Beta.process()"
+        );
+    }
+
+    #[test]
+    fn test_qualified_call_resolves_via_qualifier() {
+        // Foo::new() should resolve to the new() method on Foo, not Bar,
+        // even when called from a free function (parent = None).
+        let result = parse_rust(
+            r#"
+struct Foo;
+impl Foo {
+    fn new() -> Self { Foo }
+}
+struct Bar;
+impl Bar {
+    fn new() -> Self { Bar }
+}
+fn create() {
+    Foo::new();
+}
+"#,
+        );
+
+        let foo = result.symbols.iter().find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct).unwrap();
+        let foo_new = result.symbols.iter().find(|s| s.name == "new" && s.parent == Some(foo.id)).unwrap();
+        let create = result.symbols.iter().find(|s| s.name == "create").unwrap();
+
+        let call = result.references.iter().find(|r| r.source == create.id && r.kind == RefKind::Call).unwrap();
+        assert_eq!(
+            call.target, foo_new.id,
+            "Foo::new() in a free function should resolve to Foo's new, not Bar's"
+        );
+    }
+
+    #[test]
+    fn test_self_call_resolves_via_qualifier_not_source_parent() {
+        // self.helper() in Foo should resolve to Foo::helper even when there's
+        // also a helper() in a nested module, testing qualifier takes precedence.
+        let result = parse_rust(
+            r#"
+struct Foo;
+impl Foo {
+    fn helper(&self) -> i32 { 42 }
+    fn run(&self) {
+        self.helper();
+    }
+}
+mod nested {
+    fn helper() -> i32 { 99 }
+}
+"#,
+        );
+
+        let foo = result.symbols.iter().find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct).unwrap();
+        let foo_helper = result.symbols.iter().find(|s| s.name == "helper" && s.parent == Some(foo.id)).unwrap();
+        let foo_run = result.symbols.iter().find(|s| s.name == "run" && s.parent == Some(foo.id)).unwrap();
+
+        let call = result.references.iter().find(|r| r.source == foo_run.id && r.kind == RefKind::Call).unwrap();
+        assert_eq!(
+            call.target, foo_helper.id,
+            "self.helper() should resolve to Foo::helper, not nested::helper"
+        );
+    }
+
+    #[test]
+    fn test_enum_variant_qualified_call() {
+        // Color::Red(255) as a call expression should resolve via qualifier "Color"
+        let result = parse_rust(
+            r#"
+enum Color {
+    Red(u8),
+    Blue(u8),
+}
+enum Shape {
+    Red(u8),
+}
+fn pick() {
+    Color::Red(255);
+}
+"#,
+        );
+
+        let color = result.symbols.iter().find(|s| s.name == "Color" && s.kind == SymbolKind::Enum).unwrap();
+        let color_red = result.symbols.iter().find(|s| s.name == "Red" && s.parent == Some(color.id)).unwrap();
+        let pick = result.symbols.iter().find(|s| s.name == "pick").unwrap();
+
+        // Color::Red(255) is a call expression — should resolve to Color's Red, not Shape's
+        let call = result.references.iter().find(|r| r.source == pick.id && r.kind == RefKind::Call);
+        assert!(call.is_some(), "Color::Red(255) should produce a call reference");
+        assert_eq!(
+            call.unwrap().target, color_red.id,
+            "Color::Red(255) should resolve to Color::Red, not Shape::Red"
         );
     }
 }
