@@ -194,44 +194,6 @@ impl SymbolGraph {
         visited
     }
 
-    /// Find all symbols reachable from entry points, with additional edges.
-    /// The extra_refs map provides cross-file edges not in the original graph.
-    pub fn reachable_from_with_extra(
-        &self,
-        entry_points: &[SymbolId],
-        extra_refs: &HashMap<SymbolId, Vec<SymbolId>>,
-    ) -> HashSet<SymbolId> {
-        let mut visited = HashSet::new();
-        let mut queue: VecDeque<SymbolId> = entry_points
-            .iter()
-            .copied()
-            .filter(|id| self.symbols.contains_key(id))
-            .collect();
-
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current) {
-                continue;
-            }
-            if let Some(refs) = self.references_from.get(&current) {
-                for (target, _) in refs {
-                    if !visited.contains(target) && self.symbols.contains_key(target) {
-                        queue.push_back(*target);
-                    }
-                }
-            }
-            // Also follow extra cross-file edges
-            if let Some(extras) = extra_refs.get(&current) {
-                for target in extras {
-                    if !visited.contains(target) && self.symbols.contains_key(target) {
-                        queue.push_back(*target);
-                    }
-                }
-            }
-        }
-
-        visited
-    }
-
     pub fn symbol_count(&self) -> usize {
         self.symbols.len()
     }
