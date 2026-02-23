@@ -373,11 +373,27 @@ pub fn detect_dead_symbols(
     // plus exports in non-entry files that are actually imported (linker targets).
     let mut entry_symbols: Vec<SymbolId> = Vec::new();
 
+    // Build a lookup for checking if a symbol is inside a "tests" module
+    let is_in_test_module = |sym: &crate::model::Symbol| -> bool {
+        let mut parent = sym.parent;
+        while let Some(pid) = parent {
+            if let Some(p) = symbol_graph.symbols.get(&pid) {
+                if p.kind == SymbolKind::Module && p.name == "tests" {
+                    return true;
+                }
+                parent = p.parent;
+            } else {
+                break;
+            }
+        }
+        false
+    };
+
     for (&file_id, symbol_ids) in &symbol_graph.file_symbols {
         if entry_file_ids.contains(&file_id) {
             // All non-private symbols in entry point files are entry points.
-            // Additionally, well-known entry point names (main) at file scope
-            // are seeded regardless of visibility — in Rust, main() is private.
+            // Additionally: main() at file scope is always seeded (private in Rust),
+            // and all symbols inside `mod tests` blocks are seeded (inline test modules).
             for &sym_id in symbol_ids {
                 if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
                     if symbol.visibility != Visibility::Private {
@@ -386,6 +402,8 @@ pub fn detect_dead_symbols(
                         && symbol.parent.is_none()
                         && matches!(symbol.kind, SymbolKind::Function)
                     {
+                        entry_symbols.push(sym_id);
+                    } else if is_in_test_module(symbol) {
                         entry_symbols.push(sym_id);
                     }
                 }
