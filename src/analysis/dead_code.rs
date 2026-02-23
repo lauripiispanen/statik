@@ -198,6 +198,22 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
         // Similarly for `export { foo } from './A'`, propagate just `foo`.
         propagate_through_reexports(graph, &mut imported_names);
 
+        // Build a map of module re-export names per file: exports that correspond
+        // to `pub mod foo;` declarations. These create an import edge with
+        // is_mod_declaration=true to the module file. If the target file is reachable,
+        // the re-export is structurally necessary and should not be flagged dead.
+        let mut mod_reexport_targets: std::collections::HashMap<(FileId, String), FileId> =
+            std::collections::HashMap::new();
+        for edges in graph.imports.values() {
+            for edge in edges {
+                if edge.is_mod_declaration {
+                    for name in &edge.imported_names {
+                        mod_reexport_targets.insert((edge.from, name.clone()), edge.to);
+                    }
+                }
+            }
+        }
+
         // Check each file's exports
         let entry_set: HashSet<FileId> = entry_points.iter().copied().collect();
         for (file_id, info) in &graph.files {
@@ -216,6 +232,16 @@ pub fn detect_dead_code(graph: &FileGraph, scope: DeadCodeScope) -> DeadCodeResu
                     // Don't report re-exports as dead here -- they are pass-through
                     if export.is_reexport {
                         continue;
+                    }
+
+                    // Skip mod re-exports (`pub mod foo;`) when the target module
+                    // file is reachable — the declaration is structurally necessary.
+                    if let Some(target_file) =
+                        mod_reexport_targets.get(&(*file_id, export.exported_name.clone()))
+                    {
+                        if reachable.contains(target_file) {
+                            continue;
+                        }
                     }
 
                     let export_confidence = if unresolved_count == 0 {
@@ -560,8 +586,15 @@ pub fn detect_dead_symbols(
         .count();
 
     // Find dead symbols: not reachable from any entry point
-    // Exclude synthetic kinds (Import, Export, Package) that are not user-defined code
-    let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
+    // Exclude synthetic kinds (Import, Export, Package) that are not user-defined code.
+    // Module symbols (`pub mod foo;`) are structural declarations — dead modules
+    // are caught at the file level instead.
+    let skip_kinds = [
+        SymbolKind::Import,
+        SymbolKind::Export,
+        SymbolKind::Package,
+        SymbolKind::Module,
+    ];
 
     // Determine confidence based on linker quality.
     // If all cross-file imports were resolved (unresolved == 0), we have High confidence.
@@ -1919,6 +1952,107 @@ mod tests {
 
         assert!(dead_names.contains(&"UnusedStruct"), "UnusedStruct should be dead");
         assert!(dead_names.contains(&"dead_method"), "dead_method should be dead");
+    }
+
+    #[test]
+    fn test_module_symbols_excluded_from_dead() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "my_mod", SymbolKind::Module, 1, Visibility::Private),
+                make_sym(2, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Module symbols should never appear in dead_symbols results
+        assert!(!dead_names.contains(&"my_mod"), "Module symbols should be excluded from dead reporting");
+    }
+
+    #[test]
+    fn test_mod_reexport_alive_when_target_reachable() {
+        // `pub mod foo;` export should NOT be dead when foo.rs is reachable
+        use crate::model::file_graph::FileImport;
+
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/main.rs", true));
+        graph.add_file(make_file_with_exports(2, "src/lib.rs", false, &["foo"]));
+        graph.add_file(make_file(3, "src/foo.rs", false));
+
+        // main -> lib (imports "foo")
+        graph.add_import(make_edge(1, 2, &["foo"]));
+        // lib has `pub mod foo;` which creates a mod declaration import to foo.rs
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["foo".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let dead_export_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+
+        assert!(
+            !dead_export_names.contains(&"foo"),
+            "mod re-export 'foo' should NOT be dead when foo.rs is reachable"
+        );
+    }
+
+    #[test]
+    fn test_mod_reexport_dead_when_target_unreachable() {
+        // `pub mod foo;` export IS dead when the declaring file is itself unreachable
+        use crate::model::file_graph::FileImport;
+
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/main.rs", true));
+        // lib.rs is NOT imported by anyone — it's an orphan file with a mod declaration
+        graph.add_file(make_file_with_exports(2, "src/lib.rs", false, &["foo"]));
+        graph.add_file(make_file(3, "src/foo.rs", false));
+
+        // lib has `pub mod foo;` but lib itself is unreachable, so foo.rs is too
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["foo".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports);
+        let dead_export_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+
+        assert!(
+            dead_export_names.contains(&"foo"),
+            "mod re-export 'foo' SHOULD be dead when lib.rs is unreachable, got: {:?}",
+            dead_export_names
+        );
     }
 
     #[test]
