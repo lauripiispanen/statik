@@ -198,6 +198,30 @@ pub fn find_config_path(project_root: &Path, config_override: Option<&Path>) -> 
     None
 }
 
+/// Java-specific configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JavaConfig {
+    /// Explicit source root directories relative to the project root
+    /// (e.g., `["server/core/src/main/java"]`).
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+}
+
+/// Wrapper for deserializing the optional `[java]` section.
+#[derive(Debug, Deserialize)]
+struct ConfigWithJava {
+    #[serde(default)]
+    java: Option<JavaConfig>,
+}
+
+/// Load Java config from a project, returning None if no config or no `[java]` section.
+pub fn load_java_config(project_root: &Path) -> Option<JavaConfig> {
+    let path = find_config_path(project_root, None)?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let wrapper: ConfigWithJava = toml::from_str(&content).ok()?;
+    wrapper.java.filter(|c| !c.source_roots.is_empty())
+}
+
 /// User-configurable entry point definitions.
 ///
 /// These are checked IN ADDITION to the built-in entry point heuristics.

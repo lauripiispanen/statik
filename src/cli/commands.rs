@@ -42,7 +42,12 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Collect all known file paths for resolvers
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
-    let java_resolver = JavaResolver::new(project_root.to_path_buf(), known_paths.clone());
+    let java_config = crate::linting::config::load_java_config(project_root);
+    let java_resolver = JavaResolver::new(
+        project_root.to_path_buf(),
+        known_paths.clone(),
+        java_config.map(|c| c.source_roots),
+    );
     let rust_resolver = RustResolver::new(project_root.to_path_buf(), known_paths);
 
     // Build path -> FileId lookup
@@ -582,6 +587,7 @@ pub fn run_deps_between(
 }
 
 /// Run the `dead-code` command.
+#[allow(clippy::too_many_arguments)]
 pub fn run_dead_code(
     project_path: &Path,
     scope_str: &str,
@@ -589,6 +595,7 @@ pub fn run_dead_code(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    lang: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
 
@@ -603,12 +610,22 @@ pub fn run_dead_code(
         // This combines language-specific test directories and user config patterns.
         let seed_all_file_ids = build_seed_all_file_ids(&file_graph, project_path);
 
-        let result = crate::analysis::dead_code::detect_dead_symbols(
+        let mut result = crate::analysis::dead_code::detect_dead_symbols(
             &symbol_graph,
             &file_graph,
             &linker_result,
             &seed_all_file_ids,
         );
+        if let Some(lang_filter) = lang.and_then(lang_str_to_language) {
+            result.dead_symbols.retain(|s| {
+                Path::new(&s.file)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(Language::from_extension)
+                    == Some(lang_filter)
+            });
+            result.summary.dead_symbols = result.dead_symbols.len();
+        }
         return Ok(match format {
             OutputFormat::Text => format_dead_symbols_text(&result),
             _ => format_json(&result, format),
@@ -626,7 +643,25 @@ pub fn run_dead_code(
     };
 
     let seed_all_file_ids = build_seed_all_file_ids(&graph, project_path);
-    let result = detect_dead_code(&graph, scope, &seed_all_file_ids);
+    let mut result = detect_dead_code(&graph, scope, &seed_all_file_ids);
+    if let Some(lang_filter) = lang.and_then(lang_str_to_language) {
+        result.dead_files.retain(|f| {
+            f.path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(Language::from_extension)
+                == Some(lang_filter)
+        });
+        result.dead_exports.retain(|e| {
+            e.path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .and_then(Language::from_extension)
+                == Some(lang_filter)
+        });
+        result.summary.dead_files = result.dead_files.len();
+        result.summary.dead_exports = result.dead_exports.len();
+    }
     Ok(match format {
         OutputFormat::Text => format_dead_code_text(&result),
         _ => format_json(&result, format),
@@ -2159,6 +2194,19 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Map a CLI language string (e.g. "java", "typescript", "ts") to a `Language`.
+fn lang_str_to_language(s: &str) -> Option<Language> {
+    let ext = match s.to_lowercase().as_str() {
+        "typescript" | "ts" => "ts",
+        "javascript" | "js" => "js",
+        "python" | "py" => "py",
+        "rust" | "rs" => "rs",
+        "java" => "java",
+        _ => return None,
+    };
+    Language::from_extension(ext)
+}
+
 // --- Text formatters for each command ---
 
 fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> String {
@@ -2318,9 +2366,9 @@ fn format_cycles_text(result: &crate::analysis::cycles::CycleResult) -> String {
                 if j < cycle.files.len() - 1 {
                     out.push_str(&format!("    {} ->\n", display_path(&file.path)));
                 } else {
-                    out.push_str(&format!("    {} ->\n", display_path(&file.path)));
+                    out.push_str(&format!("    {}\n", display_path(&file.path)));
                     out.push_str(&format!(
-                        "    {} (cycle)\n",
+                        "    -> {} (cycle back)\n",
                         display_path(&cycle.files[0].path)
                     ));
                 }
@@ -2879,8 +2927,8 @@ mod tests {
         let text = format_cycles_text(&result);
         assert!(text.contains("Circular dependencies (1 cycles, 2 files involved):"));
         assert!(text.contains("src/a.ts ->"));
-        assert!(text.contains("src/b.ts ->"));
-        assert!(text.contains("src/a.ts (cycle)"));
+        assert!(text.contains("    src/b.ts\n"));
+        assert!(text.contains("-> src/a.ts (cycle back)"));
     }
 
     #[test]

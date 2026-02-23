@@ -21,7 +21,7 @@ fn test_dogfood_dead_symbols_cross_file_linking() {
 
     // Run symbol-level dead code analysis
     let output =
-        commands::run_dead_code(&root, "symbols", &OutputFormat::Json, true, false, None).unwrap();
+        commands::run_dead_code(&root, "symbols", &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total = json["summary"]["total_symbols"].as_u64().unwrap();

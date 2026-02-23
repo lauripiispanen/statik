@@ -30,8 +30,22 @@ impl JavaResolver {
     ///
     /// - `project_root`: Absolute path to the project root.
     /// - `known_files`: All known `.java` file paths in the project (absolute paths).
-    pub fn new(project_root: PathBuf, known_files: Vec<PathBuf>) -> Self {
-        let source_roots = Self::detect_source_roots(&project_root, &known_files);
+    /// - `configured_roots`: Optional explicit source root paths from config.
+    ///   When provided, these are used directly (skip auto-detection).
+    pub fn new(
+        project_root: PathBuf,
+        known_files: Vec<PathBuf>,
+        configured_roots: Option<Vec<String>>,
+    ) -> Self {
+        let source_roots = if let Some(roots) = configured_roots {
+            roots
+                .iter()
+                .map(|r| project_root.join(r))
+                .filter(|p| p.is_dir())
+                .collect()
+        } else {
+            Self::detect_source_roots(&project_root, &known_files)
+        };
         let package_files = Self::build_package_map(&source_roots, &known_files);
         let known_set: HashSet<PathBuf> = known_files.into_iter().collect();
         JavaResolver {
@@ -44,12 +58,14 @@ impl JavaResolver {
     /// Detect source root directories.
     ///
     /// Strategy:
-    /// 1. Check for standard Maven/Gradle source roots
-    /// 2. Fall back to project root itself
+    /// 1. Check for standard Maven/Gradle source roots at the project root
+    /// 2. Scan known `.java` file paths for standard source root patterns
+    ///    in ancestor directories (handles monorepos)
+    /// 3. Fall back to project root itself
     fn detect_source_roots(project_root: &Path, known_files: &[PathBuf]) -> Vec<PathBuf> {
         let mut roots = Vec::new();
 
-        // Check standard source root directories
+        // Pass 1: check standard source root dirs at the project root (cheap)
         for dir in STANDARD_SOURCE_ROOTS {
             let candidate = project_root.join(dir);
             if candidate.is_dir() {
@@ -57,13 +73,68 @@ impl JavaResolver {
             }
         }
 
-        // If no standard roots found, try to infer from known files
+        if !roots.is_empty() {
+            return roots;
+        }
+
+        // Pass 2: scan known file paths for standard source root patterns
+        // in any ancestor directory (handles monorepos like server/core/src/main/java/)
+        let mut seen = HashSet::new();
+        for file_path in known_files {
+            let ext = file_path.extension().and_then(|e| e.to_str());
+            if ext != Some("java") {
+                continue;
+            }
+            if let Some(root) = Self::extract_source_root(file_path) {
+                if seen.insert(root.clone()) {
+                    roots.push(root);
+                }
+            }
+        }
+
+        // Fall back to project root if nothing found
         if roots.is_empty() && !known_files.is_empty() {
-            // Use project root as fallback
             roots.push(project_root.to_path_buf());
         }
 
         roots
+    }
+
+    /// Given a `.java` file path, find the source root by looking for a standard
+    /// source root pattern (e.g. `src/main/java`) in its ancestor path.
+    fn extract_source_root(file_path: &Path) -> Option<PathBuf> {
+        let path_str = file_path.to_string_lossy();
+
+        // Check for multi-segment patterns first (more specific)
+        for pattern in &["src/main/java", "src/test/java"] {
+            if let Some(idx) = path_str.find(pattern) {
+                let root = &path_str[..idx + pattern.len()];
+                return Some(PathBuf::from(root));
+            }
+        }
+
+        // Then check single-segment patterns
+        // "src/java" — non-standard but used in some projects
+        if let Some(idx) = path_str.find("src/java/") {
+            let root = &path_str[..idx + "src/java".len()];
+            return Some(PathBuf::from(root));
+        }
+
+        // Bare "src" — only match if followed by a package-like path
+        // (i.e., src/com/... or src/org/... to avoid false positives)
+        let components: Vec<_> = file_path.components().collect();
+        for (i, comp) in components.iter().enumerate() {
+            if comp.as_os_str() == "src" && i + 1 < components.len() {
+                let next = components[i + 1].as_os_str().to_string_lossy();
+                // Only treat bare "src" as source root if next dir looks like a package
+                if next.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                    let root: PathBuf = components[..=i].iter().collect();
+                    return Some(root);
+                }
+            }
+        }
+
+        None
     }
 
     /// Convert a fully-qualified Java name to a relative file path.
@@ -320,7 +391,7 @@ mod tests {
     #[test]
     fn test_resolve_simple_import() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         let result = resolver.resolve("com.example.UserService", &from_file);
@@ -335,7 +406,7 @@ mod tests {
     #[test]
     fn test_resolve_nested_package() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         let result = resolver.resolve("com.example.model.User", &from_file);
@@ -350,7 +421,7 @@ mod tests {
     #[test]
     fn test_resolve_test_source_root() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/test/java/com/example/AppTest.java");
 
         let result = resolver.resolve("com.example.AppTest", &from_file);
@@ -365,7 +436,7 @@ mod tests {
     #[test]
     fn test_resolve_cross_source_root() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/test/java/com/example/AppTest.java");
 
         // Test file importing from main source
@@ -381,7 +452,7 @@ mod tests {
     #[test]
     fn test_resolve_static_import() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         // Static import: com.example.UserService.someMethod
@@ -398,7 +469,7 @@ mod tests {
     #[test]
     fn test_external_java_standard_library() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         let result = resolver.resolve("java.util.List", &from_file);
@@ -413,7 +484,7 @@ mod tests {
     #[test]
     fn test_external_third_party() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         let result = resolver.resolve("org.springframework.boot.SpringApplication", &from_file);
@@ -428,7 +499,7 @@ mod tests {
     #[test]
     fn test_unknown_import_classified_as_external() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         // Import not found in project, not a known external prefix
@@ -444,7 +515,7 @@ mod tests {
     #[test]
     fn test_empty_import() {
         let (dir, known_files) = setup_maven_project();
-        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files);
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
         let from_file = dir.path().join("src/main/java/com/example/App.java");
 
         let result = resolver.resolve("", &from_file);
@@ -462,7 +533,7 @@ mod tests {
         fs::write(src.join("App.java"), "public class App {}").unwrap();
 
         let known_files = vec![src.join("App.java")];
-        let resolver = JavaResolver::new(root.to_path_buf(), known_files);
+        let resolver = JavaResolver::new(root.to_path_buf(), known_files, None);
         let from_file = src.join("App.java");
 
         let result = resolver.resolve("com.example.App", &from_file);

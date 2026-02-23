@@ -1432,7 +1432,7 @@ fn test_count_no_cycles_exits_0() {
 }
 
 #[test]
-fn test_count_cycles_exits_1() {
+fn test_count_cycles_exits_0() {
     let proj = create_circular_project();
     proj.run(&["index", "."]);
 
@@ -1444,8 +1444,8 @@ fn test_count_cycles_exits_1() {
     assert!(count > 0, "cyclic project should have cycles");
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "--count > 0 should exit 1"
+        Some(0),
+        "--count is informational and should always exit 0"
     );
 }
 

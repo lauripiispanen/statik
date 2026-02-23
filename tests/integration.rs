@@ -155,7 +155,7 @@ fn test_dead_code_detects_orphan() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false, None).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -178,7 +178,7 @@ fn test_dead_code_text_output() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false, None).unwrap();
+        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false, None, None).unwrap();
 
     assert!(
         output.contains("orphan.ts"),
@@ -233,7 +233,7 @@ fn test_cycles_text_output() {
         "Text output should mention circular dependencies"
     );
     assert!(
-        output.contains("(cycle)"),
+        output.contains("(cycle back)"),
         "Text output should show the cycle closure"
     );
 }
@@ -464,7 +464,7 @@ fn test_barrel_file_dead_code_through_reexports() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false, None).unwrap();
+        commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false, None, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_exports = json["dead_exports"].as_array().unwrap();
     let dead_names: Vec<(&str, &str)> = dead_exports
@@ -562,7 +562,7 @@ fn test_dead_code_symbols_cross_file_linking() {
     index_project(tmp.path());
 
     let output =
-        commands::run_dead_code(tmp.path(), "symbols", &OutputFormat::Json, true, false, None)
+        commands::run_dead_code(tmp.path(), "symbols", &OutputFormat::Json, true, false, None, None)
             .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();

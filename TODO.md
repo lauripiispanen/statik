@@ -1650,6 +1650,192 @@ Tasks:
 
 ---
 
+## Phase 9: External Project Dogfooding
+
+Findings from running statik against a large multi-module Java/TS monorepo
+(~10K files, ~4300 Java, ~4600 JS, ~1400 TS). This exposed critical gaps
+in how statik handles real-world project structures.
+
+**Test project**: `tests/fixtures/java_monorepo/` — a synthetic multi-module
+layout modeled after the real project, with fake names.
+
+### 9.1 Java source root detection for multi-module repos (CRITICAL)
+**Complexity**: M
+**Prerequisites**: None
+**Files**: `src/resolver/java.rs`, `src/linting/config.rs`
+
+**The problem**: `detect_source_roots()` only checks `{project_root}/src/main/java`,
+`{project_root}/src/test/java`, and `{project_root}/src`. For monorepos with nested
+modules, the actual source roots are at paths like:
+- `server/core/src/main/java/`
+- `server/backend/src/java/`
+- `engine/src/main/java/`
+- `tools/codegen/src/`
+
+Result: **86.6% of imports unresolved** (48,941 / 56,491). Only same-package
+imports resolve (via `package_files` map), but cross-package imports fail
+because `resolve_fqn()` tries `{wrong_root}/com/example/Foo.java`.
+
+**The solution**: Two-pronged approach:
+
+1. **Auto-detection**: Scan known Java files for all directories matching
+   `**/src/main/java`, `**/src/test/java`, `**/src/java`, `**/src` that
+   contain `.java` files. Use package declarations to verify — if a file at
+   `server/core/src/main/java/com/example/Foo.java` declares
+   `package com.example`, then `server/core/src/main/java` is a source root.
+
+2. **Config-driven**: Add `[java]` section to `.statik/rules.toml`:
+   ```toml
+   [java]
+   source_roots = [
+     "server/core/src/main/java",
+     "server/backend/src/java",
+     "engine/src/main/java",
+     "tools/codegen/src",
+   ]
+   ```
+   Config takes precedence when present; auto-detection is the fallback.
+
+Tasks:
+- [ ] Add `detect_all_source_roots()` that walks known files to find all
+  `src/main/java` (etc.) directories, not just at the project root
+- [ ] Verify detected roots using package declarations from known files
+- [ ] Add `[java]` config section with `source_roots: Vec<String>`
+- [ ] Pass configured source roots to `JavaResolver::new()` when available
+- [ ] Add unit tests for multi-root detection
+- [ ] Add integration test using `tests/fixtures/java_monorepo/`
+
+**Acceptance**: `statik deps` on a multi-module Java monorepo correctly resolves
+cross-module imports. Unresolved import ratio drops from 86% to <5% for
+intra-project imports.
+
+---
+
+### 9.2 `--lang` filter not applied to `dead-code`
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/commands.rs`
+
+**The problem**: `statik dead-code --lang java` returns the same count as
+`statik dead-code` without any filter. The `--lang` flag is ignored during
+dead code analysis.
+
+**Observed**: All three of `--lang java`, `--lang typescript`, `--lang javascript`
+returned 8,888 dead files (the global total).
+
+Tasks:
+- [ ] Trace the `--lang` filter path through `run_dead_code()` and identify
+  where it's dropped
+- [ ] Apply language filter to dead file and dead export results before output
+- [ ] Add test: `dead-code --lang java` on a mixed project returns only Java files
+
+**Acceptance**: `statik dead-code --lang java` returns only dead Java files.
+
+---
+
+### 9.3 `--count` flag returns exit code 1
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/commands.rs` or `src/main.rs`
+
+**The problem**: `statik dead-code --count` prints the correct number but exits
+with code 1. This breaks CI pipelines that check exit codes.
+
+**Expected behavior**: Exit 0 when `--count` is used, since the purpose is to
+query, not to assert. If the intent is "fail when count > 0", that should be
+a separate flag (e.g., `--fail-on-findings`).
+
+Tasks:
+- [ ] Audit exit code logic for `--count` across all commands
+- [ ] Exit 0 when `--count` is used (informational mode)
+- [ ] Add test: `dead-code --count` exits 0 even when dead code exists
+
+**Acceptance**: `statik dead-code --count` exits 0.
+
+---
+
+### 9.4 `cycles` text format shows no cycle details
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/commands.rs` or `src/cli/output.rs`
+
+**The problem**: Text output for `cycles` prints the summary header
+(`cycle_count: 96, files_in_cycles: 407...`) then `cycles:` with nothing
+after it. JSON format works correctly and shows all cycle details.
+
+**Observed output**:
+```
+cycle_count: 96, files_in_cycles: 407, longest_cycle: 59, shortest_cycle: 2, total_files: 10391
+
+cycles:
+```
+
+Tasks:
+- [ ] Debug the text formatter for cycles — likely a rendering bug where
+  cycles are present in the data but the text formatter doesn't iterate them
+- [ ] Ensure text format shows cycle chains (A -> B -> C -> A) for each cycle
+- [ ] Add test: `cycles --format text` on a project with cycles shows file paths
+
+**Acceptance**: `statik cycles` (text format) shows cycle chains, not just
+the summary line.
+
+---
+
+### 9.5 Exclude `node_modules` and vendored dirs by default
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/discovery/mod.rs`
+
+**The problem**: `node_modules/` directories inside the project get indexed
+and analyzed. This produces noise: fake cycles in vendored dependencies (e.g.,
+zod's internal circular imports), inflated file counts, and irrelevant dead
+code reports.
+
+The current default excludes for TS/JS don't cover `**/node_modules/**`
+when the project root isn't a JS project itself (e.g., a Java monorepo with
+a nested JS tool).
+
+Tasks:
+- [ ] Add `**/node_modules/**` to the global default exclude list (not just
+  TS-specific)
+- [ ] Consider also excluding `**/vendor/**`, `**/third_party/**`,
+  `**/external/**` by default
+- [ ] Ensure `--include` can override defaults if someone explicitly wants
+  to analyze vendored code
+- [ ] Add test: node_modules directory is skipped even in a Java project
+
+**Acceptance**: `statik index` on a monorepo with nested `node_modules/`
+directories skips them by default.
+
+---
+
+### 9.6 Dead code massively over-reports when imports are unresolved
+**Complexity**: S (documentation / confidence fix)
+**Prerequisites**: 9.1 (this is a symptom of unresolved imports)
+**Files**: `src/analysis/dead_code.rs`
+
+**The problem**: 8,888 / 10,391 files flagged dead (85.5%). This is a direct
+cascade from 9.1 — unresolved imports mean files appear unreachable from
+entry points.
+
+The confidence system should flag this more clearly. When the unresolved import
+ratio is very high (>50%), the dead code results should be downgraded to `low`
+confidence or the summary should include a prominent warning.
+
+Tasks:
+- [ ] When unresolved imports exceed 50% of total, add a warning to the
+  summary output: "High unresolved import ratio (X%) — dead code results
+  may be unreliable. Consider configuring source roots."
+- [ ] Downgrade confidence to `low` for all dead code results when the
+  unresolved ratio exceeds 50%
+- [ ] Add the unresolved ratio to `summary` output for visibility
+
+**Acceptance**: Running statik on a project with high unresolved imports
+shows a clear warning rather than silently reporting thousands of false
+positives.
+
+---
+
 ## What's Left: Strategic Priorities
 
 ### Completed (Phases 1-4, 2b, 3, 3b, 7)
@@ -1662,19 +1848,26 @@ Tasks:
 - Structural diff command
 
 ### Highest-impact next work
-1. **Phase 8.1** (source sets): The single most impactful change. Replaces all
-   hardcoded test/entry-point logic with config-driven scoping. Fixes false
-   positives from test code across all three languages. Enables Java multi-module
-   projects. Subsumes `--exclude-path` and `[entry_points]`.
-2. **Phase 8.2** (structural edge propagation): Eliminates remaining Rust false
+1. **Phase 9.1** (multi-module Java source roots): The single most impactful
+   fix. Without this, statik is unusable on real Java monorepos. Auto-detection
+   + config fallback.
+2. **Phase 9.2-9.5** (CLI bugs): Quick fixes that improve trust in the tool.
+   `--lang` filter, `--count` exit code, `cycles` text format, node_modules
+   exclusion.
+3. **Phase 8.1** (source sets): Config-driven scope classification. Replaces
+   hardcoded test/entry-point logic. Enables Java multi-module projects.
+   Subsumes `--exclude-path` and `[entry_points]`.
+4. **Phase 8.2** (structural edge propagation): Eliminates remaining Rust false
    dead exports from `pub mod` re-exports. Generic enough to also improve TS
    barrel file accuracy.
-3. **Phase 8.3** (relative paths): Quick win, improves all output readability.
-4. **Phase 8.4** (inline suppression): Completes the suppression trilogy
+5. **Phase 8.3** (relative paths): Quick win, improves all output readability.
+6. **Phase 8.4** (inline suppression): Completes the suppression trilogy
    (project baseline + source set scope + per-line ignore).
-5. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
+7. **Phase 9.6** (dead code confidence warning): User-facing warning when
+   results are unreliable due to high unresolved import ratio.
+8. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
    large projects (10K+ files).
-6. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
+9. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
    killer feature for CI integration.
-7. **Phase 6.2** (graph visualization): `statik graph --format dot` is
-   low-effort, high-value for architecture reviews.
+10. **Phase 6.2** (graph visualization): `statik graph --format dot` is
+    low-effort, high-value for architecture reviews.

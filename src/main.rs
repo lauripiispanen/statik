@@ -116,6 +116,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
+                cli.lang.as_deref(),
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -317,11 +318,6 @@ fn command_name(cmd: &Commands) -> &'static str {
     }
 }
 
-/// Returns true if the command detects problems (nonzero count should exit 1).
-fn is_problem_command(command: &str) -> bool {
-    matches!(command, "dead-code" | "cycles" | "lint")
-}
-
 /// Extract count from JSON output based on command type.
 fn extract_count(json: &serde_json::Value, command: &str) -> u64 {
     let num = |v: &serde_json::Value| v.as_u64();
@@ -433,11 +429,6 @@ fn emit_output(output: &str, command: &str, opts: &PostProcessOpts) {
     if opts.count {
         let count = extract_count(&json, command);
         println!("{}", count);
-        // Only exit 1 for problem-detection commands where nonzero means issues found.
-        // For informational commands (exports, symbols, deps, etc.), nonzero is normal.
-        if count > 0 && is_problem_command(command) {
-            std::process::exit(1);
-        }
         return;
     }
 
@@ -1534,30 +1525,6 @@ mod tests {
     }
 
     // =========================================================================
-    // is_problem_command tests
-    // =========================================================================
-
-    #[test]
-    fn test_problem_commands_exit_1() {
-        assert!(is_problem_command("dead-code"));
-        assert!(is_problem_command("cycles"));
-        assert!(is_problem_command("lint"));
-    }
-
-    #[test]
-    fn test_informational_commands_exit_0() {
-        assert!(!is_problem_command("deps"));
-        assert!(!is_problem_command("exports"));
-        assert!(!is_problem_command("symbols"));
-        assert!(!is_problem_command("references"));
-        assert!(!is_problem_command("callers"));
-        assert!(!is_problem_command("summary"));
-        assert!(!is_problem_command("impact"));
-        assert!(!is_problem_command("diff"));
-        assert!(!is_problem_command("index"));
-    }
-
-    // =========================================================================
     // extract_count dead_symbols test
     // =========================================================================
 
@@ -1615,10 +1582,4 @@ mod tests {
         assert!(arrays.contains(&"cycle_changes"));
     }
 
-    #[test]
-    fn test_diff_not_problem_command_by_default() {
-        // diff is NOT a problem command in normal mode (only in --ci mode,
-        // which is handled directly in the match arm)
-        assert!(!is_problem_command("diff"));
-    }
 }
