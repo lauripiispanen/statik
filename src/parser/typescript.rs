@@ -2362,4 +2362,73 @@ function load(name: string) {
             call_ref.target.0
         );
     }
+
+    #[test]
+    fn test_scoped_intra_file_resolution_two_classes_same_method() {
+        // Two classes each have a method named "process". Calls within each class
+        // should resolve to their own class's method via parent scoping.
+        let result = parse_ts(
+            r#"
+class Alpha {
+    process() {}
+    run() {
+        this.process();
+    }
+}
+class Beta {
+    process() {}
+    run() {
+        this.process();
+    }
+}
+"#,
+        );
+
+        let alpha = result.symbols.iter().find(|s| s.name == "Alpha").unwrap();
+        let beta = result.symbols.iter().find(|s| s.name == "Beta").unwrap();
+
+        let alpha_process = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "process" && s.parent == Some(alpha.id))
+            .unwrap();
+        let beta_process = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "process" && s.parent == Some(beta.id))
+            .unwrap();
+
+        let alpha_run = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "run" && s.parent == Some(alpha.id))
+            .unwrap();
+        let beta_run = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "run" && s.parent == Some(beta.id))
+            .unwrap();
+
+        // Alpha.run() should call Alpha.process()
+        let alpha_call = result
+            .references
+            .iter()
+            .find(|r| r.source == alpha_run.id && r.kind == RefKind::Call);
+        assert!(alpha_call.is_some(), "Alpha.run() should have a call ref");
+        assert_eq!(
+            alpha_call.unwrap().target, alpha_process.id,
+            "Alpha.run() should resolve to Alpha.process()"
+        );
+
+        // Beta.run() should call Beta.process()
+        let beta_call = result
+            .references
+            .iter()
+            .find(|r| r.source == beta_run.id && r.kind == RefKind::Call);
+        assert!(beta_call.is_some(), "Beta.run() should have a call ref");
+        assert_eq!(
+            beta_call.unwrap().target, beta_process.id,
+            "Beta.run() should resolve to Beta.process()"
+        );
+    }
 }
