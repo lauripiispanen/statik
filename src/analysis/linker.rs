@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::analysis::Confidence;
 use crate::model::file_graph::{FileGraph, FileImport};
-use crate::model::{FileId, Language, SymbolId};
+use crate::model::{FileId, SymbolId};
 
 /// A cross-file reference linking an import site in one file to an exported symbol in another.
 #[derive(Debug, Clone)]
