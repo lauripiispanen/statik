@@ -467,6 +467,29 @@ pub fn detect_dead_symbols(
         }
     }
 
+    // Post-BFS: propagate reachability from alive traits/interfaces to their
+    // direct method children (default methods, associated types, etc.).
+    // Similar to enum variant propagation, trait methods are children via `parent`
+    // but not connected by reference edges. When a trait is alive, its methods
+    // (including default implementations) should be alive.
+    let alive_traits: Vec<SymbolId> = reachable
+        .iter()
+        .filter(|id| {
+            symbol_graph
+                .symbols
+                .get(id)
+                .is_some_and(|s| s.kind == SymbolKind::Interface)
+        })
+        .copied()
+        .collect();
+    for trait_id in alive_traits {
+        for sym in symbol_graph.symbols.values() {
+            if sym.parent == Some(trait_id) {
+                reachable.insert(sym.id);
+            }
+        }
+    }
+
     // Post-BFS: inheritance propagation for trait/interface dispatch.
     // When a trait/interface is alive, find all structs/classes that implement it
     // (via RefKind::Inheritance references) and seed them plus their children.
@@ -1657,6 +1680,97 @@ mod tests {
             dead_names.contains(&"UnusedClass"),
             "UnusedClass should be dead"
         );
+    }
+
+    #[test]
+    fn test_trait_methods_alive_when_trait_alive() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Trait with two methods: one default impl, one signature-only
+        let mut method1 = make_sym(2, "default_method", SymbolKind::Method, 1, Visibility::Public);
+        method1.parent = Some(SymbolId(1));
+        let mut method2 = make_sym(3, "required_method", SymbolKind::Method, 1, Visibility::Public);
+        method2.parent = Some(SymbolId(1));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "MyTrait", SymbolKind::Interface, 1, Visibility::Public),
+                method1,
+                method2,
+                make_sym(4, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Trait is alive (public in entry file), so both methods should be alive
+        assert!(!dead_names.contains(&"MyTrait"), "MyTrait should be alive");
+        assert!(!dead_names.contains(&"default_method"), "default_method should be alive when trait is alive");
+        assert!(!dead_names.contains(&"required_method"), "required_method should be alive when trait is alive");
+    }
+
+    #[test]
+    fn test_trait_methods_dead_when_trait_dead() {
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        // Put the dead trait in a non-entry file so public visibility doesn't auto-seed it
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        file_graph.add_file(make_file(2, "src/utils.ts", false));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+        sym_graph.add_file(make_file_record(2, "src/utils.ts"));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        // Unreachable trait in non-entry file — no linker reference targets it
+        let mut method = make_sym(12, "trait_method", SymbolKind::Method, 2, Visibility::Public);
+        method.parent = Some(SymbolId(11));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(2),
+            symbols: vec![
+                make_sym(11, "DeadTrait", SymbolKind::Interface, 2, Visibility::Public),
+                method,
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(dead_names.contains(&"DeadTrait"), "DeadTrait should be dead");
+        assert!(dead_names.contains(&"trait_method"), "trait_method should be dead when trait is dead");
     }
 
     #[test]
