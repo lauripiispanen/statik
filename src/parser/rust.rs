@@ -38,6 +38,31 @@ impl LanguageParser for RustParser {
         extractor.extract();
         extractor.resolve_intra_file_refs();
 
+        // Emit synthetic @annotation: imports for entry point detection,
+        // using the same mechanism as Java's @Test annotations.
+        let span = Span { start: 0, end: 0 };
+        let line_span = LineSpan {
+            start: Position { line: 0, column: 0 },
+            end: Position { line: 0, column: 0 },
+        };
+        for name in &extractor.annotations {
+            extractor.imports.push(ImportRecord {
+                file: file_id,
+                source_path: format!("@annotation:{}", name),
+                imported_name: name.clone(),
+                local_name: String::new(),
+                span,
+                line_span,
+                is_default: false,
+                is_namespace: false,
+                is_type_only: false,
+                is_side_effect: false,
+                is_dynamic: false,
+            });
+        }
+
+        let annotations = extractor.annotations.clone();
+
         Ok(ParseResult {
             file_id,
             symbols: extractor.symbols,
@@ -45,7 +70,7 @@ impl LanguageParser for RustParser {
             imports: extractor.imports,
             exports: extractor.exports,
             type_references: vec![],
-            annotations: vec![],
+            annotations,
         })
     }
 
@@ -67,6 +92,8 @@ struct Extractor<'a> {
     parent_stack: Vec<SymbolId>,
     ref_target_names: Vec<String>,
     ref_qualifiers: Vec<Option<String>>,
+    /// Attribute names on functions (e.g. "test" from #[test]) for entry point detection.
+    annotations: Vec<String>,
 }
 
 impl<'a> Extractor<'a> {
@@ -84,6 +111,7 @@ impl<'a> Extractor<'a> {
             parent_stack: Vec::new(),
             ref_target_names: Vec::new(),
             ref_qualifiers: Vec::new(),
+            annotations: Vec::new(),
         }
     }
 
@@ -467,6 +495,9 @@ impl<'a> Extractor<'a> {
             Some(n) => self.node_text(n).to_string(),
             None => return,
         };
+
+        // Scan for attributes like #[test], #[tokio::test], #[ignore]
+        self.extract_attributes(node);
 
         let vis = self.extract_visibility(node);
         // Classify as Method only when parent is a type (Struct/Enum/Trait),
@@ -1091,6 +1122,32 @@ impl<'a> Extractor<'a> {
 
     fn find_enclosing_symbol(&self) -> Option<SymbolId> {
         self.parent_stack.last().copied()
+    }
+
+    /// Extract attribute names from preceding sibling `attribute_item` nodes.
+    /// In tree-sitter Rust, #[test] is a sibling before fn, not a child.
+    /// Recognizes #[test], #[tokio::test], #[cfg(test)], etc.
+    fn extract_attributes(&mut self, node: Node) {
+        let mut sibling = node.prev_sibling();
+        while let Some(sib) = sibling {
+            if sib.kind() == "attribute_item" {
+                let text = self.node_text(sib);
+                let inner = text
+                    .trim_start_matches("#[")
+                    .trim_end_matches(']');
+                if inner == "test" {
+                    self.annotations.push("test".to_string());
+                } else if inner.ends_with("::test") || inner.ends_with("::test()") {
+                    // #[tokio::test], #[async_std::test], etc.
+                    self.annotations.push("test".to_string());
+                } else if inner.starts_with("cfg(test") {
+                    self.annotations.push("test".to_string());
+                }
+                sibling = sib.prev_sibling();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Find the name of the enclosing type (struct/enum) from the parent stack.
@@ -2151,6 +2208,42 @@ fn pick() {
         assert_eq!(
             call.unwrap().target, color_red.id,
             "Color::Red(255) should resolve to Color::Red, not Shape::Red"
+        );
+    }
+
+    #[test]
+    fn test_rust_test_attribute_emits_annotation() {
+        let result = parse_rust(
+            r#"
+#[test]
+fn test_something() {
+    assert!(true);
+}
+
+#[tokio::test]
+async fn test_async() {}
+
+fn not_a_test() {}
+"#,
+        );
+
+        // Should detect "test" annotations
+        assert!(
+            result.annotations.contains(&"test".to_string()),
+            "Parser should detect #[test] attribute: {:?}",
+            result.annotations
+        );
+
+        // Should emit @annotation:test synthetic imports
+        let annotation_imports: Vec<_> = result
+            .imports
+            .iter()
+            .filter(|i| i.source_path == "@annotation:test")
+            .collect();
+        assert!(
+            annotation_imports.len() >= 2,
+            "Should emit @annotation:test for both #[test] and #[tokio::test], got {}",
+            annotation_imports.len()
         );
     }
 }

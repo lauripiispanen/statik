@@ -59,20 +59,21 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         exports_by_file.entry(exp.file).or_default().push(exp);
     }
 
-    // Pre-scan Java files for annotation-based entry points
+    // Pre-scan all files for annotation/attribute-based entry points.
+    // Java uses @Test, @SpringBootApplication, etc. Rust uses #[test], etc.
+    // The annotation mechanism is language-agnostic: parsers emit @annotation:
+    // synthetic imports, and we check them against a universal list.
     let mut annotation_entry_files: std::collections::HashSet<FileId> =
         std::collections::HashSet::new();
     for file in &files {
-        if file.language == Language::Java {
-            if let Some(imports) = imports_by_file.get(&file.id) {
-                for import in imports {
-                    if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                        if is_entry_point_annotation(ann)
-                            || ep_config.annotations.iter().any(|a| a == ann)
-                        {
-                            annotation_entry_files.insert(file.id);
-                            break;
-                        }
+        if let Some(imports) = imports_by_file.get(&file.id) {
+            for import in imports {
+                if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
+                    if is_entry_point_annotation(ann)
+                        || ep_config.annotations.iter().any(|a| a == ann)
+                    {
+                        annotation_entry_files.insert(file.id);
+                        break;
                     }
                 }
             }
@@ -289,6 +290,9 @@ fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
 }
 
 const ENTRY_POINT_ANNOTATIONS: &[&str] = &[
+    // Universal
+    "test",  // Rust #[test], pytest conventions
+    // Java / Spring
     "SpringBootApplication",
     "Test",
     "ParameterizedTest",
