@@ -273,9 +273,9 @@ pub struct ParseResult {
     pub references: Vec<Reference>,
     pub imports: Vec<ImportRecord>,
     pub exports: Vec<ExportRecord>,
-    /// Simple type names used in this file (Java only, for same-package resolution).
+    /// Simple type names used in this file (for same-package resolution in Java).
     pub type_references: Vec<String>,
-    /// Annotation names on top-level declarations (Java only, for entry point detection).
+    /// Annotation/attribute names on top-level declarations (for entry point detection).
     pub annotations: Vec<String>,
 }
 
