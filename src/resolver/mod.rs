@@ -21,10 +21,6 @@ pub enum Resolution {
 /// Caveats that reduce confidence in a resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionCaveat {
-    /// Resolved through an `export *` barrel file; the specific symbol may not exist.
-    BarrelFileWildcard,
-    /// Multiple index files could match; we picked the first one.
-    AmbiguousIndex,
     /// Resolved via tsconfig path alias; the mapping may be ambiguous.
     PathAlias,
     /// Both `foo.rs` and `foo/mod.rs` exist (Rust E0761); picked `foo.rs`.
@@ -42,15 +38,6 @@ pub enum UnresolvedReason {
     FileNotFound(String),
     /// The import syntax is not supported by this resolver.
     UnsupportedSyntax(String),
-}
-
-/// Context about the project needed for resolution.
-#[derive(Debug)]
-pub struct ProjectContext {
-    /// The root directory of the project.
-    pub root: PathBuf,
-    /// Known file paths in the project (for fast existence checks).
-    pub known_files: Vec<PathBuf>,
 }
 
 /// Trait for language-specific import resolution.

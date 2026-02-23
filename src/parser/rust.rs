@@ -58,9 +58,6 @@ impl LanguageSemantics for RustParser {
         &["tests", "examples", "benches"]
     }
 
-    fn is_test_module(&self, name: &str) -> bool {
-        name == "tests"
-    }
 }
 
 impl LanguageParser for RustParser {
@@ -2449,6 +2446,33 @@ fn bar() { let f = baz; }
         assert!(
             has_ref,
             "bar should reference baz, refs: {:?}",
+            result.references
+        );
+    }
+
+    #[test]
+    fn test_constant_method_call_creates_reference() {
+        // CONST.method() should create a reference to CONST
+        let result = parse_rust(
+            r#"
+const ITEMS: &[&str] = &["a", "b"];
+struct Foo;
+impl Foo {
+    fn check(&self) -> bool { ITEMS.contains(&"a") }
+}
+"#,
+        );
+
+        let check = result.symbols.iter().find(|s| s.name == "check").unwrap();
+        let items = result.symbols.iter().find(|s| s.name == "ITEMS").unwrap();
+
+        let has_ref = result
+            .references
+            .iter()
+            .any(|r| r.source == check.id && r.target == items.id);
+        assert!(
+            has_ref,
+            "check should reference ITEMS via ITEMS.contains(), refs: {:?}",
             result.references
         );
     }

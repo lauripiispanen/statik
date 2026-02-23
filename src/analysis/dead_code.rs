@@ -483,108 +483,90 @@ pub fn detect_dead_symbols(
     // BFS from entry points through intra-file references to find all reachable symbols
     let mut reachable = symbol_graph.reachable_from(&entry_symbols);
 
-    // Post-BFS: propagate reachability from alive enums to their variants.
-    // Enum variants are children (via `parent`) but not connected by reference edges,
-    // so BFS doesn't reach them. This is language-generic.
-    let alive_enums: Vec<SymbolId> = reachable
-        .iter()
-        .filter(|id| {
-            symbol_graph
-                .symbols
-                .get(id)
-                .is_some_and(|s| s.kind == SymbolKind::Enum)
-        })
-        .copied()
-        .collect();
-    for enum_id in alive_enums {
-        for sym in symbol_graph.symbols.values() {
-            if sym.parent == Some(enum_id) && sym.kind == SymbolKind::EnumVariant {
-                reachable.insert(sym.id);
-            }
-        }
-    }
+    // Post-BFS convergence loop: repeatedly apply propagation rules until
+    // no new symbols are reached. This handles chains like:
+    // ParserRegistry alive → with_defaults() seeded → BFS reaches RustParser::new()
+    // → RustParser alive → languages() seeded → etc.
+    loop {
+        let prev_size = reachable.len();
 
-    // Post-BFS: propagate reachability from alive traits/interfaces to their
-    // direct method children (default methods, associated types, etc.).
-    // Similar to enum variant propagation, trait methods are children via `parent`
-    // but not connected by reference edges. When a trait is alive, its methods
-    // (including default implementations) should be alive.
-    let alive_traits: Vec<SymbolId> = reachable
-        .iter()
-        .filter(|id| {
-            symbol_graph
-                .symbols
-                .get(id)
-                .is_some_and(|s| s.kind == SymbolKind::Interface)
-        })
-        .copied()
-        .collect();
-    for trait_id in alive_traits {
-        for sym in symbol_graph.symbols.values() {
-            if sym.parent == Some(trait_id) {
-                reachable.insert(sym.id);
-            }
-        }
-    }
-
-    // Post-BFS: inheritance propagation for trait/interface dispatch.
-    // When a trait/interface is alive, find all structs/classes that implement it
-    // (via RefKind::Inheritance references) and seed them plus their children.
-    // This handles dynamic dispatch patterns (e.g., &dyn LanguageParser).
-    let alive_trait_names: HashSet<&str> = reachable
-        .iter()
-        .filter_map(|id| {
-            symbol_graph.symbols.get(id).and_then(|s| {
-                if s.kind == SymbolKind::Interface {
-                    Some(s.name.as_str())
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-
-    if !alive_trait_names.is_empty() {
-        // Find implementing structs/classes via inheritance references
+        // 1. Seed all children of alive parents.
+        // When any symbol is alive, its children (methods, variants, associated types,
+        // trait impl methods, etc.) should be alive too. This handles enum variants,
+        // trait methods, struct methods from impl blocks, and Display/Default/etc impls.
         let mut new_seeds: Vec<SymbolId> = Vec::new();
-        for reference in &symbol_graph.references {
-            if reference.kind == RefKind::Inheritance {
-                if let Some(target_name) = &reference.target_name {
-                    if alive_trait_names.contains(target_name.as_str()) {
-                        // Seed the implementing type
-                        new_seeds.push(reference.source);
-                        // Seed all children (methods in the impl block)
-                        for sym in symbol_graph.symbols.values() {
-                            if sym.parent == Some(reference.source) {
-                                new_seeds.push(sym.id);
+        for sym in symbol_graph.symbols.values() {
+            if let Some(parent_id) = sym.parent {
+                if reachable.contains(&parent_id) && !reachable.contains(&sym.id) {
+                    reachable.insert(sym.id);
+                    new_seeds.push(sym.id);
+                }
+            }
+        }
+        // Follow outgoing references from newly seeded children
+        if !new_seeds.is_empty() {
+            let extra = symbol_graph.reachable_from(&new_seeds);
+            reachable.extend(extra);
+        }
+
+        // 2. Inheritance propagation for trait/interface dispatch.
+        // When a trait/interface is alive, find all structs/classes that implement it
+        // (via RefKind::Inheritance references) and seed them plus their children.
+        // This handles dynamic dispatch patterns (e.g., &dyn LanguageParser).
+        let alive_trait_names: HashSet<&str> = reachable
+            .iter()
+            .filter_map(|id| {
+                symbol_graph.symbols.get(id).and_then(|s| {
+                    if s.kind == SymbolKind::Interface {
+                        Some(s.name.as_str())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        if !alive_trait_names.is_empty() {
+            let mut inherit_seeds: Vec<SymbolId> = Vec::new();
+            for reference in &symbol_graph.references {
+                if reference.kind == RefKind::Inheritance {
+                    if let Some(target_name) = &reference.target_name {
+                        if alive_trait_names.contains(target_name.as_str()) {
+                            if !reachable.contains(&reference.source) {
+                                inherit_seeds.push(reference.source);
+                            }
+                            for sym in symbol_graph.symbols.values() {
+                                if sym.parent == Some(reference.source)
+                                    && !reachable.contains(&sym.id)
+                                {
+                                    inherit_seeds.push(sym.id);
+                                }
                             }
                         }
                     }
                 }
             }
+
+            if !inherit_seeds.is_empty() {
+                for &id in &inherit_seeds {
+                    reachable.insert(id);
+                }
+                let extra_reachable = symbol_graph.reachable_from(&inherit_seeds);
+                reachable.extend(extra_reachable);
+            }
         }
 
-        if !new_seeds.is_empty() {
-            // Re-run BFS from newly seeded symbols
-            let extra_reachable = symbol_graph.reachable_from(&new_seeds);
-            reachable.extend(extra_reachable);
-        }
-    }
-
-    // Post-BFS: reverse parent propagation.
-    // If any child symbol is alive, its parent type symbol should be alive too.
-    // Iterate until stable (parent becoming alive might activate grandparent).
-    loop {
-        let mut changed = false;
+        // 3. Reverse parent propagation.
+        // If any child symbol is alive, its parent type symbol should be alive too.
         for sym in symbol_graph.symbols.values() {
             if let Some(parent_id) = sym.parent {
                 if reachable.contains(&sym.id) && !reachable.contains(&parent_id) {
                     reachable.insert(parent_id);
-                    changed = true;
                 }
             }
         }
-        if !changed {
+
+        if reachable.len() == prev_size {
             break;
         }
     }
@@ -3019,5 +3001,120 @@ mod tests {
         assert_eq!(result.summary.total_symbols, 4);
         assert_eq!(result.summary.dead_symbols, 1);
         assert_eq!(alive_count, 3);
+    }
+
+    #[test]
+    fn test_impl_method_alive_when_type_alive() {
+        // When a struct/type is alive, methods from its `impl` block (which have
+        // parent = the type) should also be alive — even if the method's kind is
+        // not EnumVariant and the parent's kind is not Interface.
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Struct "Foo" is alive (public in entry file).
+        // impl Display for Foo { fn fmt() } — fmt has parent=Foo.
+        let mut fmt_method = make_sym(2, "fmt", SymbolKind::Method, 1, Visibility::Public);
+        fmt_method.parent = Some(SymbolId(1));
+
+        // impl Foo { fn as_str() } — as_str has parent=Foo.
+        let mut as_str_method = make_sym(3, "as_str", SymbolKind::Method, 1, Visibility::Public);
+        as_str_method.parent = Some(SymbolId(1));
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "Foo", SymbolKind::Struct, 1, Visibility::Public),
+                fmt_method,
+                as_str_method,
+                make_sym(4, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(!dead_names.contains(&"Foo"), "Foo should be alive (public in entry file)");
+        assert!(!dead_names.contains(&"fmt"), "fmt should be alive when parent Foo is alive");
+        assert!(!dead_names.contains(&"as_str"), "as_str should be alive when parent Foo is alive");
+    }
+
+    #[test]
+    fn test_trait_impl_method_alive_via_inheritance_chain() {
+        // When a struct is alive and implements a trait, the convergence loop
+        // should seed: struct alive → child methods seeded → BFS follows refs
+        // → trait becomes alive → inheritance propagation seeds other implementors.
+        use crate::model::graph::SymbolGraph;
+        use crate::model::*;
+
+        let mut sym_graph = SymbolGraph::new();
+        let mut file_graph = FileGraph::new();
+
+        file_graph.add_file(make_file(1, "src/index.ts", true));
+        sym_graph.add_file(make_file_record(1, "src/index.ts"));
+
+        // Alive struct Registry with method with_defaults() that references Parser trait
+        let mut with_defaults = make_sym(2, "with_defaults", SymbolKind::Method, 1, Visibility::Public);
+        with_defaults.parent = Some(SymbolId(1));
+
+        // Parser trait with method parse()
+        let mut trait_method = make_sym(4, "parse", SymbolKind::Method, 1, Visibility::Public);
+        trait_method.parent = Some(SymbolId(3));
+
+        // RustParser implements Parser, has method do_parse()
+        let mut impl_method = make_sym(6, "do_parse", SymbolKind::Method, 1, Visibility::Public);
+        impl_method.parent = Some(SymbolId(5));
+
+        let mut inherit_ref = make_ref(3, 5, 3, RefKind::Inheritance, 1);
+        inherit_ref.target_name = Some("Parser".to_string());
+
+        sym_graph.add_parse_result(ParseResult {
+            file_id: FileId(1),
+            symbols: vec![
+                make_sym(1, "Registry", SymbolKind::Struct, 1, Visibility::Public),
+                with_defaults,
+                make_sym(3, "Parser", SymbolKind::Interface, 1, Visibility::Public),
+                trait_method,
+                make_sym(5, "RustParser", SymbolKind::Struct, 1, Visibility::Private),
+                impl_method,
+                make_sym(7, "main", SymbolKind::Function, 1, Visibility::Public),
+            ],
+            references: vec![
+                make_ref(1, 7, 1, RefKind::Call, 1),    // main -> Registry
+                make_ref(2, 2, 5, RefKind::Call, 1),     // with_defaults -> RustParser
+                inherit_ref,                              // RustParser implements Parser
+            ],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
+        });
+
+        let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Registry is alive (public in entry file)
+        assert!(!dead_names.contains(&"Registry"), "Registry should be alive");
+        // with_defaults is alive (child of alive Registry, seeded by convergence loop)
+        assert!(!dead_names.contains(&"with_defaults"), "with_defaults should be alive (child of alive Registry)");
+        // RustParser is alive (referenced by with_defaults via BFS)
+        assert!(!dead_names.contains(&"RustParser"),
+            "RustParser should be alive (referenced by with_defaults), dead: {:?}", dead_names);
+        // do_parse is alive (child of alive RustParser, seeded by next convergence iteration)
+        assert!(!dead_names.contains(&"do_parse"),
+            "do_parse should be alive (child of alive RustParser), dead: {:?}", dead_names);
+        // Parser is alive (public in entry file), parse is its child
+        assert!(!dead_names.contains(&"parse"),
+            "parse should be alive (child of alive Parser), dead: {:?}", dead_names);
     }
 }

@@ -314,8 +314,4 @@ pub trait LanguageSemantics: Send + Sync {
         &[]
     }
 
-    /// Is this module name a test module whose symbols should always be seeded?
-    fn is_test_module(&self, _name: &str) -> bool {
-        false
-    }
 }

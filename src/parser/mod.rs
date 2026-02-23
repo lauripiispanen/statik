@@ -28,15 +28,11 @@ pub struct ParserRegistry {
 }
 
 impl ParserRegistry {
-    pub fn new() -> Self {
-        Self {
-            parsers: Vec::new(),
-        }
-    }
-
     /// Create a registry with all built-in parsers.
     pub fn with_defaults() -> Self {
-        let mut registry = Self::new();
+        let mut registry = Self {
+            parsers: Vec::new(),
+        };
         registry.register(Box::new(typescript::TypeScriptParser::new()));
         registry.register(Box::new(java::JavaParser::new()));
         registry.register(Box::new(rust::RustParser::new()));
@@ -53,14 +49,6 @@ impl ParserRegistry {
             .iter()
             .find(|p| p.supported_languages().contains(&language))
             .map(|p| p.as_ref())
-    }
-
-    /// Get language semantics for a given language.
-    pub fn semantics_for(&self, language: Language) -> Option<&dyn LanguageSemantics> {
-        self.parsers
-            .iter()
-            .find(|p| p.languages().contains(&language))
-            .map(|p| p.as_ref() as &dyn LanguageSemantics)
     }
 
     /// Build a lookup table of language semantics for passing to analysis functions.
@@ -86,11 +74,5 @@ impl ParserRegistry {
             .parser_for(language)
             .ok_or_else(|| anyhow::anyhow!("no parser for language: {}", language))?;
         parser.parse(file_id, source, path)
-    }
-}
-
-impl Default for ParserRegistry {
-    fn default() -> Self {
-        Self::with_defaults()
     }
 }
