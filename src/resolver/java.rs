@@ -23,6 +23,9 @@ pub struct JavaResolver {
     known_files: HashSet<PathBuf>,
     /// Package name -> list of (class_name, file_path) for same-package resolution.
     package_files: HashMap<String, Vec<(String, PathBuf)>>,
+    /// Wildcard import packages for the current file being resolved.
+    /// Populated per-file before resolving type-refs.
+    file_wildcards: Vec<String>,
 }
 
 impl JavaResolver {
@@ -52,6 +55,7 @@ impl JavaResolver {
             source_roots,
             known_files: known_set,
             package_files,
+            file_wildcards: Vec::new(),
         }
     }
 
@@ -178,6 +182,21 @@ impl JavaResolver {
         None
     }
 
+    /// Set wildcard import packages for the current file being resolved.
+    /// Call before resolving type-refs for a file.
+    pub fn set_file_wildcards(&mut self, imports: &[crate::model::ImportRecord]) {
+        self.file_wildcards = imports
+            .iter()
+            .filter(|i| i.is_namespace && !i.source_path.starts_with('@'))
+            .filter(|i| Self::is_likely_external(&i.source_path) || i.source_path.starts_with("java."))
+            .map(|i| i.source_path.clone())
+            .collect();
+    }
+
+    pub fn clear_file_wildcards(&mut self) {
+        self.file_wildcards.clear();
+    }
+
     pub fn is_likely_external(fqn: &str) -> bool {
         let external_prefixes = [
             "java.",
@@ -252,7 +271,12 @@ impl JavaResolver {
             }
         }
 
-        // Not found in same package; could be from a wildcard import or external
+        // If the file has external wildcard imports, this type likely came from one
+        if !self.file_wildcards.is_empty() {
+            return Resolution::External(self.file_wildcards[0].clone());
+        }
+
+        // Not found in same package and no external wildcard imports
         Resolution::Unresolved(UnresolvedReason::FileNotFound(format!(
             "type ref '{}' not in same package",
             type_name
@@ -579,5 +603,230 @@ mod tests {
             JavaResolver::fqn_to_relative_path("Foo"),
             PathBuf::from("Foo.java")
         );
+    }
+
+    // =========================================================================
+    // Type-ref resolution tests
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_type_ref_same_package() {
+        let (dir, known_files) = setup_maven_project();
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        let result = resolver.resolve_type_ref("UserService", &from_file);
+        match result {
+            Resolution::Resolved(path) => {
+                assert!(
+                    path.ends_with("com/example/UserService.java"),
+                    "Should resolve to UserService.java, got {:?}",
+                    path
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_type_ref_java_lang() {
+        let (dir, known_files) = setup_maven_project();
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        let result = resolver.resolve_type_ref("String", &from_file);
+        match result {
+            Resolution::External(pkg) => {
+                assert_eq!(pkg, "java.lang");
+            }
+            other => panic!("expected External(java.lang), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_type_ref_not_in_package() {
+        let (dir, known_files) = setup_maven_project();
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        // User is in com.example.model, not in com.example (App's package)
+        let result = resolver.resolve_type_ref("User", &from_file);
+        assert!(
+            matches!(result, Resolution::Unresolved(_)),
+            "User should not resolve from App's package, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_type_ref_self_excluded() {
+        let (dir, known_files) = setup_maven_project();
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        // App resolving "App" should not resolve to itself
+        let result = resolver.resolve_type_ref("App", &from_file);
+        assert!(
+            matches!(result, Resolution::Unresolved(_)),
+            "Self-reference should be unresolved, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_type_ref_with_external_wildcard() {
+        let (dir, known_files) = setup_maven_project();
+        let mut resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        // Simulate a file with `import java.util.*`
+        let wildcard_import = crate::model::ImportRecord {
+            file: crate::model::FileId(1),
+            source_path: "java.util".to_string(),
+            imported_name: "*".to_string(),
+            local_name: String::new(),
+            span: crate::model::Span { start: 0, end: 0 },
+            line_span: crate::model::LineSpan {
+                start: crate::model::Position { line: 0, column: 0 },
+                end: crate::model::Position { line: 0, column: 0 },
+            },
+            is_default: false,
+            is_namespace: true,
+            is_type_only: false,
+            is_side_effect: false,
+            is_dynamic: false,
+        };
+        resolver.set_file_wildcards(&[wildcard_import]);
+
+        // "List" is not in JAVA_LANG_TYPES and not in same package,
+        // but should resolve as External via the wildcard
+        let result = resolver.resolve_type_ref("List", &from_file);
+        match result {
+            Resolution::External(pkg) => {
+                assert_eq!(pkg, "java.util");
+            }
+            other => panic!("expected External(java.util), got {:?}", other),
+        }
+
+        // Same-package resolution should still work
+        let result = resolver.resolve_type_ref("UserService", &from_file);
+        assert!(
+            matches!(result, Resolution::Resolved(_)),
+            "Same-package ref should still resolve, got {:?}",
+            result
+        );
+
+        // java.lang types should still work
+        let result = resolver.resolve_type_ref("String", &from_file);
+        match result {
+            Resolution::External(pkg) => {
+                assert_eq!(pkg, "java.lang");
+            }
+            other => panic!("expected External(java.lang), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_type_ref_without_wildcard_still_unresolved() {
+        let (dir, known_files) = setup_maven_project();
+        let mut resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+
+        // Without wildcards, unknown types remain unresolved
+        resolver.clear_file_wildcards();
+        let result = resolver.resolve_type_ref("List", &from_file);
+        assert!(
+            matches!(result, Resolution::Unresolved(_)),
+            "Without wildcards, List should be unresolved, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_set_file_wildcards_filters_correctly() {
+        let (dir, known_files) = setup_maven_project();
+        let mut resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+
+        let imports = vec![
+            // External wildcard: should be included
+            crate::model::ImportRecord {
+                file: crate::model::FileId(1),
+                source_path: "java.util".to_string(),
+                imported_name: "*".to_string(),
+                local_name: String::new(),
+                span: crate::model::Span { start: 0, end: 0 },
+                line_span: crate::model::LineSpan {
+                    start: crate::model::Position { line: 0, column: 0 },
+                    end: crate::model::Position { line: 0, column: 0 },
+                },
+                is_default: false,
+                is_namespace: true,
+                is_type_only: false,
+                is_side_effect: false,
+                is_dynamic: false,
+            },
+            // Project-internal wildcard: should NOT be included (not external)
+            crate::model::ImportRecord {
+                file: crate::model::FileId(1),
+                source_path: "com.example.model".to_string(),
+                imported_name: "*".to_string(),
+                local_name: String::new(),
+                span: crate::model::Span { start: 0, end: 0 },
+                line_span: crate::model::LineSpan {
+                    start: crate::model::Position { line: 0, column: 0 },
+                    end: crate::model::Position { line: 0, column: 0 },
+                },
+                is_default: false,
+                is_namespace: true,
+                is_type_only: false,
+                is_side_effect: false,
+                is_dynamic: false,
+            },
+            // Synthetic import: should NOT be included (starts with @)
+            crate::model::ImportRecord {
+                file: crate::model::FileId(1),
+                source_path: "@type-ref:List".to_string(),
+                imported_name: "List".to_string(),
+                local_name: String::new(),
+                span: crate::model::Span { start: 0, end: 0 },
+                line_span: crate::model::LineSpan {
+                    start: crate::model::Position { line: 0, column: 0 },
+                    end: crate::model::Position { line: 0, column: 0 },
+                },
+                is_default: false,
+                is_namespace: false,
+                is_type_only: true,
+                is_side_effect: false,
+                is_dynamic: false,
+            },
+            // Regular (non-namespace) import: should NOT be included
+            crate::model::ImportRecord {
+                file: crate::model::FileId(1),
+                source_path: "java.io.File".to_string(),
+                imported_name: "File".to_string(),
+                local_name: String::new(),
+                span: crate::model::Span { start: 0, end: 0 },
+                line_span: crate::model::LineSpan {
+                    start: crate::model::Position { line: 0, column: 0 },
+                    end: crate::model::Position { line: 0, column: 0 },
+                },
+                is_default: false,
+                is_namespace: false,
+                is_type_only: false,
+                is_side_effect: false,
+                is_dynamic: false,
+            },
+        ];
+
+        resolver.set_file_wildcards(&imports);
+
+        // Only java.util should be in file_wildcards
+        let result = resolver.resolve_type_ref("SomeUnknownType", &dir.path().join("src/main/java/com/example/App.java"));
+        match result {
+            Resolution::External(pkg) => {
+                assert_eq!(pkg, "java.util", "Should resolve via java.util wildcard");
+            }
+            other => panic!("expected External, got {:?}", other),
+        }
     }
 }
