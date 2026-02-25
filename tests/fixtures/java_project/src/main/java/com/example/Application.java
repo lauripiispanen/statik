@@ -1,6 +1,7 @@
 package com.example;
 
 import com.example.controller.UserController;
+import com.example.helper.AccountService;
 import com.example.service.UserService;
 
 /**
@@ -12,6 +13,7 @@ public class Application {
     public static void main(String[] args) {
         UserService service = new UserService();
         UserController controller = new UserController(service);
+        AccountService accounts = new AccountService();
         System.out.println("Application started");
     }
 }

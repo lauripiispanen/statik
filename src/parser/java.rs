@@ -314,19 +314,57 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    /// When an identifier (not type_identifier) appears as the receiver of a
+    /// method_invocation or field_access and starts with an uppercase letter,
+    /// it is likely a same-package class used for a static call or static field
+    /// access (e.g. `Helper.doSomething()` or `Helper.CONSTANT`).  Record it as
+    /// a type reference so the resolver can create the cross-file edge.
+    fn maybe_note_static_class_reference(&mut self, node: Node) {
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return,
+        };
+        let is_object = match parent.kind() {
+            "method_invocation" => {
+                parent.child_by_field_name("object").map(|n| n.id()) == Some(node.id())
+            }
+            "field_access" => {
+                parent.child_by_field_name("object").map(|n| n.id()) == Some(node.id())
+            }
+            _ => false,
+        };
+        if !is_object {
+            return;
+        }
+        let text = self.node_text(node);
+        if !text.is_empty()
+            && text != "var"
+            && !self.type_params.contains(text)
+            && text.chars().next().is_some_and(|c| c.is_uppercase())
+        {
+            self.type_refs.insert(text.to_string());
+        }
+    }
+
     fn collect_type_param_names(&mut self, type_params_node: Node) {
         let mut cursor = type_params_node.walk();
         for child in type_params_node.children(&mut cursor) {
             if child.kind() == "type_parameter" {
+                let mut found_name = false;
                 let mut inner_cursor = child.walk();
                 for inner_child in child.children(&mut inner_cursor) {
-                    if inner_child.kind() == "type_identifier" || inner_child.kind() == "identifier"
+                    if !found_name
+                        && (inner_child.kind() == "type_identifier"
+                            || inner_child.kind() == "identifier")
                     {
                         let name = self.node_text(inner_child).to_string();
                         if !name.is_empty() {
                             self.type_params.insert(name);
                         }
-                        break;
+                        found_name = true;
+                    } else if found_name {
+                        // Scan bound types (e.g., `extends Widget & Comparable`)
+                        self.scan_type_identifiers(inner_child);
                     }
                 }
             }
@@ -413,6 +451,7 @@ impl<'a> Extractor<'a> {
                 self.note_type_identifier(node);
             }
             "identifier" => {
+                self.maybe_note_static_class_reference(node);
                 self.maybe_extract_identifier_reference(node);
             }
             _ => {
@@ -2885,6 +2924,310 @@ public class Test {
             !self_ref,
             "FOO should not self-reference, refs: {:?}",
             result.references
+        );
+    }
+
+    // =========================================================================
+    // Type reference: bounded type parameters
+    // =========================================================================
+
+    #[test]
+    fn test_type_ref_bounded_type_parameter() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public <T extends Widget> T convert(T in) { return in; }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "Bound type Widget should be in type-refs: {:?}",
+            refs
+        );
+        assert!(
+            !refs.contains(&"T".to_string()),
+            "Type param T should NOT be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_multiple_bounds() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public <T extends Widget & Serializable> void process(T item) {}
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "First bound Widget should be in type-refs: {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"Serializable".to_string()),
+            "Second bound Serializable should be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_wildcard_bound() {
+        let result = parse_java(
+            r#"
+import java.util.List;
+public class Foo {
+    public void process(List<? extends Widget> items) {}
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "Wildcard bound Widget should be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_nested_generics() {
+        let result = parse_java(
+            r#"
+import java.util.Map;
+import java.util.List;
+public class Foo {
+    private Map<String, List<Widget>> data;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "Nested generic type Widget should be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_method_reference() {
+        // Document whether method references like `Widget::create` capture Widget
+        let result = parse_java(
+            r#"
+import java.util.List;
+public class Foo {
+    public void process(List<String> items) {
+        items.stream().map(Widget::create);
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        // Method references use `identifier` nodes; Widget may or may not appear
+        // depending on tree-sitter grammar. Document actual behavior.
+        let _has_widget = refs.contains(&"Widget".to_string());
+        // This test documents the current behavior rather than enforcing it.
+    }
+
+    #[test]
+    fn test_type_ref_inner_class_qualified() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    private Outer.Inner field;
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"Outer".to_string()),
+            "Qualified type Outer should be in type-refs: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_class_literal() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process() {
+        Class<?> c = Widget.class;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        // `Widget.class` uses a field_access node; Widget is the object
+        // and gets captured as a static class reference.
+        assert!(
+            refs.contains(&"Widget".to_string()),
+            "Widget.class should capture Widget as type-ref: {:?}",
+            refs
+        );
+    }
+
+    // =========================================================================
+    // Method-body type references (static calls, field access, new expressions)
+    // =========================================================================
+
+    #[test]
+    fn test_type_ref_new_expression_in_method_body() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void create() {
+        LoginMetrics metrics = new LoginMetrics();
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"LoginMetrics".to_string()),
+            "new LoginMetrics() in method body should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_static_method_call_in_body() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process() {
+        CalendarEventHelper.doSomething();
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"CalendarEventHelper".to_string()),
+            "CalendarEventHelper.doSomething() should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_static_field_access_in_body() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process() {
+        int x = SomeClass.CONSTANT;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"SomeClass".to_string()),
+            "SomeClass.CONSTANT should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_chained_field_access_then_method_call() {
+        // Regression test: LoginMetrics.loginFailedCallCount.labels(...)
+        // LoginMetrics is object of field_access, then the result chains to a method call
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process() {
+        LoginMetrics.loginFailedCallCount.labels("a", "b").inc();
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"LoginMetrics".to_string()),
+            "LoginMetrics.field.method() chain should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_cast_in_method_body() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process(Object obj) {
+        SomeClass sc = (SomeClass) obj;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"SomeClass".to_string()),
+            "(SomeClass) cast should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_instanceof_in_method_body() {
+        let result = parse_java(
+            r#"
+public class Foo {
+    public boolean check(Object obj) {
+        return obj instanceof SomeClass;
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            refs.contains(&"SomeClass".to_string()),
+            "instanceof SomeClass should produce type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_body_types_not_duplicated_with_imports() {
+        let result = parse_java(
+            r#"
+import com.example.Widget;
+public class Foo {
+    public void process() {
+        Widget w = new Widget();
+        Widget.doStuff();
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"Widget".to_string()),
+            "Widget is explicitly imported, should not appear as type-ref: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn test_type_ref_static_call_lowercase_not_captured() {
+        // A lowercase receiver in method_invocation is likely a local variable, not a class
+        let result = parse_java(
+            r#"
+public class Foo {
+    public void process() {
+        helper.doSomething();
+    }
+}
+"#,
+        );
+        let refs = type_ref_names(&result);
+        assert!(
+            !refs.contains(&"helper".to_string()),
+            "lowercase identifier should not be captured as type-ref: {:?}",
+            refs
         );
     }
 }

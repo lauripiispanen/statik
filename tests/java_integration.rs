@@ -64,10 +64,11 @@ fn test_java_index_discovers_all_files() {
     // We have: User, Role, Auditable, AuditableUser, UserSummary, UserService,
     //          NotificationService, ReportService, StringUtils, UserController,
     //          AdminController, UserRepository, UnusedHelper, CycleA, CycleB,
-    //          Application, UserVerification
+    //          Application, UserVerification, UserMapper,
+    //          LoginMetrics, OfferHelper, AccountService
     assert_eq!(
-        result.files_indexed, 17,
-        "Expected 17 Java files, got {}",
+        result.files_indexed, 21,
+        "Expected 21 Java files, got {}",
         result.files_indexed
     );
     assert!(
@@ -437,9 +438,23 @@ fn test_java_summary_command() {
     let total_files = json["files"]["total"].as_u64().unwrap();
 
     assert_eq!(
-        total_files, 17,
-        "Summary should report 17 Java files, got {}",
+        total_files, 21,
+        "Summary should report 21 Java files, got {}",
         total_files
+    );
+
+    // Verify external vs unresolved split
+    let external = json["dependencies"]["external_imports"].as_u64().unwrap();
+    let unresolved = json["dependencies"]["unresolved_imports"].as_u64().unwrap();
+    assert!(
+        external >= 1,
+        "Should have at least 1 external import, got {}",
+        external
+    );
+    assert!(
+        unresolved <= 2,
+        "Truly unresolved imports should be very low, got {}",
+        unresolved
     );
 
     let cycle_count = json["cycles"]["cycle_count"].as_u64().unwrap();
@@ -607,6 +622,48 @@ fn test_java_static_import_resolves() {
 }
 
 // =============================================================================
+// TYPE-REF BOUNDED GENERICS - verify bounded type params are resolved
+// =============================================================================
+
+#[test]
+fn test_java_type_ref_bounded_generics_resolved() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/model/UserMapper.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
+
+    // UserMapper has:
+    // - `<T extends User>` bound type ref -> User.java
+    // - `List<User>` return type -> User.java (same-package type ref)
+    // - `List<? extends Role>` wildcard bound -> Role.java
+    assert!(
+        import_paths.iter().any(|p| p.contains("User.java")),
+        "Bounded type ref should resolve to User.java, got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("Role.java")),
+        "Wildcard bound should resolve to Role.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
 // CROSS-PACKAGE IMPORTS - verify explicit import resolution
 // =============================================================================
 
@@ -739,8 +796,8 @@ fn test_java_summary_language_breakdown() {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         assert_eq!(
-            java_count, 17,
-            "Should report 17 Java files in language breakdown, got {}",
+            java_count, 21,
+            "Should report 21 Java files in language breakdown, got {}",
             java_count
         );
     }
@@ -1133,6 +1190,77 @@ fn test_java_same_package_dead_code_not_false_positive() {
 }
 
 // =============================================================================
+// SAME-PACKAGE METHOD-BODY REFERENCES (static calls, new expressions)
+// =============================================================================
+
+#[test]
+fn test_java_same_package_method_body_deps() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // AccountService uses LoginMetrics and OfferHelper from the same package
+    // only via method body references (new LoginMetrics(), OfferHelper.calculate())
+    // without import statements
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/helper/AccountService.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
+
+    assert!(
+        import_paths.iter().any(|p| p.contains("LoginMetrics.java")),
+        "AccountService should depend on LoginMetrics.java via new LoginMetrics(), got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("OfferHelper.java")),
+        "AccountService should depend on OfferHelper.java via OfferHelper.calculate(), got {:?}",
+        import_paths
+    );
+}
+
+#[test]
+fn test_java_same_package_method_body_not_dead() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None, None).unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_files = json["dead_files"].as_array().unwrap();
+    let dead_paths: Vec<&str> = dead_files
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    // LoginMetrics is used by AccountService via `new LoginMetrics()` in method body
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("LoginMetrics.java")),
+        "LoginMetrics.java should NOT be dead (used via new expression in method body), dead: {:?}",
+        dead_paths
+    );
+
+    // OfferHelper is used by AccountService via `OfferHelper.calculate()` in method body
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("OfferHelper.java")),
+        "OfferHelper.java should NOT be dead (used via static call in method body), dead: {:?}",
+        dead_paths
+    );
+}
+
+// =============================================================================
 // WILDCARD IMPORT RESOLUTION
 // =============================================================================
 
@@ -1466,6 +1594,148 @@ fn test_java_default_entry_points_unchanged_without_config() {
     assert!(
         dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
         "UnusedHelper should still be dead without config, dead: {:?}",
+        dead_paths
+    );
+}
+
+// =============================================================================
+// WILDCARD TYPE-REF RESOLUTION - external wildcards classify type-refs as external
+// =============================================================================
+
+#[test]
+fn test_java_wildcard_type_ref_classified_as_external() {
+    let tmp = setup_java_project();
+
+    // Create a file that uses `import java.util.*` and references List, Map
+    let service_dir = tmp.path().join("src/main/java/com/example/service");
+    std::fs::write(
+        service_dir.join("DataService.java"),
+        r#"
+package com.example.service;
+
+import java.util.*;
+import com.example.model.User;
+
+public class DataService {
+    public List<User> findAll() {
+        Map<String, User> cache = new HashMap<>();
+        Set<String> keys = cache.keySet();
+        return new ArrayList<>(cache.values());
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    index_java_project(tmp.path());
+
+    // Check summary: type-refs from java.util.* should be external, not unresolved
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let unresolved = json["dependencies"]["unresolved_imports"].as_u64().unwrap();
+
+    // With wildcard-aware resolution, type-refs like List, Map, Set, ArrayList, HashMap
+    // should be classified as external (via java.util wildcard), not unresolved
+    assert!(
+        unresolved <= 2,
+        "Type-refs from java.util.* wildcard should be external, not unresolved; got {} unresolved",
+        unresolved
+    );
+
+    // Check deps for the new file specifically
+    let output = commands::run_deps(
+        tmp.path(),
+        "src/main/java/com/example/service/DataService.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
+
+    // Should resolve the explicit User import
+    assert!(
+        import_paths.iter().any(|p| p.contains("User.java")),
+        "Should import User.java, got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
+// ALWAYS_ALIVE CONFIG - backwards compat with seed_all_patterns
+// =============================================================================
+
+#[test]
+fn test_java_always_alive_config() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Use the new `always_alive` field name
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"
+rules = []
+
+[entry_points]
+always_alive = ["**/orphan/**"]
+"#,
+    )
+    .unwrap();
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None, None).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper should NOT be dead with always_alive config, dead: {:?}",
+        dead_paths
+    );
+}
+
+#[test]
+fn test_java_seed_all_patterns_backwards_compat() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // Use the old `seed_all_patterns` field name (should still work via alias)
+    std::fs::write(
+        tmp.path().join(".statik/rules.toml"),
+        r#"
+rules = []
+
+[entry_points]
+seed_all_patterns = ["**/orphan/**"]
+"#,
+    )
+    .unwrap();
+
+    let output =
+        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None, None).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let dead_paths: Vec<&str> = json["dead_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+
+    assert!(
+        !dead_paths.iter().any(|p| p.contains("UnusedHelper.java")),
+        "UnusedHelper should NOT be dead with seed_all_patterns alias, dead: {:?}",
         dead_paths
     );
 }
