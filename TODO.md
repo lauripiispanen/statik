@@ -1848,21 +1848,39 @@ handles the uncertainty correctly. Added 3 tests.
 ---
 
 ### 9.8 Java same-package references without import statements
-**Complexity**: M
+**Complexity**: M | **Status**: MOSTLY DONE
 **Files**: `src/parser/java.rs`, `src/resolver/java.rs`
 
 In Java, same-package classes can be referenced without an import statement.
 The parser only creates edges from `import` lines, so these references are
 invisible. The `@type-ref:` mechanism handles some cases already.
 
-Dogfooding suggests the actual false-positive rate is low (dead clusters are
-correctly dead), but the gap needs quantification. See `DOGFOOD_NOTES.md`.
+**Progress**:
+- [x] `@type-ref:` now emits synthetic imports for types used in method
+  signatures, field declarations, generic bounds, casts, instanceof, and
+  `new` expressions (already handled via `type_identifier` nodes)
+- [x] `maybe_note_static_class_reference()` added to capture uppercase
+  identifiers used as receivers of static method calls (`Helper.doSomething()`)
+  and static field access (`Helper.CONSTANT`). These appear as `identifier`
+  nodes (not `type_identifier`) in tree-sitter Java.
+- [x] Wildcard-aware type-ref resolution: when a file has external wildcard
+  imports (`import java.util.*`), unresolved type-refs are classified as
+  `External` instead of `Unresolved`. Eliminates ~6,400 false unresolved
+  imports on large projects.
+
+**Dogfooding result** (large Java monorepo, ~4,400 Java files):
+- Dead Java files dropped from 1,560 → 47 (with entry point config)
+- All 10 same-package false positives eliminated after full re-index
+- Remaining 47 are true positives (genuinely dead code)
+
+**Known limitation**: Incremental indexing doesn't re-parse unchanged files,
+so parser logic changes require a full re-index (`rm .statik/index.db`).
+See 9.10 for the forced re-index TODO.
 
 Tasks:
-- [ ] Audit `resolve_type_ref()` coverage for all Java reference patterns
-- [ ] Quantify impact: how many dead files would become alive with full
-  same-package resolution?
-- [ ] If significant, expand `@type-ref:` or add implicit same-package edges
+- [x] Audit `resolve_type_ref()` coverage for all Java reference patterns
+- [x] Quantify impact: 10 false positives on dogfooding project, all fixed
+- [x] Expand `@type-ref:` for method-body static calls and field access
 
 ---
 
@@ -1880,6 +1898,193 @@ Tasks:
 
 ---
 
+### 9.10 Forced re-index when parser logic changes
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/index.rs`, `src/db/mod.rs`
+
+**The problem**: Incremental indexing skips files whose mtime hasn't changed.
+When parser logic changes (e.g., new `@type-ref:` extraction rules), unchanged
+files retain stale import data. Users must manually `rm .statik/index.db` to
+get correct results after upgrading statik.
+
+**The solution**: Two complementary approaches:
+
+1. **`statik index --force`**: Delete and rebuild the index from scratch.
+   Simple, explicit, user-initiated.
+
+2. **Parser version stamp**: Store a hash of the parser version/config in the
+   DB metadata. On `statik index`, compare the stored hash with the current
+   parser version. If they differ, automatically trigger a full re-index.
+
+Tasks:
+- [ ] Add `--force` flag to `statik index` that deletes `index.db` before
+  re-indexing
+- [ ] Add `parser_version` metadata table to the DB
+- [ ] Compute a version hash from parser crate versions or a manually bumped
+  constant
+- [ ] On index, compare stored hash with current — auto-reindex if different
+- [ ] Add test: changing parser version triggers full re-index
+
+**Acceptance**: After upgrading statik with parser changes, `statik index`
+automatically detects the version mismatch and re-parses all files.
+
+---
+
+### 9.11 Source set dependency visibility (module boundaries)
+**Complexity**: L
+**Prerequisites**: 8.1 (source sets / scope config)
+**Files**: `src/linting/config.rs`, `src/cli/commands.rs`, new `src/resolver/source_sets.rs`
+
+**The problem**: Statik treats all source files as one flat namespace. Real
+build systems (Gradle, Maven, Cargo workspaces, npm workspaces) have module
+boundaries with scoped classpaths. This causes:
+- False dependency edges across module boundaries
+- Inflated cycle detection (e.g., 1000+ file mega-cycle caused by a single
+  test file bridging two Gradle modules the JVM never connects)
+- False same-package resolution when two modules have classes in the same
+  Java package namespace
+
+**Example**: A Gradle module `app/` depends on `framework` as a binary JAR
+dependency. But statik indexes `framework`'s source tree alongside `app/src/`,
+creating false edges. A `FooTest` in `app/src/test/` shares the same Java
+package as `BarImpl` in `framework` source, creating a false framework→app
+cycle.
+
+**The solution**: Extend source sets (8.1) with a `deps` field that defines
+which source sets can see each other:
+
+```toml
+[[source_sets]]
+name = "framework"
+roots = ["framework/src/main/java"]
+
+[[source_sets]]
+name = "framework-test"
+roots = ["framework/src/test/java"]
+deps = ["framework"]
+
+[[source_sets]]
+name = "app"
+roots = ["app/src/main/java", "app/src/java"]
+deps = ["framework"]
+
+[[source_sets]]
+name = "app-test"
+roots = ["app/src/test/java"]
+deps = ["app", "framework"]
+```
+
+During resolution, a file can only resolve to files in its own source set
+or in source sets listed in `deps` (transitively). This prevents:
+- `BarImpl` (framework) from resolving to `FooTest` (app-test) — framework
+  doesn't depend on app-test
+- Same-package resolution across module boundaries
+
+**Design decisions**:
+- Transitive deps for v1 (if A deps B deps C, A sees C). Could add
+  `private_deps` later for Gradle `api` vs `implementation` distinction.
+- Language-agnostic: works for Java modules, Rust workspace crates, npm
+  packages — same concept of "these files can see those files"
+- Opt-in: no `[[source_sets]]` = current behavior (single flat namespace)
+- When source sets are defined, they subsume `[java] source_roots` — the
+  roots within source sets serve the same purpose
+- Files not in any source set go into an implicit "default" set that sees
+  everything (backwards compat)
+
+**Implementation approach (phased)**:
+
+Phase A — Config + index:
+- [ ] Add `SourceSetConfig` struct: `{ name, roots, deps }`
+- [ ] Add `[[source_sets]]` deserialization to config loading
+- [ ] Build `SourceSetIndex` at graph-build time: map each file to its
+  source set, compute transitive dependency closure
+- [ ] Provide `can_see(from_file, to_file) -> bool` query
+- [ ] Unit tests for `SourceSetConfig` parsing: valid configs, missing
+  fields, unknown deps (should error), cyclic deps (should error)
+- [ ] Unit tests for `SourceSetIndex`: file-to-source-set mapping,
+  transitive dep closure, `can_see` with direct deps / transitive deps /
+  unrelated sets / default set
+
+Phase B — Post-filter edges:
+- [ ] After resolving all edges in `build_file_graph()`, drop edges where
+  `!source_set_index.can_see(from, to)`
+- [ ] This is the simplest integration — no resolver API changes needed
+- [ ] Unit test: edge between files in unrelated source sets is dropped
+- [ ] Unit test: edge between files in same source set is kept
+- [ ] Unit test: edge from dependent to dependency source set is kept
+- [ ] Unit test: edge from dependency to dependent source set is dropped
+  (reverse direction)
+- [ ] Unit test: files not in any source set (default set) can see everything
+
+Phase C — Scoped same-package resolution:
+- [ ] Java resolver's `package_files` map should be scoped per source set
+  (or per visible-set-of-source-sets) to prevent false same-package matches
+- [ ] Unit test: two files with same Java package in different source sets
+  don't resolve to each other unless deps allow it
+- [ ] Unit test: same-package resolution within a source set still works
+
+Phase D — Cycle analysis scoping:
+- [ ] Report cycles within vs across source sets separately
+- [ ] A cross-source-set "cycle" that only exists because statik ignores
+  module boundaries should be filtered out (or reported as a config issue)
+
+Phase E — Integration tests and fixtures:
+- [ ] Add `tests/fixtures/java_source_sets/` fixture project with:
+  - `framework/src/main/java/com/example/frame/` — core framework classes
+  - `framework/src/test/java/com/example/frame/` — framework test classes
+  - `app/src/main/java/com/example/app/` — application code that depends
+    on framework
+  - `app/src/test/java/com/example/app/` — application test code
+  - Duplicate class: same FQN in `framework/src/test/` and `app/src/test/`
+    to exercise the cross-module resolution scoping
+  - `.statik/rules.toml` with `[[source_sets]]` config defining the four
+    source sets and their deps
+- [ ] Integration test `test_source_set_visibility_filtering`: verify that
+  deps from app → framework resolve, but framework cannot see app code
+- [ ] Integration test `test_source_set_prevents_cross_module_same_package`:
+  verify that two files with same Java package in different source sets
+  don't create a dependency edge when there's no dep relationship
+- [ ] Integration test `test_source_set_eliminates_false_cycles`: verify
+  that a cycle that only exists due to cross-module leakage is eliminated
+  when source sets are configured
+- [ ] Integration test `test_source_set_dead_code_scoping`: verify that
+  dead code analysis respects source set visibility (a file in a leaf
+  source set isn't falsely marked dead because nothing in the parent
+  source set imports it, if it's used within its own source set)
+- [ ] Integration test `test_no_source_sets_backwards_compat`: verify that
+  behavior is unchanged when no `[[source_sets]]` are configured (single
+  flat namespace, all files see all files)
+
+**Acceptance**: `statik cycles` on a multi-module project with source set
+config eliminates false mega-cycles caused by cross-module leakage.
+Cross-module false edges are eliminated. Same-package resolution is scoped
+to visible source sets. All integration tests pass with the fixture project.
+
+---
+
+### 9.12 `statik lint` crashes when rules.toml has no `[[rules]]` section
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/linting/config.rs`
+
+**The problem**: `load_config()` fails with a confusing TOML parse error when
+`rules.toml` exists but has no `[[rules]]` section (e.g., only `[entry_points]`
+or `[java]` config). Should gracefully return an empty rules vec instead.
+
+Tasks:
+- [ ] Make the `rules` field in `LintConfig` default to an empty vec
+  (`#[serde(default)]`)
+- [ ] Add test: `load_config` on a TOML with only `[entry_points]` succeeds
+  with empty rules
+- [ ] `statik lint` with no rules should print "No lint rules configured"
+  and exit 0
+
+**Acceptance**: `statik lint` on a project with only `[entry_points]` config
+prints a helpful message instead of crashing.
+
+---
+
 ## What's Left: Strategic Priorities
 
 ### Completed (Phases 1-4, 2b, 3, 3b, 7)
@@ -1892,15 +2097,16 @@ Tasks:
 - Structural diff command
 
 ### Highest-impact next work
-1. **Phase 9.1** (multi-module Java source roots): The single most impactful
-   fix. Without this, statik is unusable on real Java monorepos. Auto-detection
-   + config fallback.
-2. **Phase 9.2-9.5** (CLI bugs): Quick fixes that improve trust in the tool.
-   `--lang` filter, `--count` exit code, `cycles` text format, node_modules
-   exclusion.
-3. **Phase 8.1** (source sets): Config-driven scope classification. Replaces
-   hardcoded test/entry-point logic. Enables Java multi-module projects.
-   Subsumes `--exclude-path` and `[entry_points]`.
+1. **Phase 9.11** (source set dependency visibility): The most architecturally
+   significant remaining feature. Eliminates false cross-module edges, kills
+   the 1060-file mega-cycle, and scopes same-package resolution to module
+   boundaries. Language-agnostic design works for Java, Rust, and TS. This
+   subsumes Phase 8.1 (source sets) and Phase 8.5 (Java multi-module).
+2. **Phase 9.10** (forced re-index): Quick win. Parser changes silently
+   produce stale results without manual `rm index.db`. A `--force` flag and
+   parser version stamp fix this.
+3. **Phase 9.12** (lint crash without rules): Quick fix. `statik lint` crashes
+   on valid config files that only have `[entry_points]`.
 4. **Phase 8.2** (structural edge propagation): Eliminates remaining Rust false
    dead exports from `pub mod` re-exports. Generic enough to also improve TS
    barrel file accuracy.
