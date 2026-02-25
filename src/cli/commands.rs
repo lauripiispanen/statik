@@ -43,7 +43,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let known_paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     let ts_resolver = TypeScriptResolver::new_auto(project_root.to_path_buf(), known_paths.clone());
     let java_config = crate::linting::config::load_java_config(project_root);
-    let java_resolver = JavaResolver::new(
+    let mut java_resolver = JavaResolver::new(
         project_root.to_path_buf(),
         known_paths.clone(),
         java_config.map(|c| c.source_roots),
@@ -119,6 +119,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Resolve imports and add edges
     for file in &files {
         let imports = imports_by_file.remove(&file.id).unwrap_or_default();
+
+        // Set up per-file wildcard context for Java type-ref resolution
+        if file.language == Language::Java {
+            java_resolver.set_file_wildcards(&imports);
+        }
 
         // Group imports by target file, tracking metadata per import
         // Tuple: (name, is_type_only, line, is_mod_declaration)
@@ -341,10 +346,10 @@ fn build_seed_all_file_ids(file_graph: &FileGraph, project_root: &Path) -> HashS
     let semantics = registry.semantics_map();
     let ep_config = crate::linting::config::load_entry_point_config(project_root);
 
-    let config_matcher = if ep_config.seed_all_patterns.is_empty() {
+    let config_matcher = if ep_config.always_alive.is_empty() {
         None
     } else {
-        crate::linting::matcher::FileMatcher::new(&ep_config.seed_all_patterns).ok()
+        crate::linting::matcher::FileMatcher::new(&ep_config.always_alive).ok()
     };
 
     let mut seed_all = HashSet::new();
@@ -887,6 +892,7 @@ pub fn run_summary(
     #[derive(serde::Serialize)]
     struct DepSummary {
         total_imports: usize,
+        external_imports: usize,
         unresolved_imports: usize,
     }
 
@@ -913,7 +919,21 @@ pub fn run_summary(
         },
         dependencies: DepSummary {
             total_imports,
-            unresolved_imports: graph.unresolved.len(),
+            external_imports: graph
+                .unresolved
+                .iter()
+                .filter(|u| matches!(u.reason, UnresolvedReason::External(_)))
+                .count(),
+            unresolved_imports: graph
+                .unresolved
+                .iter()
+                .filter(|u| {
+                    matches!(
+                        u.reason,
+                        UnresolvedReason::FileNotFound(_) | UnresolvedReason::DynamicPath
+                    )
+                })
+                .count(),
         },
         dead_code: DeadCodeSummaryCompact {
             dead_files: dead.dead_files.len(),
@@ -2511,14 +2531,25 @@ fn format_summary_text(result: &serde_json::Value) -> String {
             .get("total_imports")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let external = deps
+            .get("external_imports")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let unresolved = deps
             .get("unresolved_imports")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        out.push_str(&format!(
-            "Dependencies: {} imports, {} unresolved\n",
-            total, unresolved,
-        ));
+        if unresolved > 0 {
+            out.push_str(&format!(
+                "Dependencies: {} imports, {} external, {} unresolved\n",
+                total, external, unresolved,
+            ));
+        } else {
+            out.push_str(&format!(
+                "Dependencies: {} imports, {} external\n",
+                total, external,
+            ));
+        }
     }
 
     if let Some(dc) = result.get("dead_code") {
@@ -3034,6 +3065,7 @@ mod tests {
             },
             "dependencies": {
                 "total_imports": 25,
+                "external_imports": 5,
                 "unresolved_imports": 3
             },
             "dead_code": {
@@ -3052,7 +3084,7 @@ mod tests {
         assert!(text.contains("Files: 10 total, 2 entry points"));
         assert!(text.contains("TypeScript: 8"));
         assert!(text.contains("JavaScript: 2"));
-        assert!(text.contains("Dependencies: 25 imports, 3 unresolved"));
+        assert!(text.contains("Dependencies: 25 imports, 5 external, 3 unresolved"));
         assert!(text.contains("Dead code: 1 dead files, 4/20 dead exports"));
         assert!(text.contains("Cycles: 1 cycles, 3 files involved"));
     }
@@ -3269,6 +3301,78 @@ mod tests {
         // The real cycle is a <-> b (1 cycle, 2 files)
         assert_eq!(cycles_result.cycles.len(), 1);
         assert_eq!(cycles_result.summary.files_in_cycles, 2);
+    }
+
+    #[test]
+    fn test_unresolved_import_breakdown() {
+        use crate::model::file_graph::{FileGraph, FileInfo, UnresolvedImport, UnresolvedReason};
+        use crate::model::{FileId, Language};
+
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("src/App.java"),
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // 2 external imports
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(1),
+            import_path: "org.springframework.boot".to_string(),
+            reason: UnresolvedReason::External("org.springframework.boot".to_string()),
+            line: 1,
+        });
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(1),
+            import_path: "java.util.List".to_string(),
+            reason: UnresolvedReason::External("java.util.List".to_string()),
+            line: 2,
+        });
+
+        // 1 FileNotFound
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(1),
+            import_path: "com.missing.Foo".to_string(),
+            reason: UnresolvedReason::FileNotFound("com.missing.Foo".to_string()),
+            line: 3,
+        });
+
+        // 1 DynamicPath
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(1),
+            import_path: "dynamic".to_string(),
+            reason: UnresolvedReason::DynamicPath,
+            line: 4,
+        });
+
+        let external_count = graph
+            .unresolved
+            .iter()
+            .filter(|u| matches!(u.reason, UnresolvedReason::External(_)))
+            .count();
+        let unresolved_count = graph
+            .unresolved
+            .iter()
+            .filter(|u| {
+                matches!(
+                    u.reason,
+                    UnresolvedReason::FileNotFound(_) | UnresolvedReason::DynamicPath
+                )
+            })
+            .count();
+
+        assert_eq!(external_count, 2, "Should have 2 external imports");
+        assert_eq!(
+            unresolved_count, 2,
+            "Should have 2 truly unresolved imports"
+        );
+        assert_eq!(
+            external_count + unresolved_count,
+            graph.unresolved.len(),
+            "External + unresolved should equal total unresolved entries"
+        );
     }
 
     // =========================================================================
