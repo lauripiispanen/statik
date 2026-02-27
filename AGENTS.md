@@ -11,6 +11,7 @@
 - Agents working on many sequential tasks will hit context limits. Spawn fresh agents for later tasks rather than overloading one agent with 4+ implementation tasks.
 - The police/reviewer agent should review each task as it completes, not batch-review at the end. This gives the coder tighter feedback loops.
 - When spawning teams, include `cargo clippy` in the definition of done alongside `cargo test`.
+- When parallel agents work on adjacent tasks (e.g., Phase B and Phase D that both touch `file_graph.rs`), explicitly assign file ownership in task descriptions to prevent duplicate code and merge conflicts.
 
 ## Code Conventions
 
