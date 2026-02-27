@@ -82,6 +82,12 @@ pub enum Commands {
         /// Force full re-index (ignore cached data)
         #[arg(long)]
         force: bool,
+        /// Also index git commit history (authors, file changes)
+        #[arg(long)]
+        with_history: bool,
+        /// Limit history to the last N commits
+        #[arg(long)]
+        history_depth: Option<usize>,
     },
 
     /// File-level dependency analysis
@@ -201,6 +207,48 @@ pub enum Commands {
         /// Filter to a specific file
         #[arg(long)]
         file: Option<String>,
+    },
+
+    /// Analyze bus factor risk (ownership concentration + dependency fan-in)
+    BusFactor {
+        /// Glob pattern for files to analyze (optional)
+        glob: Option<String>,
+        /// Ownership threshold for counting as a contributor (0.0-1.0, default: 0.1)
+        #[arg(long, default_value = "0.1")]
+        threshold: f64,
+        /// Recency half-life in days (default: 180)
+        #[arg(long, default_value = "180")]
+        half_life: f64,
+    },
+
+    /// Show file ownership based on git history
+    Owners {
+        /// Glob pattern for files to analyze (e.g. "src/**")
+        glob: String,
+        /// Show only top N owners per file (default: 3)
+        #[arg(long, default_value = "3")]
+        top: usize,
+        /// Recency half-life in days (default: 180)
+        #[arg(long, default_value = "180")]
+        half_life: f64,
+    },
+
+    /// Analyze file change frequency and co-change patterns
+    Churn {
+        /// Glob pattern for files to analyze (optional)
+        glob: Option<String>,
+        /// Switch to co-change analysis mode (find files that change together)
+        #[arg(long)]
+        co_change: bool,
+        /// Only show after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<String>,
+        /// Only show before this date (YYYY-MM-DD)
+        #[arg(long)]
+        until: Option<String>,
+        /// Minimum co-change count to report (default: 3)
+        #[arg(long, default_value = "3")]
+        min_co_changes: usize,
     },
 
     /// Visualize dependency graph

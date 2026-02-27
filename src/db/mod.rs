@@ -110,6 +110,21 @@ impl Database {
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS commits (
+                sha TEXT PRIMARY KEY,
+                author_name TEXT NOT NULL,
+                author_email TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS file_commits (
+                file_path TEXT NOT NULL,
+                commit_sha TEXT NOT NULL REFERENCES commits(sha) ON DELETE CASCADE,
+                lines_added INTEGER NOT NULL,
+                lines_removed INTEGER NOT NULL,
+                PRIMARY KEY (file_path, commit_sha)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
@@ -118,6 +133,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
             CREATE INDEX IF NOT EXISTS idx_exports_file ON exports(file_id);
             CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+            CREATE INDEX IF NOT EXISTS idx_file_commits_path ON file_commits(file_path);
+            CREATE INDEX IF NOT EXISTS idx_commits_email ON commits(author_email);
             ",
             )
             .context("failed to initialize database schema")?;
@@ -609,6 +626,163 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get all exports")?;
         Ok(exports)
+    }
+
+    // ---- Commit history operations ----
+
+    /// Insert a commit record.
+    pub fn insert_commit(
+        &self,
+        sha: &str,
+        author_name: &str,
+        author_email: &str,
+        timestamp: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO commits (sha, author_name, author_email, timestamp)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![sha, author_name, author_email, timestamp],
+            )
+            .context("failed to insert commit")?;
+        Ok(())
+    }
+
+    /// Insert a file-commit association.
+    pub fn insert_file_commit(
+        &self,
+        file_path: &str,
+        commit_sha: &str,
+        lines_added: u64,
+        lines_removed: u64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO file_commits (file_path, commit_sha, lines_added, lines_removed)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![file_path, commit_sha, lines_added as i64, lines_removed as i64],
+            )
+            .context("failed to insert file commit")?;
+        Ok(())
+    }
+
+    /// Get all commits that touched a given file path (relative to project root).
+    pub fn get_commits_for_file(&self, file_path: &str) -> Result<Vec<crate::git::CommitRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.sha, c.author_name, c.author_email, c.timestamp,
+                    fc.lines_added, fc.lines_removed
+             FROM file_commits fc
+             JOIN commits c ON c.sha = fc.commit_sha
+             WHERE fc.file_path = ?1
+             ORDER BY c.timestamp DESC",
+        )?;
+
+        let records = stmt
+            .query_map(params![file_path], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get commits for file")?;
+
+        let commits = records
+            .into_iter()
+            .map(|(sha, name, email, ts, added, removed)| crate::git::CommitRecord {
+                sha,
+                author_name: name,
+                author_email: email,
+                timestamp: ts,
+                files: vec![crate::git::FileChange {
+                    path: file_path.to_string(),
+                    lines_added: added as u64,
+                    lines_removed: removed as u64,
+                }],
+            })
+            .collect();
+
+        Ok(commits)
+    }
+
+    /// Get all file-commit associations, returned as (file_path, CommitRecord) pairs.
+    pub fn get_all_file_commits(&self) -> Result<Vec<(String, crate::git::CommitRecord)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT fc.file_path, c.sha, c.author_name, c.author_email, c.timestamp,
+                    fc.lines_added, fc.lines_removed
+             FROM file_commits fc
+             JOIN commits c ON c.sha = fc.commit_sha
+             ORDER BY c.timestamp DESC",
+        )?;
+
+        let records = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get all file commits")?;
+
+        let pairs = records
+            .into_iter()
+            .map(
+                |(path, sha, name, email, ts, added, removed)| {
+                    (
+                        path.clone(),
+                        crate::git::CommitRecord {
+                            sha,
+                            author_name: name,
+                            author_email: email,
+                            timestamp: ts,
+                            files: vec![crate::git::FileChange {
+                                path,
+                                lines_added: added as u64,
+                                lines_removed: removed as u64,
+                            }],
+                        },
+                    )
+                },
+            )
+            .collect();
+
+        Ok(pairs)
+    }
+
+    /// Get the SHA of the last commit that was indexed for history.
+    pub fn get_last_indexed_commit_sha(&self) -> Result<Option<String>> {
+        self.get_metadata("last_history_sha")
+    }
+
+    /// Store the SHA of the most recent commit indexed for history.
+    pub fn set_last_indexed_commit_sha(&self, sha: &str) -> Result<()> {
+        self.set_metadata("last_history_sha", sha)
+    }
+
+    /// Count total commits in the history tables.
+    pub fn commit_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM commits", [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
+    /// Clear all history data (commits and file_commits).
+    pub fn clear_history(&self) -> Result<()> {
+        self.conn
+            .execute_batch("DELETE FROM file_commits; DELETE FROM commits;")
+            .context("failed to clear history data")?;
+        Ok(())
     }
 
     // ---- Batch operations for indexing ----
@@ -1273,5 +1447,99 @@ mod tests {
             db.get_metadata("parser_version").unwrap(),
             Some("1".to_string())
         );
+    }
+
+    #[test]
+    fn test_commit_insert_and_query() {
+        let db = test_db();
+
+        db.insert_commit("abc123", "Alice", "alice@example.com", 1700000000)
+            .unwrap();
+        db.insert_file_commit("src/main.rs", "abc123", 10, 2)
+            .unwrap();
+        db.insert_file_commit("src/lib.rs", "abc123", 5, 0)
+            .unwrap();
+
+        let commits = db.get_commits_for_file("src/main.rs").unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].sha, "abc123");
+        assert_eq!(commits[0].author_name, "Alice");
+        assert_eq!(commits[0].author_email, "alice@example.com");
+        assert_eq!(commits[0].timestamp, 1700000000);
+        assert_eq!(commits[0].files[0].lines_added, 10);
+        assert_eq!(commits[0].files[0].lines_removed, 2);
+
+        let all = db.get_all_file_commits().unwrap();
+        assert_eq!(all.len(), 2);
+
+        assert_eq!(db.commit_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_commit_duplicate_ignored() {
+        let db = test_db();
+
+        db.insert_commit("abc123", "Alice", "alice@example.com", 1700000000)
+            .unwrap();
+        // Re-insert same commit should not error
+        db.insert_commit("abc123", "Alice", "alice@example.com", 1700000000)
+            .unwrap();
+
+        assert_eq!(db.commit_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_last_indexed_commit_sha() {
+        let db = test_db();
+
+        assert!(db.get_last_indexed_commit_sha().unwrap().is_none());
+
+        db.set_last_indexed_commit_sha("abc123").unwrap();
+        assert_eq!(
+            db.get_last_indexed_commit_sha().unwrap(),
+            Some("abc123".to_string())
+        );
+
+        db.set_last_indexed_commit_sha("def456").unwrap();
+        assert_eq!(
+            db.get_last_indexed_commit_sha().unwrap(),
+            Some("def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_clear_history() {
+        let db = test_db();
+
+        db.insert_commit("abc123", "Alice", "alice@example.com", 1700000000)
+            .unwrap();
+        db.insert_file_commit("src/main.rs", "abc123", 10, 2)
+            .unwrap();
+        assert_eq!(db.commit_count().unwrap(), 1);
+
+        db.clear_history().unwrap();
+        assert_eq!(db.commit_count().unwrap(), 0);
+        assert!(db.get_commits_for_file("src/main.rs").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_multiple_commits_for_file() {
+        let db = test_db();
+
+        db.insert_commit("sha1", "Alice", "alice@example.com", 1700000000)
+            .unwrap();
+        db.insert_commit("sha2", "Bob", "bob@example.com", 1700001000)
+            .unwrap();
+
+        db.insert_file_commit("src/main.rs", "sha1", 10, 2)
+            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 3, 1)
+            .unwrap();
+
+        let commits = db.get_commits_for_file("src/main.rs").unwrap();
+        assert_eq!(commits.len(), 2);
+        // Ordered by timestamp DESC
+        assert_eq!(commits[0].sha, "sha2");
+        assert_eq!(commits[1].sha, "sha1");
     }
 }

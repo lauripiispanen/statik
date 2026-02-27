@@ -45,7 +45,12 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Index { ref path, force } => {
+        Commands::Index {
+            ref path,
+            force,
+            with_history,
+            history_depth,
+        } => {
             let index_path = PathBuf::from(path)
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from(path));
@@ -67,6 +72,19 @@ fn main() -> Result<()> {
                 for err in &result.parse_errors {
                     eprintln!("  {}", err);
                 }
+            }
+
+            if with_history {
+                let db_path = index_path.join(".statik").join("index.db");
+                let db = statik::db::Database::open(&db_path)?;
+                let history_result =
+                    statik::cli::index::run_history_index(&index_path, &db, history_depth, force)?;
+                eprintln!(
+                    "History: {} commits, {} file changes in {}ms",
+                    history_result.commits_indexed,
+                    history_result.file_changes_indexed,
+                    history_result.duration_ms,
+                );
             }
         }
 
@@ -282,6 +300,62 @@ fn main() -> Result<()> {
             emit_output(&output, command_name, &post_opts);
         }
 
+        Commands::BusFactor {
+            ref glob,
+            threshold,
+            half_life,
+        } => {
+            let output = commands::run_bus_factor(
+                &project_path,
+                glob.as_deref(),
+                threshold,
+                half_life,
+                format,
+                cli.no_index,
+                cli.runtime_only,
+                path_glob,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
+
+        Commands::Owners {
+            ref glob,
+            top,
+            half_life,
+        } => {
+            let output = commands::run_owners(
+                &project_path,
+                glob,
+                top,
+                half_life,
+                format,
+                cli.no_index,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
+
+        Commands::Churn {
+            ref glob,
+            co_change,
+            ref since,
+            ref until,
+            min_co_changes,
+        } => {
+            let output = commands::run_churn(
+                &project_path,
+                glob.as_deref(),
+                co_change,
+                since.as_deref(),
+                until.as_deref(),
+                min_co_changes,
+                format,
+                cli.no_index,
+                cli.runtime_only,
+                path_glob,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
+
         Commands::Graph {
             ref graph_format,
             ref focus,
@@ -319,6 +393,9 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Symbols { .. } => "symbols",
         Commands::References { .. } => "references",
         Commands::Callers { .. } => "callers",
+        Commands::BusFactor { .. } => "bus-factor",
+        Commands::Owners { .. } => "owners",
+        Commands::Churn { .. } => "churn",
         Commands::Graph { .. } => "graph",
     }
 }
@@ -367,7 +444,7 @@ fn extract_count(json: &serde_json::Value, command: &str) -> u64 {
         "exports" => summary
             .and_then(|s| s.get("total").and_then(num))
             .unwrap_or(0),
-        "symbols" | "references" | "callers" => {
+        "symbols" | "references" | "callers" | "owners" | "bus-factor" | "churn" => {
             json.get("count").and_then(num).unwrap_or(0)
         }
         "diff" => {

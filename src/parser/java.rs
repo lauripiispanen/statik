@@ -147,10 +147,6 @@ impl LanguageParser for JavaParser {
         })
     }
 
-    fn supported_languages(&self) -> &[Language] {
-        &[Language::Java]
-    }
-
     fn as_semantics(&self) -> &dyn LanguageSemantics {
         self
     }

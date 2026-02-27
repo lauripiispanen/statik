@@ -201,6 +201,86 @@ pub fn run_index(
     })
 }
 
+/// Index git commit history into the database.
+///
+/// If `force` is true, clears existing history and re-indexes everything.
+/// Otherwise performs incremental indexing from the last indexed commit.
+pub fn run_history_index(
+    project_path: &Path,
+    db: &Database,
+    max_commits: Option<usize>,
+    force: bool,
+) -> Result<HistoryResult> {
+    let start = Instant::now();
+
+    if !crate::git::is_git_repo(project_path) {
+        anyhow::bail!("--with-history requires a git repository");
+    }
+
+    // Determine since_sha for incremental indexing
+    let since_sha = if force {
+        db.clear_history()?;
+        None
+    } else {
+        db.get_last_indexed_commit_sha()?
+    };
+
+    let commits = crate::git::git_log_numstat(
+        project_path,
+        since_sha.as_deref(),
+        max_commits,
+    )?;
+
+    if commits.is_empty() {
+        return Ok(HistoryResult {
+            commits_indexed: 0,
+            file_changes_indexed: 0,
+            duration_ms: start.elapsed().as_millis(),
+        });
+    }
+
+    // The most recent commit SHA (first in the list, git log returns newest first)
+    let newest_sha = commits[0].sha.clone();
+
+    db.begin_transaction()?;
+
+    let mut total_file_changes = 0;
+    for commit in &commits {
+        db.insert_commit(
+            &commit.sha,
+            &commit.author_name,
+            &commit.author_email,
+            commit.timestamp,
+        )?;
+
+        for file_change in &commit.files {
+            db.insert_file_commit(
+                &file_change.path,
+                &commit.sha,
+                file_change.lines_added,
+                file_change.lines_removed,
+            )?;
+            total_file_changes += 1;
+        }
+    }
+
+    db.set_last_indexed_commit_sha(&newest_sha)?;
+    db.commit_transaction()?;
+
+    Ok(HistoryResult {
+        commits_indexed: commits.len(),
+        file_changes_indexed: total_file_changes,
+        duration_ms: start.elapsed().as_millis(),
+    })
+}
+
+#[derive(Debug)]
+pub struct HistoryResult {
+    pub commits_indexed: usize,
+    pub file_changes_indexed: usize,
+    pub duration_ms: u128,
+}
+
 #[derive(Debug)]
 pub struct IndexResult {
     pub files_indexed: usize,

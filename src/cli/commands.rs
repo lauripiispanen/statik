@@ -54,6 +54,27 @@ pub fn ensure_index(project_path: &Path, no_index: bool) -> Result<Database> {
     Database::open(&db_path)
 }
 
+/// Resolve a user-provided file path to a FileId in the graph.
+///
+/// Tries exact path match first, then falls back to suffix matching.
+fn resolve_file_id(
+    graph: &FileGraph,
+    project_path: &Path,
+    file_path: &str,
+) -> Result<FileId> {
+    let abs_path = project_path.join(file_path);
+    graph
+        .file_by_path(&abs_path)
+        .or_else(|| {
+            graph
+                .files
+                .values()
+                .find(|f| f.path.ends_with(file_path))
+                .map(|f| f.id)
+        })
+        .context(format!("File not found in index: {}", file_path))
+}
+
 /// Run the `deps` command.
 #[allow(clippy::too_many_arguments)]
 pub fn run_deps(
@@ -78,19 +99,7 @@ pub fn run_deps(
         _ => Direction::Both,
     };
 
-    // Resolve file path to FileId
-    let abs_path = project_path.join(file_path);
-    let target_id = graph
-        .file_by_path(&abs_path)
-        .or_else(|| {
-            // Try matching by suffix
-            graph
-                .files
-                .values()
-                .find(|f| f.path.ends_with(file_path))
-                .map(|f| f.id)
-        })
-        .context(format!("File not found in index: {}", file_path))?;
+    let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
     let result = analyze_deps(&graph, target_id, direction, transitive, max_depth)
         .context("Failed to analyze dependencies")?;
@@ -331,17 +340,7 @@ pub fn run_impact(
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
-    let abs_path = project_path.join(file_path);
-    let target_id = graph
-        .file_by_path(&abs_path)
-        .or_else(|| {
-            graph
-                .files
-                .values()
-                .find(|f| f.path.ends_with(file_path))
-                .map(|f| f.id)
-        })
-        .context(format!("File not found in index: {}", file_path))?;
+    let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
     let result =
         analyze_impact(&graph, target_id, max_depth).context("Failed to analyze impact")?;
@@ -364,17 +363,7 @@ pub fn run_exports(
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
-    let abs_path = project_path.join(file_path);
-    let target_id = graph
-        .file_by_path(&abs_path)
-        .or_else(|| {
-            graph
-                .files
-                .values()
-                .find(|f| f.path.ends_with(file_path))
-                .map(|f| f.id)
-        })
-        .context(format!("File not found in index: {}", file_path))?;
+    let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
     let file_info = graph.files.get(&target_id).unwrap();
 
@@ -1323,6 +1312,226 @@ pub fn run_callers(
     })
 }
 
+/// Run the `churn` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_churn(
+    project_path: &Path,
+    glob_pattern: Option<&str>,
+    co_change: bool,
+    since: Option<&str>,
+    until: Option<&str>,
+    min_co_changes: usize,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+
+    // Parse date filters
+    let since_ts = since
+        .map(crate::analysis::churn::parse_date_to_timestamp)
+        .transpose()?;
+    let until_ts = until
+        .map(crate::analysis::churn::parse_date_to_timestamp)
+        .transpose()?;
+
+    if co_change {
+        let graph = build_file_graph(&db, project_path)?;
+        let graph = maybe_filter_type_only(graph, runtime_only);
+        let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+        let mut result = crate::analysis::churn::compute_co_changes(
+            &db, &graph, glob_pattern, min_co_changes, since_ts, until_ts,
+        )?;
+
+        // Apply display_path
+        for entry in &mut result.pairs {
+            entry.file_a = display_path(&project_path.join(&entry.file_a));
+            entry.file_b = display_path(&project_path.join(&entry.file_b));
+        }
+
+        Ok(match format {
+            OutputFormat::Text => format_co_change_text(&result),
+            _ => format_json(&result, format),
+        })
+    } else {
+        let mut result =
+            crate::analysis::churn::compute_churn(&db, glob_pattern, since_ts, until_ts)?;
+
+        // Apply display_path
+        for entry in &mut result.files {
+            entry.path = display_path(&project_path.join(&entry.path));
+        }
+
+        Ok(match format {
+            OutputFormat::Text => format_churn_text(&result),
+            _ => format_json(&result, format),
+        })
+    }
+}
+
+/// Format churn result as human-readable text.
+fn format_churn_text(result: &crate::analysis::churn::ChurnResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Churn Analysis ({} files):\n\n", result.count));
+    out.push_str(&format!(
+        "  {:<50} {:>8} {:>12} {:>10}\n",
+        "File", "Commits", "Lines", "Freq/30d"
+    ));
+    out.push_str(&format!("  {}\n", "-".repeat(84)));
+
+    for entry in &result.files {
+        out.push_str(&format!(
+            "  {:<50} {:>8} {:>12} {:>10.2}\n",
+            entry.path, entry.commit_count, entry.lines_changed, entry.frequency
+        ));
+    }
+
+    out
+}
+
+/// Format co-change result as human-readable text.
+fn format_co_change_text(result: &crate::analysis::churn::CoChangeResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Co-Change Analysis ({} pairs, {} hidden coupling):\n\n",
+        result.count, result.summary.hidden_coupling_count
+    ));
+    out.push_str(&format!(
+        "  {:<40} {:<40} {:>5} {:>6} {:>5} {}\n",
+        "File A", "File B", "Count", "Ratio", "Edge", ""
+    ));
+    out.push_str(&format!("  {}\n", "-".repeat(100)));
+
+    for entry in &result.pairs {
+        let flag = if entry.hidden_coupling {
+            " HIDDEN COUPLING"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  {:<40} {:<40} {:>5} {:>5.0}% {:>5}{}\n",
+            entry.file_a,
+            entry.file_b,
+            entry.co_change_count,
+            entry.co_change_ratio * 100.0,
+            if entry.has_import_edge { "yes" } else { "no" },
+            flag,
+        ));
+    }
+
+    out
+}
+
+/// Run the `bus-factor` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bus_factor(
+    project_path: &Path,
+    glob_pattern: Option<&str>,
+    threshold: f64,
+    half_life_days: f64,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    let mut result = crate::analysis::ownership::compute_bus_factor_analysis(
+        &db,
+        &graph,
+        glob_pattern,
+        threshold,
+        half_life_days,
+    )?;
+
+    // Apply display_path to file paths
+    for entry in &mut result.files {
+        entry.path = display_path(&project_path.join(&entry.path));
+    }
+
+    Ok(match format {
+        OutputFormat::Text => format_bus_factor_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Format bus-factor result as human-readable text.
+fn format_bus_factor_text(result: &crate::analysis::ownership::BusFactorResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Bus Factor Analysis ({} files):\n\n", result.count));
+    out.push_str(&format!(
+        "  {:<6} {:<50} {:<5} {:<30} {:<6}\n",
+        "Risk", "File", "BF", "Primary Owner", "Fan-in"
+    ));
+    out.push_str(&format!("  {}\n", "-".repeat(100)));
+
+    for entry in &result.files {
+        out.push_str(&format!(
+            "  {:<6.1} {:<50} {:<5} {:<30} {:<6}\n",
+            entry.risk_score,
+            entry.path,
+            entry.bus_factor,
+            format!("{} ({:.0}%)", entry.primary_owner.author_name, entry.primary_owner.score),
+            entry.fan_in,
+        ));
+    }
+
+    out
+}
+
+/// Run the `owners` command.
+pub fn run_owners(
+    project_path: &Path,
+    glob_pattern: &str,
+    top: usize,
+    half_life_days: f64,
+    format: &OutputFormat,
+    no_index: bool,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+
+    let mut result = crate::analysis::ownership::compute_owners(
+        &db,
+        Some(glob_pattern),
+        top,
+        half_life_days,
+    )?;
+
+    // Apply display_path to file paths for relative display
+    for file in &mut result.files {
+        file.path = display_path(&project_path.join(&file.path));
+    }
+
+    Ok(match format {
+        OutputFormat::Text => format_owners_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Format owners result as human-readable text.
+fn format_owners_text(result: &crate::analysis::ownership::OwnersResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Owners ({} files):\n\n", result.count));
+
+    for file in &result.files {
+        out.push_str(&format!("  {}\n", file.path));
+        for owner in &file.owners {
+            out.push_str(&format!(
+                "    {:<30} {:>5.1}%\n",
+                owner.author_name, owner.score
+            ));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
 /// Run the `graph` command.
 #[allow(clippy::too_many_arguments)]
 pub fn run_graph(
@@ -1341,17 +1550,7 @@ pub fn run_graph(
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
     let (graph, focus_id) = if let Some(focus_path) = focus {
-        let abs_path = project_path.join(focus_path);
-        let fid = graph
-            .file_by_path(&abs_path)
-            .or_else(|| {
-                graph
-                    .files
-                    .values()
-                    .find(|f| f.path.ends_with(focus_path))
-                    .map(|f| f.id)
-            })
-            .context(format!("Focus file not found in index: {}", focus_path))?;
+        let fid = resolve_file_id(&graph, project_path, focus_path)?;
         let subgraph = extract_subgraph(&graph, fid, depth);
         (subgraph, Some(fid))
     } else {

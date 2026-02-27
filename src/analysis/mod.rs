@@ -1,9 +1,11 @@
+pub mod churn;
 pub mod cycles;
 pub mod dead_code;
 pub mod dependencies;
 pub mod diff;
 pub mod impact;
 pub mod linker;
+pub mod ownership;
 
 use serde::{Deserialize, Serialize};
 

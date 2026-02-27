@@ -18,9 +18,6 @@ pub trait LanguageParser: LanguageSemantics {
     /// Parse a source file and extract symbols, references, imports, exports.
     fn parse(&self, file_id: FileId, source: &str, path: &Path) -> Result<ParseResult>;
 
-    /// Which languages does this parser handle?
-    fn supported_languages(&self) -> &[Language];
-
     /// Upcast to `&dyn LanguageSemantics` without unstable trait upcasting.
     fn as_semantics(&self) -> &dyn LanguageSemantics;
 }
@@ -50,7 +47,7 @@ impl ParserRegistry {
     pub fn parser_for(&self, language: Language) -> Option<&dyn LanguageParser> {
         self.parsers
             .iter()
-            .find(|p| p.supported_languages().contains(&language))
+            .find(|p| p.languages().contains(&language))
             .map(|p| p.as_ref())
     }
 

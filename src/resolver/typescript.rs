@@ -26,9 +26,6 @@ const INDEX_FILES: &[&str] = &["index.ts", "index.tsx", "index.js", "index.jsx"]
 /// - Module augmentation / ambient declarations
 /// - Conditional exports in package.json
 pub struct TypeScriptResolver {
-    /// Absolute path to the project root directory.
-    #[allow(dead_code)]
-    project_root: PathBuf,
     /// Parsed tsconfig.json settings, if available.
     tsconfig: Option<TsConfig>,
     /// Set of known files in the project for fast existence checks.
@@ -44,13 +41,12 @@ impl TypeScriptResolver {
     /// - `known_files`: All known file paths in the project (absolute paths).
     /// - `tsconfig`: Optional parsed tsconfig.json.
     pub fn new(
-        project_root: PathBuf,
+        _project_root: PathBuf,
         known_files: Vec<PathBuf>,
         tsconfig: Option<TsConfig>,
     ) -> Self {
         let known_set: HashSet<PathBuf> = known_files.into_iter().collect();
         TypeScriptResolver {
-            project_root,
             tsconfig,
             known_files: known_set,
             existence_cache: Mutex::new(HashMap::new()),

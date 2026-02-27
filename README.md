@@ -1,8 +1,8 @@
 # statik
 
-Static code analysis for dependency graphs, dead code detection, and circular dependency detection in TypeScript/JavaScript, Java, and Rust projects.
+Static code analysis for dependency graphs, dead code detection, and architectural linting in TypeScript/JavaScript, Java, and Rust projects. Makes your codebase's dependency structure queryable -- by developers and AI coding agents alike.
 
-statik fills a gap between simple text search and full Language Server Protocol (LSP) features. Where LSP gives you go-to-definition and find-references for individual symbols, statik provides **graph-level analysis**: dependency chains between files, dead code detection, circular dependency detection, and refactoring blast radius. These are complementary capabilities -- statik does not replace LSP.
+statik fills a gap between simple text search and full Language Server Protocol (LSP) features. Where LSP gives you go-to-definition and find-references for individual symbols, statik provides **graph-level analysis**: dependency chains between files, dead code detection, circular dependency detection, and refactoring blast radius. AI agents benefit from the same analysis -- they are permanent newcomers to a codebase, and statik gives them the architectural context that would otherwise require reading thousands of files. These are complementary capabilities -- statik does not replace LSP.
 
 ## Quick Start
 
