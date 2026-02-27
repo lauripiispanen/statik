@@ -155,51 +155,37 @@ impl FileGraph {
         self.files.get(&id)
     }
 
-    /// Return a new FileGraph with type-only edges removed.
-    /// Useful for --runtime-only analysis where only runtime dependencies matter.
-    pub fn without_type_only_edges(&self) -> Self {
+    /// Return a new FileGraph keeping only edges that satisfy the predicate.
+    fn filter_edges(&self, keep: impl Fn(&FileImport) -> bool) -> Self {
         let mut new_graph = Self::new();
 
-        // Copy all files
         for info in self.files.values() {
             new_graph.add_file(info.clone());
         }
 
-        // Copy only non-type-only edges
         for edges in self.imports.values() {
             for edge in edges {
-                if !edge.is_type_only {
+                if keep(edge) {
                     new_graph.add_import(edge.clone());
                 }
             }
         }
 
-        // Copy unresolved imports
         new_graph.unresolved = self.unresolved.clone();
 
         new_graph
     }
 
+    /// Return a new FileGraph with type-only edges removed.
+    /// Useful for --runtime-only analysis where only runtime dependencies matter.
+    pub fn without_type_only_edges(&self) -> Self {
+        self.filter_edges(|edge| !edge.is_type_only)
+    }
+
     /// Return a new FileGraph with mod declaration edges removed.
     /// Useful for cycle detection where `mod foo;` in mod.rs should not count as a dependency.
     pub fn without_mod_declaration_edges(&self) -> Self {
-        let mut new_graph = Self::new();
-
-        for info in self.files.values() {
-            new_graph.add_file(info.clone());
-        }
-
-        for edges in self.imports.values() {
-            for edge in edges {
-                if !edge.is_mod_declaration {
-                    new_graph.add_import(edge.clone());
-                }
-            }
-        }
-
-        new_graph.unresolved = self.unresolved.clone();
-
-        new_graph
+        self.filter_edges(|edge| !edge.is_mod_declaration)
     }
 
     /// Return a new FileGraph containing only files whose paths match the given glob matcher.
@@ -271,17 +257,42 @@ impl FileGraph {
 
     /// Check if a file has unresolved imports.
     pub fn has_unresolved_imports(&self, file: FileId) -> bool {
-        self.unresolved.iter().any(|u| u.file == file)
+        self.unresolved.iter().any(|u| {
+            u.file == file && !matches!(u.reason, UnresolvedReason::External(_))
+        })
     }
 
-    /// Count unresolved imports for a file.
+    /// Count unresolved imports for a file (excludes External).
     pub fn unresolved_import_count(&self, file: FileId) -> usize {
-        self.unresolved.iter().filter(|u| u.file == file).count()
+        self.unresolved
+            .iter()
+            .filter(|u| u.file == file && !matches!(u.reason, UnresolvedReason::External(_)))
+            .count()
     }
 
-    /// Pre-compute the set of files that have unresolved imports.
+    /// Pre-compute the set of files that have truly unresolved imports (excludes External).
     pub fn files_with_unresolved_imports(&self) -> std::collections::HashSet<FileId> {
-        self.unresolved.iter().map(|u| u.file).collect()
+        self.unresolved
+            .iter()
+            .filter(|u| !matches!(u.reason, UnresolvedReason::External(_)))
+            .map(|u| u.file)
+            .collect()
+    }
+
+    /// Count of truly unresolved imports (excludes External).
+    pub fn truly_unresolved_count(&self) -> usize {
+        self.unresolved
+            .iter()
+            .filter(|u| !matches!(u.reason, UnresolvedReason::External(_)))
+            .count()
+    }
+
+    /// Count of external imports.
+    pub fn external_import_count(&self) -> usize {
+        self.unresolved
+            .iter()
+            .filter(|u| matches!(u.reason, UnresolvedReason::External(_)))
+            .count()
     }
 
     /// Build the graph from extracted data.

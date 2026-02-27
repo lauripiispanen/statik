@@ -17,6 +17,11 @@ fn main() -> Result<()> {
     let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let path_glob = cli.path_filter.as_deref();
 
+    // Set up relative path display (default) unless --absolute-paths is used
+    if !cli.absolute_paths {
+        commands::set_display_root(Some(project_path.clone()));
+    }
+
     let is_csv = matches!(cli.format, OutputFormat::Csv);
     let has_jq = cli.jq.is_some();
     let needs_json_post =
@@ -40,13 +45,13 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Index { ref path } => {
+        Commands::Index { ref path, force } => {
             let index_path = PathBuf::from(path)
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from(path));
 
             let config = build_discovery_config(&cli);
-            let result = run_index(&index_path, &config)?;
+            let result = run_index(&index_path, &config, force)?;
 
             let output = format_index_summary(
                 result.files_indexed + result.files_unchanged,

@@ -229,6 +229,75 @@ fn test_index_incremental() {
     );
 }
 
+#[test]
+fn test_index_force_reindexes_all_files() {
+    let proj = create_basic_project();
+
+    // First index
+    let out1 = proj.run(&["index", "."]);
+    assert!(out1.status.success());
+    let stdout1 = String::from_utf8_lossy(&out1.stdout);
+    // Should index all files
+    assert!(
+        stdout1.contains("files"),
+        "initial index should report files: {}",
+        stdout1
+    );
+
+    // Second index with --force: should re-index all files even though nothing changed
+    let out2 = proj.run(&["index", "--force", "."]);
+    assert!(out2.status.success(), "force index should succeed");
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    // Should report that files were indexed (not skipped as unchanged)
+    assert!(
+        stdout2.contains("files"),
+        "force index should report re-indexed files: {}",
+        stdout2
+    );
+}
+
+#[test]
+fn test_relative_paths_default_output() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let output = proj.run(&["--no-index", "--format", "json", "deps", "src/services/userService.ts"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Paths should be project-relative (not absolute) by default
+    assert!(
+        !stdout.contains(proj.path().to_str().unwrap()),
+        "Default output should use relative paths, but found absolute project path in output: {}",
+        stdout
+    );
+
+    // Should still contain the relative file path
+    assert!(
+        stdout.contains("src/services/userService.ts") || stdout.contains("services/userService.ts"),
+        "Output should contain relative file path: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_absolute_paths_flag() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    let output = proj.run(&[
+        "--no-index", "--format", "json", "--absolute-paths",
+        "deps", "src/services/userService.ts",
+    ]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // With --absolute-paths, output should contain the full project path
+    assert!(
+        stdout.contains(proj.path().to_str().unwrap()),
+        "Output with --absolute-paths should contain absolute project path. stdout: {}",
+        stdout
+    );
+}
+
 // =============================================================================
 // DEPS command tests
 // =============================================================================
@@ -1050,6 +1119,63 @@ fn test_lint_invalid_toml() {
 }
 
 #[test]
+fn test_lint_empty_rules_exits_zero() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    // rules.toml exists but has no [[rules]] section
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[entry_points]
+patterns = ["**/index.ts"]
+"#,
+    );
+
+    let output = proj.run(&["--no-index", "lint"]);
+    assert!(
+        output.status.success(),
+        "lint with empty rules should exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No lint rules configured"),
+        "should print 'No lint rules configured', got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_lint_empty_rules_json_output() {
+    let proj = create_basic_project();
+    proj.run(&["index", "."]);
+
+    // rules.toml exists but has no [[rules]] section
+    proj.write_file(
+        ".statik/rules.toml",
+        r#"
+[entry_points]
+patterns = ["**/index.ts"]
+"#,
+    );
+
+    let output = proj.run(&["--no-index", "lint", "--format", "json"]);
+    assert!(
+        output.status.success(),
+        "lint with empty rules (json) should exit 0"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("should produce valid JSON");
+    assert_eq!(json["message"], "No lint rules configured");
+    assert_eq!(json["violations"], serde_json::json!([]));
+    assert_eq!(json["summary"]["total"], 0);
+}
+
+#[test]
 fn test_lint_custom_config_path() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
@@ -1723,4 +1849,76 @@ fn test_deps_between_count() {
         panic!("--count should output a number, got: {}", stdout)
     });
     assert_eq!(count, 1, "should find exactly 1 edge from ui to db");
+}
+
+// ======================================================================
+// Output stream separation tests (8.6)
+// ======================================================================
+
+/// Verify that analysis commands send output to stdout only, not stderr.
+/// When an index already exists, stderr should be empty for all analysis commands.
+#[test]
+fn test_no_output_duplication_on_stderr() {
+    let proj = create_basic_project();
+    // Pre-index so no auto-index messages appear on stderr
+    proj.run(&["index"]);
+
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["dead-code"],
+        vec!["cycles"],
+        vec!["summary"],
+        vec!["deps", "src/index.ts"],
+        vec!["exports", "src/index.ts"],
+        vec!["impact", "src/index.ts"],
+        vec!["symbols"],
+    ];
+
+    for args in &commands {
+        let output = proj.run(args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            stderr.is_empty(),
+            "Command {:?} should produce no stderr when index exists, got: {}",
+            args,
+            stderr
+        );
+        assert!(
+            !stdout.is_empty(),
+            "Command {:?} should produce stdout output",
+            args,
+        );
+    }
+}
+
+/// Verify that auto-indexing messages go to stderr only, not stdout.
+#[test]
+fn test_auto_index_messages_on_stderr_only() {
+    let proj = create_basic_project();
+    // Do NOT pre-index: let auto-index trigger
+    let output = proj.run(&["dead-code"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Auto-index messages should be on stderr
+    assert!(
+        stderr.contains("auto-index") || stderr.contains("Indexed"),
+        "Auto-index progress should appear on stderr, got stderr: {}",
+        stderr
+    );
+
+    // Analysis output should be on stdout
+    assert!(
+        stdout.contains("dead") || stdout.contains("Summary"),
+        "Analysis output should appear on stdout, got stdout: {}",
+        stdout
+    );
+
+    // stdout should NOT contain auto-index messages
+    assert!(
+        !stdout.contains("auto-index") && !stdout.contains("Running auto"),
+        "Auto-index messages should not appear on stdout, got: {}",
+        stdout
+    );
 }

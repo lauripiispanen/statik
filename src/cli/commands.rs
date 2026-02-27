@@ -18,7 +18,16 @@ use crate::resolver::rust::RustResolver;
 use crate::resolver::typescript::TypeScriptResolver;
 use crate::resolver::{Resolution, Resolver};
 
+use super::output::{
+    display_path, format_cycles_text, format_dead_code_text, format_dead_symbols_text,
+    format_deps_text, format_diff_text, format_dir_summary_text, format_exports_text,
+    format_impact_text, format_json, format_lint_text, format_references_text,
+    format_summary_text, format_symbols_text,
+};
 use super::OutputFormat;
+
+// Re-export set_display_root so main.rs can call commands::set_display_root
+pub use super::output::set_display_root;
 
 /// Build a FileGraph from the database and resolver.
 pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph> {
@@ -395,7 +404,7 @@ pub fn ensure_index(project_path: &Path, no_index: bool) -> Result<Database> {
         // Auto-index
         eprintln!("No index found. Running auto-index...");
         let config = crate::discovery::DiscoveryConfig::default();
-        let result = crate::cli::index::run_index(project_path, &config)?;
+        let result = crate::cli::index::run_index(project_path, &config, false)?;
         eprintln!(
             "Indexed {} files ({} symbols) in {}ms",
             result.files_indexed + result.files_unchanged,
@@ -919,21 +928,8 @@ pub fn run_summary(
         },
         dependencies: DepSummary {
             total_imports,
-            external_imports: graph
-                .unresolved
-                .iter()
-                .filter(|u| matches!(u.reason, UnresolvedReason::External(_)))
-                .count(),
-            unresolved_imports: graph
-                .unresolved
-                .iter()
-                .filter(|u| {
-                    matches!(
-                        u.reason,
-                        UnresolvedReason::FileNotFound(_) | UnresolvedReason::DynamicPath
-                    )
-                })
-                .count(),
+            external_imports: graph.external_import_count(),
+            unresolved_imports: graph.truly_unresolved_count(),
         },
         dead_code: DeadCodeSummaryCompact {
             dead_files: dead.dead_files.len(),
@@ -1077,39 +1073,6 @@ fn run_summary_by_directory(
     })
 }
 
-fn format_dir_summary_text(result: &impl serde::Serialize) -> String {
-    let value = serde_json::to_value(result).unwrap_or_default();
-    let mut out = String::new();
-    out.push_str("Directory Summary\n");
-    out.push_str(&format!("{}\n\n", "=".repeat(40)));
-
-    if let Some(dirs) = value.get("directories").and_then(|v| v.as_array()) {
-        out.push_str(&format!(
-            "  {:<40} {:>5} {:>7} {:>12} {:>10} {:>9}\n",
-            "Directory", "Files", "Exports", "Dead Exports", "Avg Fan-Out", "Avg Fan-In"
-        ));
-        out.push_str(&format!("  {}\n", "-".repeat(85)));
-
-        for d in dirs {
-            let dir = d.get("directory").and_then(|v| v.as_str()).unwrap_or("?");
-            let files = d.get("files").and_then(|v| v.as_u64()).unwrap_or(0);
-            let exports = d.get("exports").and_then(|v| v.as_u64()).unwrap_or(0);
-            let dead = d.get("dead_exports").and_then(|v| v.as_u64()).unwrap_or(0);
-            let fan_out = d.get("avg_fan_out").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let fan_in = d.get("avg_fan_in").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            out.push_str(&format!(
-                "  {:<40} {:>5} {:>7} {:>12} {:>10.2} {:>9.2}\n",
-                dir, files, exports, dead, fan_out, fan_in
-            ));
-        }
-
-        let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-        out.push_str(&format!("\n{} directories\n", count));
-    }
-
-    out
-}
-
 /// Run the `lint` command. Returns (output_string, has_errors).
 #[allow(clippy::too_many_arguments)]
 pub fn run_lint(
@@ -1139,6 +1102,22 @@ pub fn run_lint(
         if config.rules.is_empty() {
             anyhow::bail!("No rule found with id '{}'", rule_id);
         }
+    }
+
+    // No rules configured at all
+    if config.rules.is_empty() {
+        let msg = "No lint rules configured";
+        let output = match format {
+            OutputFormat::Json => {
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "message": msg,
+                    "violations": [],
+                    "summary": { "total": 0, "errors": 0, "warnings": 0 }
+                }))?
+            }
+            _ => msg.to_string(),
+        };
+        return Ok((output, false));
     }
 
     // Parse severity threshold
@@ -1303,7 +1282,7 @@ fn index_git_ref(project_path: &Path, sha: &str) -> Result<Database> {
         .context(format!("Failed to export tree at {}", sha))?;
 
     let config = crate::discovery::DiscoveryConfig::default();
-    let index_result = crate::cli::index::run_index(temp_dir.path(), &config)?;
+    let index_result = crate::cli::index::run_index(temp_dir.path(), &config, false)?;
 
     // Relativize paths in the DB so they match across different temp dirs
     let temp_db_path = temp_dir.path().join(".statik/index.db");
@@ -1416,38 +1395,6 @@ pub fn run_symbols(
         OutputFormat::Text => format_symbols_text(&result),
         _ => format_json(&result, format),
     })
-}
-
-fn format_symbols_text(result: &impl serde::Serialize) -> String {
-    let value = serde_json::to_value(result).unwrap_or_default();
-    let mut out = String::new();
-
-    if let Some(symbols) = value.get("symbols").and_then(|v| v.as_array()) {
-        let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-        out.push_str(&format!("Symbols ({}):\n\n", count));
-        out.push_str(&format!(
-            "  {:<30} {:<12} {:<40} {:<6} {:<10}\n",
-            "Name", "Kind", "File", "Line", "Visibility"
-        ));
-        out.push_str(&format!("  {}\n", "-".repeat(100)));
-
-        for sym in symbols {
-            let name = sym.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-            let file = sym.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-            let line = sym.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-            let vis = sym
-                .get("visibility")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            out.push_str(&format!(
-                "  {:<30} {:<12} {:<40} {:<6} {:<10}\n",
-                name, kind, file, line, vis
-            ));
-        }
-    }
-
-    out
 }
 
 /// Run the `references` command.
@@ -1614,40 +1561,6 @@ pub fn run_references(
         OutputFormat::Text => format_references_text(&result),
         _ => format_json(&result, format),
     })
-}
-
-fn format_references_text(result: &impl serde::Serialize) -> String {
-    let value = serde_json::to_value(result).unwrap_or_default();
-    let mut out = String::new();
-
-    let symbol = value.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
-    let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-    out.push_str(&format!("References for '{}' ({}):\n\n", symbol, count));
-
-    if let Some(refs) = value.get("references").and_then(|v| v.as_array()) {
-        if refs.is_empty() {
-            out.push_str("No references found.\n");
-        } else {
-            for r in refs {
-                let source = r.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-                let target = r.get("target").and_then(|v| v.as_str()).unwrap_or("?");
-                let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let file = r.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-                let line = r.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                let is_cross = r
-                    .get("cross_file")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let marker = if is_cross { " [cross-file]" } else { "" };
-                out.push_str(&format!(
-                    "  {} -> {} [{}] at {}:{}{}\n",
-                    source, target, kind, file, line, marker
-                ));
-            }
-        }
-    }
-
-    out
 }
 
 /// Run the `callers` command.
@@ -1836,18 +1749,18 @@ pub fn run_graph(
     // When --format json/compact is explicitly requested, always output JSON
     match format {
         OutputFormat::Json | OutputFormat::Compact | OutputFormat::Csv => {
-            let result = build_graph_json(&graph, project_path, focus_id);
+            let result = build_graph_json(&graph, focus_id);
             Ok(format_json(&result, format))
         }
         _ => match graph_format {
-            "dot" => Ok(generate_dot(&graph, project_path, focus_id)),
-            "svg" => generate_svg(&graph, project_path, focus_id),
-            "html" => Ok(generate_html(&graph, project_path, focus_id)),
+            "dot" => Ok(generate_dot(&graph, focus_id)),
+            "svg" => generate_svg(&graph, focus_id),
+            "html" => Ok(generate_html(&graph, focus_id)),
             "json" => {
-                let result = build_graph_json(&graph, project_path, focus_id);
+                let result = build_graph_json(&graph, focus_id);
                 Ok(format_json(&result, &OutputFormat::Json))
             }
-            _ => Ok(generate_dot(&graph, project_path, focus_id)),
+            _ => Ok(generate_dot(&graph, focus_id)),
         },
     }
 }
@@ -1896,7 +1809,7 @@ fn extract_subgraph(graph: &FileGraph, focus: FileId, max_depth: Option<usize>) 
 }
 
 /// Generate DOT format output.
-fn generate_dot(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>) -> String {
+fn generate_dot(graph: &FileGraph, focus_id: Option<FileId>) -> String {
     let mut out = String::new();
     out.push_str("digraph dependencies {\n");
     out.push_str("  rankdir=LR;\n");
@@ -1907,7 +1820,7 @@ fn generate_dot(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>
     files.sort_by_key(|(id, _)| **id);
 
     for (_, info) in &files {
-        let rel_path = relative_path(&info.path, project_root);
+        let rel_path = display_path(&info.path);
         let color = if Some(info.id) == focus_id {
             "#8888ff"
         } else if info.is_entry_point {
@@ -1927,8 +1840,8 @@ fn generate_dot(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>
         if let Some(import_edges) = graph.import_edges(info.id) {
             for edge in import_edges {
                 if let Some(target) = graph.get_file(edge.to) {
-                    let from = relative_path(&info.path, project_root);
-                    let to = relative_path(&target.path, project_root);
+                    let from = display_path(&info.path);
+                    let to = display_path(&target.path);
                     edges.push((from, to));
                 }
             }
@@ -1945,12 +1858,8 @@ fn generate_dot(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>
 }
 
 /// Generate SVG by shelling out to the `dot` command.
-fn generate_svg(
-    graph: &FileGraph,
-    project_root: &Path,
-    focus_id: Option<FileId>,
-) -> Result<String> {
-    let dot = generate_dot(graph, project_root, focus_id);
+fn generate_svg(graph: &FileGraph, focus_id: Option<FileId>) -> Result<String> {
+    let dot = generate_dot(graph, focus_id);
 
     let result = std::process::Command::new("dot")
         .arg("-Tsvg")
@@ -1988,7 +1897,6 @@ fn generate_svg(
 /// Build the JSON representation for the graph.
 fn build_graph_json(
     graph: &FileGraph,
-    project_root: &Path,
     focus_id: Option<FileId>,
 ) -> serde_json::Value {
     let mut nodes = Vec::new();
@@ -1997,7 +1905,7 @@ fn build_graph_json(
     files.sort_by_key(|(id, _)| **id);
 
     for (_, info) in &files {
-        let rel = relative_path(&info.path, project_root);
+        let rel = display_path(&info.path);
         let lang = format!("{:?}", info.language);
         let mut node = serde_json::json!({
             "path": rel,
@@ -2022,8 +1930,8 @@ fn build_graph_json(
             }
             for (target_id, mut names) in by_target {
                 if let Some(target) = graph.get_file(target_id) {
-                    let from = relative_path(&info.path, project_root);
-                    let to = relative_path(&target.path, project_root);
+                    let from = display_path(&info.path);
+                    let to = display_path(&target.path);
                     names.sort();
                     names.dedup();
                     edge_set.push((from, to, names));
@@ -2052,8 +1960,8 @@ fn build_graph_json(
 }
 
 /// Generate a self-contained HTML file with a force-directed graph visualization.
-fn generate_html(graph: &FileGraph, project_root: &Path, focus_id: Option<FileId>) -> String {
-    let graph_json = build_graph_json(graph, project_root, focus_id);
+fn generate_html(graph: &FileGraph, focus_id: Option<FileId>) -> String {
+    let graph_json = build_graph_json(graph, focus_id);
     let json_str = serde_json::to_string(&graph_json).unwrap_or_default();
     HTML_TEMPLATE.replace("/*GRAPH_DATA*/", &format!("const graphData = {};", json_str))
 }
@@ -2190,30 +2098,7 @@ tick();
 </html>
 "##;
 
-/// Get a relative path from a file path and project root.
-fn relative_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
 /// Format any serializable analysis result as JSON.
-fn format_json<T: serde::Serialize>(value: &T, format: &OutputFormat) -> String {
-    match format {
-        OutputFormat::Json | OutputFormat::Csv => {
-            serde_json::to_string_pretty(value).unwrap_or_default()
-        }
-        OutputFormat::Compact => serde_json::to_string(value).unwrap_or_default(),
-        OutputFormat::Text => unreachable!("text format should be handled by caller"),
-    }
-}
-
-/// Strip a common project root prefix from a path for display.
-fn display_path(path: &Path) -> String {
-    path.display().to_string()
-}
-
 /// Map a CLI language string (e.g. "java", "typescript", "ts") to a `Language`.
 fn lang_str_to_language(s: &str) -> Option<Language> {
     let ext = match s.to_lowercase().as_str() {
@@ -2225,576 +2110,6 @@ fn lang_str_to_language(s: &str) -> Option<Language> {
         _ => return None,
     };
     Language::from_extension(ext)
-}
-
-// --- Text formatters for each command ---
-
-fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Dependencies for {}\n",
-        display_path(&result.target_path)
-    ));
-    out.push('\n');
-
-    if !result.imports.is_empty() {
-        out.push_str(&format!("Imports ({}):\n", result.imports.len()));
-        for dep in &result.imports {
-            let indent = "  ".repeat(dep.depth);
-            let names = if dep.imported_names.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", dep.imported_names.join(", "))
-            };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
-        }
-        out.push('\n');
-    }
-
-    if !result.imported_by.is_empty() {
-        out.push_str(&format!("Imported by ({}):\n", result.imported_by.len()));
-        for dep in &result.imported_by {
-            let indent = "  ".repeat(dep.depth);
-            let names = if dep.imported_names.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", dep.imported_names.join(", "))
-            };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
-        }
-        out.push('\n');
-    }
-
-    if result.imports.is_empty() && result.imported_by.is_empty() {
-        out.push_str("No dependencies found.\n");
-    }
-
-    out.push_str(&format!("Confidence: {}", result.confidence));
-    out
-}
-
-fn format_dead_code_text(result: &crate::analysis::dead_code::DeadCodeResult) -> String {
-    let mut out = String::new();
-
-    if !result.dead_files.is_empty() {
-        out.push_str(&format!("Dead files ({}):\n", result.dead_files.len()));
-        for f in &result.dead_files {
-            out.push_str(&format!("  {} [{}]\n", display_path(&f.path), f.confidence));
-        }
-        out.push('\n');
-    }
-
-    if !result.dead_exports.is_empty() {
-        out.push_str(&format!("Dead exports ({}):\n", result.dead_exports.len()));
-        for e in &result.dead_exports {
-            out.push_str(&format!(
-                "  {}  {}  [{}]\n",
-                display_path(&e.path),
-                e.export_name,
-                e.confidence,
-            ));
-        }
-        out.push('\n');
-    }
-
-    if result.dead_files.is_empty() && result.dead_exports.is_empty() {
-        out.push_str("No dead code found.\n\n");
-    }
-
-    out.push_str(&format!(
-        "Summary: {}/{} dead files, {}/{} dead exports, {} entry points\n",
-        result.summary.dead_files,
-        result.summary.total_files,
-        result.summary.dead_exports,
-        result.summary.total_exports,
-        result.summary.entry_points,
-    ));
-    out.push_str(&format!("Confidence: {}", result.confidence));
-
-    if !result.limitations.is_empty() {
-        out.push('\n');
-        for lim in &result.limitations {
-            out.push_str(&format!("  Warning: {}\n", lim.description));
-        }
-    }
-
-    out
-}
-
-fn format_dead_symbols_text(result: &crate::analysis::dead_code::DeadSymbolResult) -> String {
-    let mut out = String::new();
-
-    if result.dead_symbols.is_empty() {
-        out.push_str("No dead symbols found.\n\n");
-    } else {
-        out.push_str(&format!(
-            "Dead symbols ({}):\n\n",
-            result.dead_symbols.len()
-        ));
-        out.push_str(&format!(
-            "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
-            "Name", "Kind", "File", "Line", "Confidence"
-        ));
-        out.push_str(&format!("  {}\n", "-".repeat(98)));
-
-        for s in &result.dead_symbols {
-            out.push_str(&format!(
-                "  {:<30} {:<12} {:<40} {:<6} {:<8}\n",
-                s.name,
-                s.kind,
-                s.file,
-                s.line,
-                format!("{}", s.confidence),
-            ));
-        }
-        out.push('\n');
-    }
-
-    out.push_str(&format!(
-        "Summary: {}/{} dead symbols, {} entry point symbols, {}/{} refs resolved\n",
-        result.summary.dead_symbols,
-        result.summary.total_symbols,
-        result.summary.entry_point_symbols,
-        result.summary.resolved_references,
-        result.summary.resolved_references + result.summary.unresolved_references,
-    ));
-    out.push_str(&format!("Confidence: {}", result.confidence));
-
-    if !result.limitations.is_empty() {
-        out.push('\n');
-        for lim in &result.limitations {
-            out.push_str(&format!("  Warning: {}\n", lim.description));
-        }
-    }
-
-    out
-}
-
-fn format_cycles_text(result: &crate::analysis::cycles::CycleResult) -> String {
-    let mut out = String::new();
-
-    if result.cycles.is_empty() {
-        out.push_str("No circular dependencies found.\n");
-    } else {
-        out.push_str(&format!(
-            "Circular dependencies ({} cycles, {} files involved):\n\n",
-            result.summary.cycle_count, result.summary.files_in_cycles,
-        ));
-        for (i, cycle) in result.cycles.iter().enumerate() {
-            out.push_str(&format!("  Cycle {} ({} files):\n", i + 1, cycle.length));
-            for (j, file) in cycle.files.iter().enumerate() {
-                if j < cycle.files.len() - 1 {
-                    out.push_str(&format!("    {} ->\n", display_path(&file.path)));
-                } else {
-                    out.push_str(&format!("    {}\n", display_path(&file.path)));
-                    out.push_str(&format!(
-                        "    -> {} (cycle back)\n",
-                        display_path(&cycle.files[0].path)
-                    ));
-                }
-            }
-            out.push('\n');
-        }
-    }
-
-    out.push_str(&format!("Confidence: {}", result.confidence));
-    out
-}
-
-fn format_impact_text(result: &crate::analysis::impact::ImpactResult) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Impact of changing {}\n\n",
-        display_path(&result.target_path)
-    ));
-
-    if result.affected.is_empty() {
-        out.push_str("No files affected.\n");
-    } else {
-        out.push_str(&format!(
-            "Affected files ({} total, max depth {}):\n",
-            result.summary.total_affected, result.summary.max_depth,
-        ));
-
-        let mut max_depth = 0;
-        for af in &result.affected {
-            if af.depth > max_depth {
-                max_depth = af.depth;
-            }
-        }
-
-        for depth in 1..=max_depth {
-            if let Some(files) = result.by_depth.get(&depth) {
-                out.push_str(&format!("  Depth {}:\n", depth));
-                for af in files {
-                    out.push_str(&format!("    {}\n", display_path(&af.path)));
-                }
-            }
-        }
-        out.push('\n');
-    }
-
-    out.push_str(&format!("Confidence: {}", result.confidence));
-    out
-}
-
-fn format_exports_text(result: &serde_json::Value) -> String {
-    let mut out = String::new();
-
-    let file = result
-        .get("file")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    out.push_str(&format!("Exports for {}\n\n", file));
-
-    if let Some(exports) = result.get("exports").and_then(|v| v.as_array()) {
-        if exports.is_empty() {
-            out.push_str("No exports found.\n");
-        } else {
-            // Table header
-            out.push_str(&format!(
-                "  {:<30} {:<10} {:<12} {:<6}\n",
-                "Name", "Default", "Re-export", "Used"
-            ));
-            out.push_str(&format!("  {}\n", "-".repeat(60)));
-
-            for exp in exports {
-                let name = exp.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let is_default = exp
-                    .get("is_default")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let is_reexport = exp
-                    .get("is_reexport")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let is_used = exp
-                    .get("is_used")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                let used_marker = if is_used { "yes" } else { "NO" };
-                out.push_str(&format!(
-                    "  {:<30} {:<10} {:<12} {:<6}\n",
-                    name,
-                    if is_default { "yes" } else { "" },
-                    if is_reexport { "yes" } else { "" },
-                    used_marker,
-                ));
-            }
-            out.push('\n');
-        }
-    }
-
-    if let Some(summary) = result.get("summary") {
-        let total = summary.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-        let used = summary.get("used").and_then(|v| v.as_u64()).unwrap_or(0);
-        let unused = summary.get("unused").and_then(|v| v.as_u64()).unwrap_or(0);
-        out.push_str(&format!(
-            "Summary: {} total, {} used, {} unused",
-            total, used, unused
-        ));
-    }
-
-    out
-}
-
-fn format_summary_text(result: &serde_json::Value) -> String {
-    let mut out = String::new();
-    out.push_str("Project Summary\n");
-    out.push_str(&format!("{}\n\n", "=".repeat(40)));
-
-    if let Some(files) = result.get("files") {
-        let total = files.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-        let entry_points = files
-            .get("entry_points")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        out.push_str(&format!(
-            "Files: {} total, {} entry points\n",
-            total, entry_points
-        ));
-
-        if let Some(by_lang) = files.get("by_language").and_then(|v| v.as_object()) {
-            let mut langs: Vec<_> = by_lang.iter().collect();
-            langs.sort_by(|a, b| b.1.as_u64().unwrap_or(0).cmp(&a.1.as_u64().unwrap_or(0)));
-            for (lang, count) in &langs {
-                out.push_str(&format!("  {}: {}\n", lang, count.as_u64().unwrap_or(0)));
-            }
-        }
-        out.push('\n');
-    }
-
-    if let Some(deps) = result.get("dependencies") {
-        let total = deps
-            .get("total_imports")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let external = deps
-            .get("external_imports")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let unresolved = deps
-            .get("unresolved_imports")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        if unresolved > 0 {
-            out.push_str(&format!(
-                "Dependencies: {} imports, {} external, {} unresolved\n",
-                total, external, unresolved,
-            ));
-        } else {
-            out.push_str(&format!(
-                "Dependencies: {} imports, {} external\n",
-                total, external,
-            ));
-        }
-    }
-
-    if let Some(dc) = result.get("dead_code") {
-        let dead_files = dc.get("dead_files").and_then(|v| v.as_u64()).unwrap_or(0);
-        let dead_exports = dc.get("dead_exports").and_then(|v| v.as_u64()).unwrap_or(0);
-        let total_exports = dc
-            .get("total_exports")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        out.push_str(&format!(
-            "Dead code: {} dead files, {}/{} dead exports\n",
-            dead_files, dead_exports, total_exports,
-        ));
-    }
-
-    if let Some(cy) = result.get("cycles") {
-        let count = cy.get("cycle_count").and_then(|v| v.as_u64()).unwrap_or(0);
-        let files_in = cy
-            .get("files_in_cycles")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        out.push_str(&format!(
-            "Cycles: {} cycles, {} files involved",
-            count, files_in,
-        ));
-    }
-
-    out
-}
-
-fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
-    use crate::linting::config::Severity;
-
-    let mut out = String::new();
-
-    if result.violations.is_empty() {
-        out.push_str("No lint violations found.\n");
-    } else {
-        for v in &result.violations {
-            let severity_label = match v.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-                Severity::Info => "info",
-            };
-            out.push_str(&format!(
-                "{}[{}] {}\n",
-                severity_label, v.rule_id, v.description
-            ));
-            if v.source_file == v.target_file && v.line == 0 {
-                out.push_str(&format!("  {}\n", display_path(&v.source_file)));
-            } else {
-                out.push_str(&format!(
-                    "  {}:{} -> {}\n",
-                    display_path(&v.source_file),
-                    v.line,
-                    display_path(&v.target_file),
-                ));
-            }
-            if !v.imported_names.is_empty() {
-                out.push_str(&format!("    imports: {}\n", v.imported_names.join(", ")));
-            }
-            if let Some(ref fix) = v.fix_direction {
-                out.push_str(&format!("    fix: {}\n", fix));
-            }
-            out.push('\n');
-        }
-    }
-
-    out.push_str(&format!(
-        "{} errors, {} warnings across {} rules\n",
-        result.summary.errors, result.summary.warnings, result.summary.rules_evaluated,
-    ));
-
-    out
-}
-
-fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
-    use crate::analysis::diff::{ChangeKind, EdgeChangeKind};
-
-    let mut out = String::new();
-
-    if result.changes.is_empty() {
-        out.push_str("No export changes detected.\n");
-    } else {
-        let breaking: Vec<_> = result
-            .changes
-            .iter()
-            .filter(|c| c.kind == ChangeKind::Breaking)
-            .collect();
-        let expanding: Vec<_> = result
-            .changes
-            .iter()
-            .filter(|c| c.kind == ChangeKind::Expanding)
-            .collect();
-        let restructuring: Vec<_> = result
-            .changes
-            .iter()
-            .filter(|c| c.kind == ChangeKind::Restructuring)
-            .collect();
-
-        if !breaking.is_empty() {
-            out.push_str(&format!("Breaking changes ({}):\n", breaking.len()));
-            for c in &breaking {
-                out.push_str(&format!(
-                    "  - {}  {}  ({})\n",
-                    display_path(&c.file_path),
-                    c.export_name,
-                    c.detail,
-                ));
-                for importer in &c.affected_importers {
-                    out.push_str(&format!(
-                        "      imported by: {}\n",
-                        display_path(importer),
-                    ));
-                }
-            }
-            out.push('\n');
-        }
-
-        if !restructuring.is_empty() {
-            out.push_str(&format!("Restructured ({}):\n", restructuring.len()));
-            for c in &restructuring {
-                out.push_str(&format!(
-                    "  ~ {}  {}  ({})\n",
-                    display_path(&c.file_path),
-                    c.export_name,
-                    c.detail,
-                ));
-            }
-            out.push('\n');
-        }
-
-        if !expanding.is_empty() {
-            out.push_str(&format!("New exports ({}):\n", expanding.len()));
-            for c in &expanding {
-                out.push_str(&format!(
-                    "  + {}  {}  ({})\n",
-                    display_path(&c.file_path),
-                    c.export_name,
-                    c.detail,
-                ));
-            }
-            out.push('\n');
-        }
-    }
-
-    if !result.import_edge_changes.is_empty() {
-        let added: Vec<_> = result
-            .import_edge_changes
-            .iter()
-            .filter(|e| e.change == EdgeChangeKind::Added)
-            .collect();
-        let removed: Vec<_> = result
-            .import_edge_changes
-            .iter()
-            .filter(|e| e.change == EdgeChangeKind::Removed)
-            .collect();
-
-        if !added.is_empty() {
-            out.push_str(&format!("New dependency edges ({}):\n", added.len()));
-            for e in &added {
-                out.push_str(&format!(
-                    "  + {} -> {}  [{}]\n",
-                    display_path(&e.from_path),
-                    display_path(&e.to_path),
-                    e.imported_names.join(", "),
-                ));
-            }
-            out.push('\n');
-        }
-
-        if !removed.is_empty() {
-            out.push_str(&format!("Removed dependency edges ({}):\n", removed.len()));
-            for e in &removed {
-                out.push_str(&format!(
-                    "  - {} -> {}  [{}]\n",
-                    display_path(&e.from_path),
-                    display_path(&e.to_path),
-                    e.imported_names.join(", "),
-                ));
-            }
-            out.push('\n');
-        }
-    }
-
-    out.push_str(&format!(
-        "Summary: {} added, {} removed, {} changed, {} unchanged files\n",
-        result.summary.files_added,
-        result.summary.files_removed,
-        result.summary.files_changed,
-        result.summary.files_unchanged,
-    ));
-    out.push_str(&format!(
-        "  {} breaking, {} expanding, {} restructuring changes\n",
-        result.summary.breaking_changes,
-        result.summary.expanding_changes,
-        result.summary.restructuring_changes,
-    ));
-    if result.summary.import_edges_added > 0 || result.summary.import_edges_removed > 0 {
-        out.push_str(&format!(
-            "  {} edges added, {} edges removed\n",
-            result.summary.import_edges_added, result.summary.import_edges_removed,
-        ));
-    }
-
-    if !result.cycle_changes.is_empty() {
-        use crate::analysis::diff::CycleChangeKind;
-
-        let introduced: Vec<_> = result
-            .cycle_changes
-            .iter()
-            .filter(|c| c.change == CycleChangeKind::Introduced)
-            .collect();
-        let resolved: Vec<_> = result
-            .cycle_changes
-            .iter()
-            .filter(|c| c.change == CycleChangeKind::Resolved)
-            .collect();
-
-        if !introduced.is_empty() {
-            out.push_str(&format!(
-                "\nNew cycles introduced ({}):\n",
-                introduced.len()
-            ));
-            for c in &introduced {
-                let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
-                out.push_str(&format!("  ! {} (length {})\n", paths.join(" -> "), c.length));
-            }
-        }
-
-        if !resolved.is_empty() {
-            out.push_str(&format!("\nCycles resolved ({}):\n", resolved.len()));
-            for c in &resolved {
-                let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
-                out.push_str(&format!("  * {} (length {})\n", paths.join(" -> "), c.length));
-            }
-        }
-
-        out.push_str(&format!(
-            "  {} introduced, {} resolved\n",
-            result.summary.cycles_introduced, result.summary.cycles_resolved,
-        ));
-    }
-
-    out
 }
 
 #[cfg(test)]
@@ -3347,21 +2662,8 @@ mod tests {
             line: 4,
         });
 
-        let external_count = graph
-            .unresolved
-            .iter()
-            .filter(|u| matches!(u.reason, UnresolvedReason::External(_)))
-            .count();
-        let unresolved_count = graph
-            .unresolved
-            .iter()
-            .filter(|u| {
-                matches!(
-                    u.reason,
-                    UnresolvedReason::FileNotFound(_) | UnresolvedReason::DynamicPath
-                )
-            })
-            .count();
+        let external_count = graph.external_import_count();
+        let unresolved_count = graph.truly_unresolved_count();
 
         assert_eq!(external_count, 2, "Should have 2 external imports");
         assert_eq!(
@@ -3372,6 +2674,12 @@ mod tests {
             external_count + unresolved_count,
             graph.unresolved.len(),
             "External + unresolved should equal total unresolved entries"
+        );
+
+        // has_unresolved_imports should only return true for truly unresolved, not external
+        assert!(
+            graph.has_unresolved_imports(FileId(1)),
+            "File with FileNotFound/DynamicPath imports should have unresolved imports"
         );
     }
 
@@ -3425,7 +2733,8 @@ mod tests {
     #[test]
     fn test_generate_dot_basic() {
         let (graph, root) = make_test_graph();
-        let dot = generate_dot(&graph, &root, None);
+        set_display_root(Some(root));
+        let dot = generate_dot(&graph, None);
 
         assert!(dot.starts_with("digraph dependencies {"));
         assert!(dot.contains("rankdir=LR"));
@@ -3440,7 +2749,8 @@ mod tests {
     #[test]
     fn test_generate_dot_entry_point_coloring() {
         let (graph, root) = make_test_graph();
-        let dot = generate_dot(&graph, &root, None);
+        set_display_root(Some(root));
+        let dot = generate_dot(&graph, None);
 
         // main.ts is entry point -> green
         assert!(dot.contains("\"src/main.ts\" [fillcolor=\"#a8d8a8\"]"));
@@ -3451,7 +2761,8 @@ mod tests {
     #[test]
     fn test_generate_dot_focus_coloring() {
         let (graph, root) = make_test_graph();
-        let dot = generate_dot(&graph, &root, Some(FileId(2)));
+        set_display_root(Some(root));
+        let dot = generate_dot(&graph, Some(FileId(2)));
 
         // Focus file gets blue color
         assert!(dot.contains("\"src/utils.ts\" [fillcolor=\"#8888ff\"]"));
@@ -3523,7 +2834,8 @@ mod tests {
     #[test]
     fn test_build_graph_json_structure() {
         let (graph, root) = make_test_graph();
-        let json = build_graph_json(&graph, &root, None);
+        set_display_root(Some(root));
+        let json = build_graph_json(&graph, None);
 
         let nodes = json["nodes"].as_array().unwrap();
         assert_eq!(nodes.len(), 3);
@@ -3551,7 +2863,8 @@ mod tests {
     #[test]
     fn test_build_graph_json_focus_flag() {
         let (graph, root) = make_test_graph();
-        let json = build_graph_json(&graph, &root, Some(FileId(2)));
+        set_display_root(Some(root));
+        let json = build_graph_json(&graph, Some(FileId(2)));
 
         let nodes = json["nodes"].as_array().unwrap();
         let focus_node = nodes.iter().find(|n| n["path"] == "src/utils.ts").unwrap();
@@ -3565,12 +2878,57 @@ mod tests {
     #[test]
     fn test_generate_html_contains_json() {
         let (graph, root) = make_test_graph();
-        let html = generate_html(&graph, &root, None);
+        set_display_root(Some(root));
+        let html = generate_html(&graph, None);
 
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("const graphData ="));
         assert!(html.contains("src/main.ts"));
         assert!(html.contains("src/utils.ts"));
         assert!(html.contains("requestAnimationFrame"));
+    }
+
+    #[test]
+    fn test_run_lint_no_rules_returns_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("rules.toml");
+        std::fs::write(
+            &config_path,
+            "[entry_points]\npatterns = [\"**/Main.java\"]\n",
+        )
+        .unwrap();
+
+        // Text format
+        let (output, has_errors) = run_lint(
+            tmp.path(),
+            Some(config_path.to_str().unwrap()),
+            None,
+            "info",
+            &OutputFormat::Text,
+            true, // no_index: skip indexing (early return before DB access)
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(output, "No lint rules configured");
+        assert!(!has_errors);
+
+        // JSON format
+        let (json_output, has_errors) = run_lint(
+            tmp.path(),
+            Some(config_path.to_str().unwrap()),
+            None,
+            "info",
+            &OutputFormat::Json,
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!has_errors);
+        let parsed: serde_json::Value = serde_json::from_str(&json_output).unwrap();
+        assert_eq!(parsed["message"], "No lint rules configured");
+        assert_eq!(parsed["violations"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["summary"]["total"], 0);
     }
 }

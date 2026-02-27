@@ -1374,6 +1374,205 @@ and coupling metrics.
 
 ---
 
+## Phase 10: Human / Committer Analysis (VCS History Intelligence)
+
+statik answers "what does this code touch?" — the graph of files, symbols,
+dependencies, blast radius. The missing dimension is "who does this code touch?"
+Git history is the richest signal for this: every commit is a record of a human
+interacting with a file. Combined with statik's existing `FileGraph`, this
+projects the code graph onto a *people graph*.
+
+No other CLI tool does this. `git blame` shows who wrote a line. `git log`
+shows who touched a file. Neither follows the dependency graph to answer "whose
+code breaks if I change this?" That question today requires tribal knowledge —
+statik can make it computable.
+
+### 10.1 Git history extraction and storage
+**Complexity**: M
+**Prerequisites**: None
+**Files**: `src/git.rs`, `src/db/mod.rs`, `src/cli/index.rs`
+
+Extract per-file commit history from `git log` and store it alongside the
+existing index. This is the foundation for all ownership and committer analysis.
+
+Tasks:
+- [ ] Add `git log --numstat --format='%H|%an|%ae|%at' --follow` wrapper to
+  `src/git.rs` for extracting commit-level file changes with author, email,
+  and timestamp
+- [ ] Define `CommitRecord` struct: `sha`, `author_name`, `author_email`,
+  `timestamp`, `files: Vec<(String, u32, u32)>` (path, lines added, removed)
+- [ ] Add `commits` table to SQLite schema: `sha TEXT PK`, `author_name TEXT`,
+  `author_email TEXT`, `timestamp INTEGER`
+- [ ] Add `file_commits` junction table: `file_path TEXT`, `commit_sha TEXT`,
+  `lines_added INTEGER`, `lines_removed INTEGER`
+- [ ] Integrate into `statik index` with `--with-history` flag (opt-in, since
+  `git log` can be slow on very large repos)
+- [ ] Incremental: store the last-indexed commit SHA in DB metadata; on
+  re-index, only process commits after that SHA
+- [ ] Add `--history-depth <N>` flag to limit how far back to scan (default:
+  all history; useful for repos with 100K+ commits)
+- [ ] Add tests with a temp git repo fixture
+
+**Acceptance**: `statik index --with-history` populates the commits table.
+Re-running on the same repo only processes new commits.
+
+---
+
+### 10.2 Ownership model and `statik owners` command
+**Complexity**: M
+**Prerequisites**: 10.1
+**Files**: new `src/analysis/ownership.rs`, `src/cli/commands.rs`
+
+Compute per-file ownership scores from commit history using a weighted model
+that values recency, volume, and frequency.
+
+Tasks:
+- [ ] Implement ownership scoring model:
+  - Recency weight: exponential decay from most recent commit (half-life
+    configurable, default ~180 days)
+  - Volume weight: lines added + removed per commit
+  - Frequency weight: number of commits touching the file
+  - Final score per author per file: `sum(recency * volume)` normalized to
+    percentage
+- [ ] Add `statik owners <glob>` command: for each matching file, output
+  ranked list of authors with ownership percentage
+- [ ] Support `--top <N>` to show only the top N owners per file (default: 3)
+- [ ] Support directory-level aggregation: `statik owners "src/auth/"` rolls
+  up ownership across all files in the directory
+- [ ] Text output: table with file path, author, percentage
+- [ ] JSON output: structured with `path`, `owners: [{name, email, score}]`
+- [ ] Works with `--format`, `--sort`, `--limit`, `--jq`, `--path-filter`
+- [ ] Add tests with known commit history and expected ownership scores
+
+**Acceptance**: `statik owners "src/auth/**"` shows ranked owners per file.
+The primary owner is the person who most recently and most frequently touched
+the file, not just whoever made the last commit.
+
+---
+
+### 10.3 `statik who` — impact-aware reviewer suggestion
+**Complexity**: M
+**Prerequisites**: 10.2, existing `impact` command
+**Files**: `src/analysis/ownership.rs`, `src/cli/commands.rs`
+
+The highest-value command: combine the dependency graph blast radius with
+ownership to answer "if I change this file, who should I talk to?"
+
+Tasks:
+- [ ] Add `statik who <file>` command that:
+  1. Runs blast radius analysis (same as `statik impact`) to get affected files
+  2. Computes ownership for all affected files
+  3. Aggregates: rank people by total ownership weight across all affected files
+  4. Groups output: direct owners (of the target file) vs downstream owners
+     (own files affected via dependency graph)
+- [ ] Output includes "suggested reviewers": minimal set of people covering
+  all affected areas (greedy set-cover by ownership weight)
+- [ ] Support `--depth <N>` to limit blast radius depth (inherited from impact)
+- [ ] Text output: sections for direct owners, downstream owners, suggested
+  reviewers
+- [ ] JSON output: structured with `direct_owners`, `downstream_owners`,
+  `suggested_reviewers`, `affected_files` with per-file owners
+- [ ] Add tests: file with blast radius spanning multiple owners
+
+**Acceptance**: `statik who src/api/users.ts` shows direct owners and
+downstream owners affected via the dependency graph. Suggested reviewers is a
+minimal covering set. This is substantially more useful than `git blame`
+because it follows dependencies, not just file history.
+
+---
+
+### 10.4 `statik bus-factor` — knowledge concentration risk
+**Complexity**: S
+**Prerequisites**: 10.2
+**Files**: `src/analysis/ownership.rs`, `src/cli/commands.rs`
+
+Identify files and modules where knowledge is concentrated in too few people.
+Combined with fan-in from the dependency graph, this surfaces organizational
+risk: a bus-factor-1 file that is imported by 50 other files is a critical
+liability.
+
+Tasks:
+- [ ] Add `statik bus-factor [glob]` command
+- [ ] Compute bus factor per file: count of authors with >10% ownership
+  (threshold configurable via `--threshold`)
+- [ ] Cross-reference with fan-in (number of dependents) to compute a
+  composite risk score: `risk = fan_in / bus_factor`
+- [ ] Sort by risk descending by default
+- [ ] Text output: table with risk level, file, bus factor, primary owner,
+  dependent count
+- [ ] JSON output: structured with `path`, `bus_factor`, `owners`,
+  `fan_in`, `risk_score`
+- [ ] Add tests with known single-owner and multi-owner files
+
+**Acceptance**: `statik bus-factor --sort risk` shows the most
+organizationally risky files first — high fan-in with a single dominant author.
+
+---
+
+### 10.5 `statik churn` — change frequency and co-change analysis
+**Complexity**: M
+**Prerequisites**: 10.1
+**Files**: new `src/analysis/churn.rs`, `src/cli/commands.rs`
+
+Change frequency analysis surfaces hot spots and hidden coupling that the
+import graph doesn't capture. Files that frequently change together but have
+no import relationship may have implicit coupling worth investigating.
+
+Tasks:
+- [ ] Add `statik churn [glob]` command: for each file, output commit count,
+  total lines changed, and change frequency (commits per month)
+- [ ] Support `--since <date>` and `--until <date>` for time-windowed analysis
+- [ ] Add `--co-change` mode: identify file pairs that change together in the
+  same commit significantly more often than chance
+  - For each pair, compute: co-change count, co-change ratio (co-changes /
+    max(changes_a, changes_b)), and whether an import edge exists between them
+  - Flag pairs with high co-change ratio but no import edge as "hidden
+    coupling"
+- [ ] Text output: table sorted by change frequency
+- [ ] JSON output: structured with `path`, `commit_count`, `lines_changed`,
+  `frequency`, and for co-change mode: `pairs` with correlation data
+- [ ] Works with `--format`, `--sort`, `--limit`, `--path-filter`
+- [ ] Add tests
+
+**Acceptance**: `statik churn --sort frequency` shows the most frequently
+changed files. `statik churn --co-change` identifies file pairs that change
+together but have no direct dependency relationship.
+
+---
+
+### 10.6 Team boundary analysis (optional, config-driven)
+**Complexity**: M
+**Prerequisites**: 10.2
+**Files**: `src/analysis/ownership.rs`, `src/linting/config.rs`
+
+When a people-to-team mapping is available (via email domain patterns or
+explicit config), detect misalignment between team boundaries and code
+boundaries — Conway's Law violations.
+
+Tasks:
+- [ ] Add optional `[teams]` config section to `.statik/rules.toml`:
+  ```toml
+  [teams]
+  platform = ["*@platform.example.com", "alice@example.com"]
+  product = ["*@product.example.com"]
+  infra = ["*@infra.example.com"]
+  ```
+- [ ] Alternatively, infer teams from email domains when no config exists
+- [ ] Add `statik team-coupling [glob]` command: for each file/directory,
+  show how many teams have contributed commits (cross-team coordination cost)
+- [ ] Flag files that require cross-team coordination (>2 teams with >10%
+  ownership each)
+- [ ] Cross-reference with dependency graph: dependency edges that cross
+  team boundaries are higher-friction than intra-team edges
+- [ ] Text output: table with file, team distribution, cross-team edge count
+- [ ] JSON output: structured with team breakdowns
+- [ ] Add tests
+
+**Acceptance**: `statik team-coupling` identifies files and dependency edges
+that cross team boundaries, highlighting organizational coordination costs.
+
+---
+
 ## Summary of Complexity Estimates
 
 | Phase | S tasks | M tasks | L tasks | XL tasks | Total tasks |
@@ -1387,7 +1586,8 @@ and coupling metrics.
 | 5     | 0       | 3       | 2       | 0        | 5           |
 | 6     | 0       | 3       | 2       | 1        | 6           |
 | 7     | 7       | 2       | 0       | 0        | 9           |
-| **Total** | **20** | **25** | **11** | **2** | **60** |
+| 10    | 1       | 5       | 0       | 0        | 6           |
+| **Total** | **21** | **30** | **11** | **2** | **66** |
 
 **Priority guidance**: Phase 2b (advanced lint rules) and Phase 7 (agent-friendly
 CLI) are now complete. Phase 3b (Rust support) is complete including dogfooding fixes.
@@ -1490,7 +1690,7 @@ CLI flags -- just config.
 
 ---
 
-### 8.2 Structural edge propagation for `pub mod` re-exports
+### 8.2 Structural edge propagation for `pub mod` re-exports ✓
 **Complexity**: M
 **Prerequisites**: 3b.5 (crate_name fix, is_mod_declaration flag)
 **Files**: `src/analysis/dead_code.rs`, `src/cli/commands.rs`
@@ -1512,20 +1712,22 @@ propagates:
 - `re_export` edges (future): for `pub use` chains, propagate usage backward.
 
 Tasks:
-- [ ] In dead code analysis, when checking if a `pub mod` export (name matches
+- [x] In dead code analysis, when checking if a `pub mod` export (name matches
   a module file stem) is used, check whether the target module file has any
   importers rather than checking if the name appears in an import statement
-- [ ] Generalize: for any re-export (TS `export * from`, Rust `pub mod`,
+- [x] Generalize: for any re-export (TS `export * from`, Rust `pub mod`,
   Rust `pub use`), propagate "used" from the target back to the re-exporter
-- [ ] Add test: mod.rs re-exports child, external file imports from child,
+- [x] Add test: mod.rs re-exports child, external file imports from child,
   verify mod.rs export is marked used
 
 **Acceptance**: 0 false dead exports from mod.rs barrel files on statik's own
 codebase. Same logic works for TS barrel files with `export *`.
 
+**Result**: Already implemented. The `detect_dead_code()` function builds a `mod_reexport_targets` map from mod_declaration edges and skips exports when the target module file is reachable (lines 212-256 of dead_code.rs). Added two unit tests: `test_pub_mod_reexport_not_dead_when_child_is_used` and `test_pub_mod_reexport_dead_when_parent_unreachable`. Verified 0 false dead exports on statik's own codebase.
+
 ---
 
-### 8.3 Relative path output
+### 8.3 Relative path output ✓
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/commands.rs`, `src/cli/output.rs`
@@ -1535,10 +1737,10 @@ agent context window tokens and is hard to read. Output project-relative paths
 (`src/main.rs`) by default.
 
 Tasks:
-- [ ] Strip project root prefix from all paths in text, JSON, and CSV output
-- [ ] Add `--absolute-paths` flag to opt into full paths if needed
-- [ ] Ensure `--path-filter` glob matching works against relative paths
-- [ ] Update tests that assert on path values
+- [x] Strip project root prefix from all paths in text, JSON, and CSV output
+- [x] Add `--absolute-paths` flag to opt into full paths if needed
+- [x] Ensure `--path-filter` glob matching works against relative paths
+- [x] Update tests that assert on path values
 
 **Acceptance**: All output uses project-relative paths by default.
 
@@ -1618,7 +1820,7 @@ imports across modules when source roots are configured.
 
 ---
 
-### 8.6 Output duplication on stderr
+### 8.6 Output duplication on stderr ✓
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/main.rs`
@@ -1626,11 +1828,13 @@ imports across modules when source roots are configured.
 Several commands write output to both stdout and stderr.
 
 Tasks:
-- [ ] Audit all println!/eprintln! calls in main.rs and commands.rs
-- [ ] Ensure analysis output goes to stdout only, errors to stderr only
-- [ ] Add test: capture stdout and stderr separately, verify no duplication
+- [x] Audit all println!/eprintln! calls in main.rs and commands.rs
+- [x] Ensure analysis output goes to stdout only, errors to stderr only
+- [x] Add test: capture stdout and stderr separately, verify no duplication
 
 **Acceptance**: `statik lint 2>/dev/null` shows violations once on stdout.
+
+**Result**: Audit found no duplication -- all `eprintln!` calls are correctly used for diagnostic messages (auto-index progress, parse errors, baseline info) and all analysis output goes to stdout via `println!` / `emit_output()`. Added two CLI tests to `tests/cli_tests.rs` to verify proper stream separation.
 
 ---
 
@@ -1884,7 +2088,7 @@ Tasks:
 
 ---
 
-### 9.9 `unresolved_imports` count conflates external and truly unresolved
+### 9.9 `unresolved_imports` count conflates external and truly unresolved ✓
 **Complexity**: S
 **Files**: `src/cli/commands.rs`
 
@@ -1893,12 +2097,14 @@ third-party libs) and `FileNotFound` (genuinely broken). This produces confusing
 numbers where unresolved exceeds total. See `DOGFOOD_NOTES.md` for details.
 
 Tasks:
-- [ ] Split count into `external_imports` and `unresolved_imports`
-- [ ] Only flag `FileNotFound` as a problem in the summary
+- [x] Split count into `external_imports` and `unresolved_imports`
+- [x] Only flag `FileNotFound` as a problem in the summary
+
+**Result**: The summary output already had the split. The real fix was in `dead_code.rs` and `dependencies.rs` where confidence calculations and limitation warnings counted External imports as problems. Added `truly_unresolved_count()` and `external_import_count()` helpers to FileGraph. `has_unresolved_imports()` and `files_with_unresolved_imports()` now exclude External. Dead-code confidence improved from "low" to "high" on dogfooding project (249 external imports no longer penalize confidence).
 
 ---
 
-### 9.10 Forced re-index when parser logic changes
+### 9.10 Forced re-index when parser logic changes ✓
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/cli/index.rs`, `src/db/mod.rs`
@@ -1918,13 +2124,13 @@ get correct results after upgrading statik.
    parser version. If they differ, automatically trigger a full re-index.
 
 Tasks:
-- [ ] Add `--force` flag to `statik index` that deletes `index.db` before
+- [x] Add `--force` flag to `statik index` that deletes `index.db` before
   re-indexing
-- [ ] Add `parser_version` metadata table to the DB
-- [ ] Compute a version hash from parser crate versions or a manually bumped
+- [x] Add `parser_version` metadata table to the DB
+- [x] Compute a version hash from parser crate versions or a manually bumped
   constant
-- [ ] On index, compare stored hash with current — auto-reindex if different
-- [ ] Add test: changing parser version triggers full re-index
+- [x] On index, compare stored hash with current — auto-reindex if different
+- [x] Add test: changing parser version triggers full re-index
 
 **Acceptance**: After upgrading statik with parser changes, `statik index`
 automatically detects the version mismatch and re-parses all files.
@@ -2063,7 +2269,7 @@ to visible source sets. All integration tests pass with the fixture project.
 
 ---
 
-### 9.12 `statik lint` crashes when rules.toml has no `[[rules]]` section
+### 9.12 `statik lint` crashes when rules.toml has no `[[rules]]` section ✓
 **Complexity**: S
 **Prerequisites**: None
 **Files**: `src/linting/config.rs`
@@ -2073,11 +2279,11 @@ to visible source sets. All integration tests pass with the fixture project.
 or `[java]` config). Should gracefully return an empty rules vec instead.
 
 Tasks:
-- [ ] Make the `rules` field in `LintConfig` default to an empty vec
+- [x] Make the `rules` field in `LintConfig` default to an empty vec
   (`#[serde(default)]`)
-- [ ] Add test: `load_config` on a TOML with only `[entry_points]` succeeds
+- [x] Add test: `load_config` on a TOML with only `[entry_points]` succeeds
   with empty rules
-- [ ] `statik lint` with no rules should print "No lint rules configured"
+- [x] `statik lint` with no rules should print "No lint rules configured"
   and exit 0
 
 **Acceptance**: `statik lint` on a project with only `[entry_points]` config
@@ -2087,7 +2293,7 @@ prints a helpful message instead of crashing.
 
 ## What's Left: Strategic Priorities
 
-### Completed (Phases 1-4, 2b, 3, 3b, 7)
+### Completed (Phases 1-4, 2b, 3, 3b, 7, 8.2, 8.3, 8.6, 9.9, 9.10, 9.12)
 - Core TS/JS analysis with barrel files, dynamic imports, re-export tracing
 - Java support with source root detection, wildcard imports, annotation entry points
 - Rust support with crate_name resolution, mod-edge filtering, module-path imports
@@ -2095,6 +2301,12 @@ prints a helpful message instead of crashing.
 - Agent-friendly CLI: --path-filter, --count, --limit, --sort, --jq, CSV, --between
 - Symbol-level dead code, references, callers commands
 - Structural diff command
+- Structural edge propagation for pub mod re-exports (8.2)
+- Relative path output by default with --absolute-paths flag (8.3)
+- Output duplication on stderr audit (8.6)
+- Split unresolved_imports into external vs truly unresolved (9.9)
+- Forced re-index with --force flag and parser version stamp (9.10)
+- Graceful lint with no rules configured (9.12)
 
 ### Highest-impact next work
 1. **Phase 9.11** (source set dependency visibility): The most architecturally
@@ -2102,22 +2314,21 @@ prints a helpful message instead of crashing.
    the 1060-file mega-cycle, and scopes same-package resolution to module
    boundaries. Language-agnostic design works for Java, Rust, and TS. This
    subsumes Phase 8.1 (source sets) and Phase 8.5 (Java multi-module).
-2. **Phase 9.10** (forced re-index): Quick win. Parser changes silently
-   produce stale results without manual `rm index.db`. A `--force` flag and
-   parser version stamp fix this.
-3. **Phase 9.12** (lint crash without rules): Quick fix. `statik lint` crashes
-   on valid config files that only have `[entry_points]`.
-4. **Phase 8.2** (structural edge propagation): Eliminates remaining Rust false
-   dead exports from `pub mod` re-exports. Generic enough to also improve TS
-   barrel file accuracy.
-5. **Phase 8.3** (relative paths): Quick win, improves all output readability.
-6. **Phase 8.4** (inline suppression): Completes the suppression trilogy
+2. **Phase 8.4** (inline suppression): Completes the suppression trilogy
    (project baseline + source set scope + per-line ignore).
 7. **Phase 9.6** (dead code confidence warning): User-facing warning when
    results are unreliable due to high unresolved import ratio.
-8. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
+8. **Phase 10.1-10.3** (human / committer analysis): The most differentiated
+   new feature on the roadmap. No other CLI tool combines dependency-graph
+   blast radius with committer history. `statik who <file>` answers "if I
+   change this, who should I talk to?" — a question that currently requires
+   tribal knowledge. Start with git history extraction (10.1), ownership
+   model (10.2), then the impact-aware `who` command (10.3). The remaining
+   items (bus-factor, churn, team coupling) build on the same data and can
+   follow incrementally.
+9. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
    large projects (10K+ files).
-9. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
-   killer feature for CI integration.
-10. **Phase 6.2** (graph visualization): `statik graph --format dot` is
+10. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
+    killer feature for CI integration.
+11. **Phase 6.2** (graph visualization): `statik graph --format dot` is
     low-effort, high-value for architecture reviews.

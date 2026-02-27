@@ -105,6 +105,11 @@ impl Database {
                 source_path TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
@@ -122,6 +127,34 @@ impl Database {
             .execute("ALTER TABLE refs ADD COLUMN target_name TEXT", [])
             .ok();
 
+        Ok(())
+    }
+
+    // ---- Metadata operations ----
+
+    /// Get a metadata value by key.
+    pub fn get_metadata(&self, key: &str) -> Result<Option<String>> {
+        let value = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to query metadata")?;
+        Ok(value)
+    }
+
+    /// Set a metadata key-value pair (upsert).
+    pub fn set_metadata(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![key, value],
+            )
+            .context("failed to set metadata")?;
         Ok(())
     }
 
@@ -598,6 +631,16 @@ impl Database {
         self.conn
             .execute_batch("ROLLBACK")
             .context("failed to rollback transaction")?;
+        Ok(())
+    }
+
+    /// Delete all indexed data (files, symbols, refs, imports, exports).
+    /// Metadata is preserved.
+    pub fn clear_all_data(&self) -> Result<()> {
+        // CASCADE handles symbols, refs, imports, exports
+        self.conn
+            .execute_batch("DELETE FROM files;")
+            .context("failed to clear all data")?;
         Ok(())
     }
 
@@ -1183,5 +1226,52 @@ mod tests {
         assert_eq!(db.get_symbols_by_file(FileId(2)).unwrap().len(), 1);
         // File 1 record still exists
         assert!(db.get_file(FileId(1)).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_metadata_get_set() {
+        let db = test_db();
+
+        // No metadata initially
+        assert_eq!(db.get_metadata("parser_version").unwrap(), None);
+
+        // Set metadata
+        db.set_metadata("parser_version", "1").unwrap();
+        assert_eq!(
+            db.get_metadata("parser_version").unwrap(),
+            Some("1".to_string())
+        );
+
+        // Update metadata (upsert)
+        db.set_metadata("parser_version", "2").unwrap();
+        assert_eq!(
+            db.get_metadata("parser_version").unwrap(),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_clear_all_data() {
+        let db = test_db();
+        let file = sample_file();
+        db.upsert_file(&file).unwrap();
+        let sym = sample_symbol(1, "foo", SymbolKind::Function);
+        db.insert_symbol(&sym).unwrap();
+
+        // Set metadata too
+        db.set_metadata("parser_version", "1").unwrap();
+
+        assert_eq!(db.all_files().unwrap().len(), 1);
+        assert_eq!(db.all_symbols().unwrap().len(), 1);
+
+        db.clear_all_data().unwrap();
+
+        assert_eq!(db.all_files().unwrap().len(), 0);
+        assert_eq!(db.all_symbols().unwrap().len(), 0);
+        // Metadata should be preserved
+        assert_eq!(
+            db.get_metadata("parser_version").unwrap(),
+            Some("1".to_string())
+        );
     }
 }

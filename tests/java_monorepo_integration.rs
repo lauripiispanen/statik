@@ -43,7 +43,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn index_monorepo(project_path: &Path) {
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(project_path, &config).unwrap();
+    let result = statik::cli::index::run_index(project_path, &config, false).unwrap();
     assert!(
         result.files_indexed > 0,
         "Should index at least one Java file, got {}",
@@ -59,7 +59,7 @@ fn index_monorepo(project_path: &Path) {
 fn test_monorepo_index_discovers_all_files() {
     let tmp = setup_monorepo();
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
 
     assert_eq!(
         result.files_indexed, 12,

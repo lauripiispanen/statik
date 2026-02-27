@@ -42,7 +42,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn index_rust_project(project_path: &Path) {
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(project_path, &config).unwrap();
+    let result = statik::cli::index::run_index(project_path, &config, false).unwrap();
     assert!(
         result.files_indexed > 0,
         "Should index at least one Rust file, got {}",
@@ -58,7 +58,7 @@ fn index_rust_project(project_path: &Path) {
 fn test_rust_index_discovers_all_files() {
     let tmp = setup_rust_project();
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
 
     // Files: lib.rs, main.rs, model/mod.rs, model/user.rs, service/mod.rs,
     //        service/user_service.rs, util.rs, cycle/mod.rs, cycle/a.rs,

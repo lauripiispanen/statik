@@ -65,6 +65,10 @@ pub struct Cli {
     /// Apply a jq filter to JSON output (implicitly sets --format json)
     #[arg(long, global = true)]
     pub jq: Option<String>,
+
+    /// Output absolute file paths instead of project-relative paths
+    #[arg(long, global = true)]
+    pub absolute_paths: bool,
 }
 
 #[derive(Subcommand)]
@@ -74,6 +78,9 @@ pub enum Commands {
         /// Project path (default: current directory)
         #[arg(default_value = ".")]
         path: String,
+        /// Force full re-index (ignore cached data)
+        #[arg(long)]
+        force: bool,
     },
 
     /// File-level dependency analysis

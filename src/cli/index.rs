@@ -10,8 +10,18 @@ use crate::discovery::{discover_files, DiscoveryConfig};
 use crate::model::{FileId, FileRecord, Language, ParseResult};
 use crate::parser::ParserRegistry;
 
+/// Parser version stamp. Bump this when parser logic changes in a way that
+/// affects stored import/export/symbol data (e.g., new extraction rules).
+/// When the stored version differs from this constant, a full re-index is
+/// triggered automatically.
+pub const PARSER_VERSION: &str = "1";
+
 /// Run the indexing process for a project.
-pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexResult> {
+pub fn run_index(
+    project_path: &Path,
+    config: &DiscoveryConfig,
+    force: bool,
+) -> Result<IndexResult> {
     let start = Instant::now();
 
     // Ensure .statik directory exists
@@ -19,7 +29,23 @@ pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexR
     std::fs::create_dir_all(&statik_dir).context("failed to create .statik directory")?;
 
     let db_path = statik_dir.join("index.db");
+
+    // If --force, delete the existing database to start fresh
+    if force && db_path.exists() {
+        std::fs::remove_file(&db_path).context("failed to remove existing index.db")?;
+    }
+
     let db = Database::open(&db_path)?;
+
+    // Check parser version: if it changed, do a full re-index
+    let version_changed = match db.get_metadata("parser_version")? {
+        Some(stored) => stored != PARSER_VERSION,
+        None => false, // First index, no version stored yet
+    };
+    if version_changed {
+        eprintln!("Parser version changed, performing full re-index...");
+        db.clear_all_data()?;
+    }
 
     // Discover files
     let discovered = discover_files(project_path, config)?;
@@ -158,6 +184,9 @@ pub fn run_index(project_path: &Path, config: &DiscoveryConfig) -> Result<IndexR
     }
 
     db.commit_transaction()?;
+
+    // Store current parser version
+    db.set_metadata("parser_version", PARSER_VERSION)?;
 
     let duration = start.elapsed();
 

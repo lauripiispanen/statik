@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Top-level lint configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LintConfig {
+    #[serde(default)]
     pub rules: Vec<RuleDefinition>,
     #[serde(default)]
     pub tags: HashMap<String, Vec<String>>,
@@ -1099,5 +1100,17 @@ max_external_ratio = 0.6
             }
             other => panic!("Expected Cohesion rule, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_config_with_only_entry_points_no_rules() {
+        let toml = r#"
+[entry_points]
+patterns = ["**/Bootstrap.java"]
+annotations = ["Scheduled"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert!(config.rules.is_empty());
     }
 }

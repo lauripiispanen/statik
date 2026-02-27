@@ -17,7 +17,7 @@ fn test_dogfood_dead_symbols_cross_file_linking() {
 
     // Index the project
     let config = DiscoveryConfig::default();
-    statik::cli::index::run_index(&root, &config).unwrap();
+    statik::cli::index::run_index(&root, &config, false).unwrap();
 
     // Run symbol-level dead code analysis
     let output =

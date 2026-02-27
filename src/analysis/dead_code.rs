@@ -114,9 +114,10 @@ pub fn detect_dead_code(
     let all_files = graph.all_file_ids();
     let total_files = all_files.len();
 
-    // Count total imports and unresolved for confidence calculation
+    // Count total imports and truly unresolved for confidence calculation.
+    // External imports (third-party libs) are correctly classified and should not reduce confidence.
     let total_imports: usize = graph.imports.values().map(|v| v.len()).sum();
-    let unresolved_count = graph.unresolved.len();
+    let unresolved_count = graph.truly_unresolved_count();
     let has_wildcards = graph.files.values().any(|info| {
         info.exports
             .iter()
@@ -1236,7 +1237,7 @@ mod tests {
 
         graph.add_import(make_edge(1, 2, &["helper"]));
 
-        // The orphan file has an unresolved outgoing import (e.g. external lib)
+        // The orphan file has an external outgoing import (e.g. third-party lib)
         graph.add_unresolved(UnresolvedImport {
             file: FileId(3),
             import_path: "java.util.HashMap".to_string(),
@@ -1247,12 +1248,12 @@ mod tests {
         let result = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
         assert_eq!(result.dead_files.len(), 1);
         assert_eq!(result.dead_files[0].path, PathBuf::from("src/orphan.ts"));
-        // Should be High, not Medium — the orphan's own outgoing imports
-        // don't affect whether it's reachable
+        // External imports are correctly classified third-party libs, not broken imports.
+        // They should not reduce confidence at all.
         assert_eq!(
             result.dead_files[0].confidence,
-            Confidence::High,
-            "Dead file's own unresolved outgoing imports should not reduce confidence to Medium"
+            Confidence::Certain,
+            "External imports should not reduce confidence"
         );
     }
 
@@ -3194,5 +3195,139 @@ mod tests {
         // Parser is alive (public in entry file), parse is its child
         assert!(!dead_names.contains(&"parse"),
             "parse should be alive (child of alive Parser), dead: {:?}", dead_names);
+    }
+
+    #[test]
+    fn test_pub_mod_reexport_not_dead_when_child_is_used() {
+        // Scenario: analysis/mod.rs exports "cycles" via `pub mod cycles;`
+        // (is_mod_declaration edge). Another file imports from analysis/cycles.rs
+        // directly using `analysis::cycles::detect_cycles`. The "cycles" export
+        // in mod.rs should NOT be flagged as dead, even though nobody imports the
+        // name "cycles" from mod.rs directly.
+        let mut graph = FileGraph::new();
+
+        // Entry point: src/main.rs
+        graph.add_file(make_file(1, "src/main.rs", true));
+        // mod.rs barrel file that re-exports child modules
+        graph.add_file(make_file_with_exports(
+            2,
+            "src/analysis/mod.rs",
+            false,
+            &["cycles", "dead_code"],
+        ));
+        // Child module file (used)
+        graph.add_file(make_file_with_exports(
+            3,
+            "src/analysis/cycles.rs",
+            false,
+            &["detect_cycles"],
+        ));
+        // Another child module file (also reachable via mod declaration)
+        graph.add_file(make_file_with_exports(
+            4,
+            "src/analysis/dead_code.rs",
+            false,
+            &["detect_dead_code"],
+        ));
+
+        // mod.rs declares its children via pub mod (is_mod_declaration edges)
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["cycles".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(4),
+            imported_names: vec!["dead_code".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 2,
+        });
+
+        // main.rs imports from mod.rs (which makes mod.rs reachable)
+        graph.add_import(make_edge(1, 2, &["analysis"]));
+        // main.rs also imports directly from cycles.rs
+        graph.add_import(make_edge(1, 3, &["detect_cycles"]));
+
+        let result = detect_dead_code(&graph, DeadCodeScope::Exports, &HashSet::new());
+        let dead_export_pairs: Vec<(&str, &str)> = result
+            .dead_exports
+            .iter()
+            .map(|e| (e.path.to_str().unwrap_or(""), e.export_name.as_str()))
+            .collect();
+
+        // "cycles" export in mod.rs should NOT be dead:
+        // The mod_declaration edge target (cycles.rs) is reachable, so the
+        // re-export is structurally necessary.
+        assert!(
+            !dead_export_pairs.contains(&("src/analysis/mod.rs", "cycles")),
+            "pub mod cycles export should not be dead when cycles.rs is reachable. Dead: {:?}",
+            dead_export_pairs
+        );
+
+        // "dead_code" export in mod.rs should also NOT be dead:
+        // dead_code.rs is reachable via the mod_declaration edge from mod.rs
+        // (which is itself reachable from main.rs).
+        assert!(
+            !dead_export_pairs.contains(&("src/analysis/mod.rs", "dead_code")),
+            "pub mod dead_code export should not be dead when mod.rs is reachable (mod declaration makes child reachable). Dead: {:?}",
+            dead_export_pairs
+        );
+    }
+
+    #[test]
+    fn test_pub_mod_reexport_dead_when_parent_unreachable() {
+        // If mod.rs itself is not reachable, then its pub mod exports
+        // should be dead (along with the child modules).
+        let mut graph = FileGraph::new();
+
+        // Entry point: src/main.rs
+        graph.add_file(make_file(1, "src/main.rs", true));
+        // Unreachable mod.rs (not imported by anyone)
+        graph.add_file(make_file_with_exports(
+            2,
+            "src/orphan/mod.rs",
+            false,
+            &["child"],
+        ));
+        // Child of unreachable parent
+        graph.add_file(make_file_with_exports(
+            3,
+            "src/orphan/child.rs",
+            false,
+            &["something"],
+        ));
+
+        // mod.rs declares child via pub mod
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(3),
+            imported_names: vec!["child".to_string()],
+            is_type_only: false,
+            is_mod_declaration: true,
+            line: 1,
+        });
+
+        // No imports from main.rs to mod.rs -- everything is dead
+        let result = detect_dead_code(&graph, DeadCodeScope::Both, &HashSet::new());
+
+        // Both mod.rs and child.rs should be dead files
+        assert_eq!(result.dead_files.len(), 2);
+
+        // Exports should also be dead
+        let dead_names: Vec<&str> = result
+            .dead_exports
+            .iter()
+            .map(|e| e.export_name.as_str())
+            .collect();
+        assert!(
+            dead_names.contains(&"something"),
+            "Child export should be dead when parent is unreachable. Dead: {:?}",
+            dead_names
+        );
     }
 }

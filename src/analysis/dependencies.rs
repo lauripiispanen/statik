@@ -84,7 +84,7 @@ pub fn analyze_deps(
         };
     }
 
-    let confidence = if graph.unresolved.is_empty() {
+    let confidence = if graph.truly_unresolved_count() == 0 {
         Confidence::Certain
     } else if graph.has_unresolved_imports(target) {
         Confidence::Medium

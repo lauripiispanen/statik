@@ -46,7 +46,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Index a project and return the project path.
 fn index_project(project_path: &Path) {
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(project_path, &config).unwrap();
+    let result = statik::cli::index::run_index(project_path, &config, false).unwrap();
     assert!(
         result.files_indexed > 0,
         "Should index at least one file, got {}",
@@ -58,7 +58,7 @@ fn index_project(project_path: &Path) {
 fn test_index_discovers_all_files() {
     let tmp = setup_project();
     let config = statik::discovery::DiscoveryConfig::default();
-    let result = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
 
     // We have: index.ts, services/userService.ts, models/user.ts, utils/format.ts,
     // orphan.ts, ui/UserForm.tsx, db/connection.ts, cycle/a.ts, cycle/b.ts
@@ -528,11 +528,11 @@ fn test_incremental_index_only_reparses_changed() {
     let config = statik::discovery::DiscoveryConfig::default();
 
     // First index
-    let result1 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result1 = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
     assert!(result1.files_indexed > 0);
 
     // Second index without changes -- should find all files unchanged
-    let result2 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result2 = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
     assert_eq!(
         result2.files_indexed, 0,
         "No files should be re-indexed when nothing changed, got {} indexed",
@@ -548,7 +548,7 @@ fn test_incremental_index_only_reparses_changed() {
     std::fs::write(&touched, format!("{}\n// touched", content)).unwrap();
 
     // Third index -- should only re-index the touched file
-    let result3 = statik::cli::index::run_index(tmp.path(), &config).unwrap();
+    let result3 = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
     assert_eq!(
         result3.files_indexed, 1,
         "Only the touched file should be re-indexed, got {}",

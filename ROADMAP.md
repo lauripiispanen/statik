@@ -466,6 +466,80 @@ integrations.
 
 ---
 
+### Phase 10: Human / Committer Analysis (VCS History Intelligence)
+
+**Goal**: Add a "people layer" to statik's code graph. Git history records every
+human interaction with every file. Combined with the existing dependency graph,
+this answers questions no other CLI tool can: "if I change this file, who should
+I talk to?", "what's the bus factor of this critical module?", and "which files
+change together but have no import relationship?"
+
+**Why now**: The file graph, blast radius analysis, and agent-friendly CLI are
+all mature. This phase adds a fundamentally new data source (git log) and new
+commands, but the core analysis patterns (BFS on the graph, aggregation,
+scoring) reuse existing infrastructure. The effort-to-value ratio is high
+because the composition of *existing* graph analysis with *new* ownership data
+produces something no other tool offers.
+
+**Deliverables**:
+
+1. **Git history extraction** -- Parse `git log --numstat` output, store
+   per-file commit records (author, timestamp, lines changed) in the existing
+   SQLite DB. Incremental: only process commits since the last indexed SHA.
+   Opt-in via `statik index --with-history`.
+
+2. **Ownership model** -- Weighted scoring per author per file: recency
+   (exponential decay), volume (lines changed), frequency (commit count).
+   Exposed via `statik owners <glob>` with ranked output.
+
+3. **Impact-aware reviewer suggestion** (`statik who <file>`) -- The
+   highest-value command. Runs blast radius analysis, computes ownership for
+   all affected files, aggregates across the dependency graph, and suggests
+   a minimal reviewer set. This is `git blame` meets `statik impact` -- it
+   follows dependencies, not just file history.
+
+4. **Bus factor analysis** (`statik bus-factor`) -- Knowledge concentration
+   risk per file/module. Cross-referenced with fan-in to surface
+   organizationally risky code: high-dependency files owned by a single person.
+
+5. **Change frequency and co-change analysis** (`statik churn`) -- Hot spot
+   detection and hidden coupling discovery. Files that frequently change
+   together but have no import edge may have implicit coupling worth
+   investigating.
+
+6. **Team boundary analysis** (`statik team-coupling`) -- Optional,
+   config-driven. When a people-to-team mapping is available, detect
+   misalignment between team boundaries and code boundaries.
+
+**Dependencies**: Existing `impact` command for `statik who`. Existing
+`FileGraph` for fan-in data in `bus-factor`. Git repository required (already
+detected via `is_git_repo()`).
+
+**Complexity**: Medium overall. The git log parsing is straightforward. The
+ownership model is simple math. The value multiplier comes from composing
+ownership with the existing dependency graph, which is already built.
+
+**Success Criteria**:
+- `statik who src/core/engine.ts` returns meaningful reviewer suggestions in
+  under 2 seconds, combining blast radius with ownership data.
+- `statik bus-factor --sort risk` correctly identifies single-owner,
+  high-fan-in files as the highest organizational risk.
+- `statik churn --co-change` identifies file pairs that change together
+  without a direct dependency relationship.
+
+**Risks & Mitigations**:
+- **Git log performance on large repos**: `git log` on a repo with 100K+
+  commits can be slow. Mitigate with `--history-depth` limit and incremental
+  indexing (only process new commits).
+- **Author identity fragmentation**: The same person may appear under
+  different names/emails. For v1, treat each name+email pair as distinct.
+  A `.mailmap` integration could be added later if needed.
+- **Ownership model subjectivity**: Any weighting scheme is debatable.
+  Start with sensible defaults (recency-weighted) and expose the model
+  parameters in config if tuning is needed.
+
+---
+
 ## Risk Summary
 
 | Risk | Severity | Mitigation |
@@ -478,6 +552,8 @@ integrations.
 | JDT-like depth exceeds tree-sitter capabilities | Medium | Define "deep" as symbol-level, not type-level. Tree-sitter is a parser, not a type checker. |
 | Java resolver is 70% of the effort | High | Start with convention-based resolution. Treat classpath imports as External. |
 | Integration maintenance burden | Medium | Keep integrations thin. CLI is the source of truth. |
+| Git log slow on huge repos | Medium | Incremental indexing + `--history-depth` limit. Opt-in via `--with-history`. |
+| Author identity fragmentation | Low | Treat name+email as identity for v1. `.mailmap` support later if needed. |
 
 ---
 
