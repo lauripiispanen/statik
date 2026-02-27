@@ -150,6 +150,10 @@ impl LanguageParser for JavaParser {
     fn supported_languages(&self) -> &[Language] {
         &[Language::Java]
     }
+
+    fn as_semantics(&self) -> &dyn LanguageSemantics {
+        self
+    }
 }
 
 /// Walks a Java tree-sitter CST and extracts symbols, references, imports, exports.

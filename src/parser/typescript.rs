@@ -88,6 +88,10 @@ impl LanguageParser for TypeScriptParser {
     fn supported_languages(&self) -> &[Language] {
         &[Language::TypeScript, Language::JavaScript]
     }
+
+    fn as_semantics(&self) -> &dyn LanguageSemantics {
+        self
+    }
 }
 
 /// Walks a tree-sitter CST and extracts symbols, references, imports, exports.

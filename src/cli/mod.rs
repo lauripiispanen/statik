@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod commands;
+pub mod graph_builder;
 pub mod index;
 pub mod output;
 

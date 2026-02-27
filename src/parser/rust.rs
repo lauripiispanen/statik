@@ -110,6 +110,10 @@ impl LanguageParser for RustParser {
     fn supported_languages(&self) -> &[Language] {
         &[Language::Rust]
     }
+
+    fn as_semantics(&self) -> &dyn LanguageSemantics {
+        self
+    }
 }
 
 struct Extractor<'a> {

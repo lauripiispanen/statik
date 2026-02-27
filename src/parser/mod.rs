@@ -20,6 +20,9 @@ pub trait LanguageParser: LanguageSemantics {
 
     /// Which languages does this parser handle?
     fn supported_languages(&self) -> &[Language];
+
+    /// Upcast to `&dyn LanguageSemantics` without unstable trait upcasting.
+    fn as_semantics(&self) -> &dyn LanguageSemantics;
 }
 
 /// Registry of language parsers.
@@ -56,7 +59,7 @@ impl ParserRegistry {
         let mut map = HashMap::new();
         for parser in &self.parsers {
             for &lang in parser.languages() {
-                map.insert(lang, parser.as_ref() as &dyn LanguageSemantics);
+                map.insert(lang, parser.as_ref().as_semantics());
             }
         }
         map
