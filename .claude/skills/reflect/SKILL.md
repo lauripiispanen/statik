@@ -1,7 +1,6 @@
 ---
 name: reflect
 description: End-of-task reflection to capture learnings and improve automation
-disable-model-invocation: true
 argument-hint: "[task-summary]"
 ---
 
