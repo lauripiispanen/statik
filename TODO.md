@@ -1387,7 +1387,7 @@ shows who touched a file. Neither follows the dependency graph to answer "whose
 code breaks if I change this?" That question today requires tribal knowledge —
 statik can make it computable.
 
-### 10.1 Git history extraction and storage
+### 10.1 Git history extraction and storage ✅
 **Complexity**: M
 **Prerequisites**: None
 **Files**: `src/git.rs`, `src/db/mod.rs`, `src/cli/index.rs`
@@ -1396,29 +1396,29 @@ Extract per-file commit history from `git log` and store it alongside the
 existing index. This is the foundation for all ownership and committer analysis.
 
 Tasks:
-- [ ] Add `git log --numstat --format='%H|%an|%ae|%at' --follow` wrapper to
+- [x] Add `git log --numstat --format='%H|%an|%ae|%at' --follow` wrapper to
   `src/git.rs` for extracting commit-level file changes with author, email,
   and timestamp
-- [ ] Define `CommitRecord` struct: `sha`, `author_name`, `author_email`,
+- [x] Define `CommitRecord` struct: `sha`, `author_name`, `author_email`,
   `timestamp`, `files: Vec<(String, u32, u32)>` (path, lines added, removed)
-- [ ] Add `commits` table to SQLite schema: `sha TEXT PK`, `author_name TEXT`,
+- [x] Add `commits` table to SQLite schema: `sha TEXT PK`, `author_name TEXT`,
   `author_email TEXT`, `timestamp INTEGER`
-- [ ] Add `file_commits` junction table: `file_path TEXT`, `commit_sha TEXT`,
+- [x] Add `file_commits` junction table: `file_path TEXT`, `commit_sha TEXT`,
   `lines_added INTEGER`, `lines_removed INTEGER`
-- [ ] Integrate into `statik index` with `--with-history` flag (opt-in, since
+- [x] Integrate into `statik index` with `--with-history` flag (opt-in, since
   `git log` can be slow on very large repos)
-- [ ] Incremental: store the last-indexed commit SHA in DB metadata; on
+- [x] Incremental: store the last-indexed commit SHA in DB metadata; on
   re-index, only process commits after that SHA
-- [ ] Add `--history-depth <N>` flag to limit how far back to scan (default:
+- [x] Add `--history-depth <N>` flag to limit how far back to scan (default:
   all history; useful for repos with 100K+ commits)
-- [ ] Add tests with a temp git repo fixture
+- [x] Add tests with a temp git repo fixture
 
 **Acceptance**: `statik index --with-history` populates the commits table.
 Re-running on the same repo only processes new commits.
 
 ---
 
-### 10.2 Ownership model and `statik owners` command
+### 10.2 Ownership model and `statik owners` command ✅
 **Complexity**: M
 **Prerequisites**: 10.1
 **Files**: new `src/analysis/ownership.rs`, `src/cli/commands.rs`
@@ -1427,22 +1427,22 @@ Compute per-file ownership scores from commit history using a weighted model
 that values recency, volume, and frequency.
 
 Tasks:
-- [ ] Implement ownership scoring model:
+- [x] Implement ownership scoring model:
   - Recency weight: exponential decay from most recent commit (half-life
     configurable, default ~180 days)
   - Volume weight: lines added + removed per commit
   - Frequency weight: number of commits touching the file
   - Final score per author per file: `sum(recency * volume)` normalized to
     percentage
-- [ ] Add `statik owners <glob>` command: for each matching file, output
+- [x] Add `statik owners <glob>` command: for each matching file, output
   ranked list of authors with ownership percentage
-- [ ] Support `--top <N>` to show only the top N owners per file (default: 3)
+- [x] Support `--top <N>` to show only the top N owners per file (default: 3)
 - [ ] Support directory-level aggregation: `statik owners "src/auth/"` rolls
   up ownership across all files in the directory
-- [ ] Text output: table with file path, author, percentage
-- [ ] JSON output: structured with `path`, `owners: [{name, email, score}]`
-- [ ] Works with `--format`, `--sort`, `--limit`, `--jq`, `--path-filter`
-- [ ] Add tests with known commit history and expected ownership scores
+- [x] Text output: table with file path, author, percentage
+- [x] JSON output: structured with `path`, `owners: [{name, email, score}]`
+- [x] Works with `--format`, `--sort`, `--limit`, `--jq`, `--path-filter`
+- [x] Add tests with known commit history and expected ownership scores
 
 **Acceptance**: `statik owners "src/auth/**"` shows ranked owners per file.
 The primary owner is the person who most recently and most frequently touched
@@ -1481,7 +1481,7 @@ because it follows dependencies, not just file history.
 
 ---
 
-### 10.4 `statik bus-factor` — knowledge concentration risk
+### 10.4 `statik bus-factor` — knowledge concentration risk ✅
 **Complexity**: S
 **Prerequisites**: 10.2
 **Files**: `src/analysis/ownership.rs`, `src/cli/commands.rs`
@@ -1492,24 +1492,24 @@ risk: a bus-factor-1 file that is imported by 50 other files is a critical
 liability.
 
 Tasks:
-- [ ] Add `statik bus-factor [glob]` command
-- [ ] Compute bus factor per file: count of authors with >10% ownership
+- [x] Add `statik bus-factor [glob]` command
+- [x] Compute bus factor per file: count of authors with >10% ownership
   (threshold configurable via `--threshold`)
-- [ ] Cross-reference with fan-in (number of dependents) to compute a
+- [x] Cross-reference with fan-in (number of dependents) to compute a
   composite risk score: `risk = fan_in / bus_factor`
-- [ ] Sort by risk descending by default
-- [ ] Text output: table with risk level, file, bus factor, primary owner,
+- [x] Sort by risk descending by default
+- [x] Text output: table with risk level, file, bus factor, primary owner,
   dependent count
-- [ ] JSON output: structured with `path`, `bus_factor`, `owners`,
+- [x] JSON output: structured with `path`, `bus_factor`, `owners`,
   `fan_in`, `risk_score`
-- [ ] Add tests with known single-owner and multi-owner files
+- [x] Add tests with known single-owner and multi-owner files
 
 **Acceptance**: `statik bus-factor --sort risk` shows the most
 organizationally risky files first — high fan-in with a single dominant author.
 
 ---
 
-### 10.5 `statik churn` — change frequency and co-change analysis
+### 10.5 `statik churn` — change frequency and co-change analysis ✅
 **Complexity**: M
 **Prerequisites**: 10.1
 **Files**: new `src/analysis/churn.rs`, `src/cli/commands.rs`
@@ -1519,20 +1519,20 @@ import graph doesn't capture. Files that frequently change together but have
 no import relationship may have implicit coupling worth investigating.
 
 Tasks:
-- [ ] Add `statik churn [glob]` command: for each file, output commit count,
+- [x] Add `statik churn [glob]` command: for each file, output commit count,
   total lines changed, and change frequency (commits per month)
 - [ ] Support `--since <date>` and `--until <date>` for time-windowed analysis
-- [ ] Add `--co-change` mode: identify file pairs that change together in the
+- [x] Add `--co-change` mode: identify file pairs that change together in the
   same commit significantly more often than chance
   - For each pair, compute: co-change count, co-change ratio (co-changes /
     max(changes_a, changes_b)), and whether an import edge exists between them
   - Flag pairs with high co-change ratio but no import edge as "hidden
     coupling"
-- [ ] Text output: table sorted by change frequency
-- [ ] JSON output: structured with `path`, `commit_count`, `lines_changed`,
+- [x] Text output: table sorted by change frequency
+- [x] JSON output: structured with `path`, `commit_count`, `lines_changed`,
   `frequency`, and for co-change mode: `pairs` with correlation data
-- [ ] Works with `--format`, `--sort`, `--limit`, `--path-filter`
-- [ ] Add tests
+- [x] Works with `--format`, `--sort`, `--limit`, `--path-filter`
+- [x] Add tests
 
 **Acceptance**: `statik churn --sort frequency` shows the most frequently
 changed files. `statik churn --co-change` identifies file pairs that change
