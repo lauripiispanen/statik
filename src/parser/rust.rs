@@ -1253,7 +1253,7 @@ impl<'a> Extractor<'a> {
         // Only process the outermost scoped_identifier to avoid duplicates
         if node
             .parent()
-            .map_or(false, |p| p.kind() == "scoped_identifier")
+            .is_some_and(|p| p.kind() == "scoped_identifier")
         {
             return;
         }

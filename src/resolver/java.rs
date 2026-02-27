@@ -26,6 +26,8 @@ pub struct JavaResolver {
     /// Wildcard import packages for the current file being resolved.
     /// Populated per-file before resolving type-refs.
     file_wildcards: Vec<String>,
+    /// Optional source set index for scoping same-package resolution.
+    source_set_index: Option<super::source_sets::SourceSetIndex>,
 }
 
 impl JavaResolver {
@@ -56,7 +58,13 @@ impl JavaResolver {
             known_files: known_set,
             package_files,
             file_wildcards: Vec::new(),
+            source_set_index: None,
         }
+    }
+
+    /// Set the source set index for scoping same-package resolution.
+    pub fn set_source_set_index(&mut self, index: super::source_sets::SourceSetIndex) {
+        self.source_set_index = Some(index);
     }
 
     /// Detect source root directories.
@@ -264,9 +272,35 @@ impl JavaResolver {
         let from_pkg = Self::infer_package(from_file, &self.source_roots).unwrap_or_default();
 
         if let Some(siblings) = self.package_files.get(&from_pkg) {
-            for (class_name, path) in siblings {
-                if class_name == type_name && path != from_file {
-                    return Resolution::Resolved(path.clone());
+            // Collect all matches
+            let matches: Vec<&PathBuf> = siblings
+                .iter()
+                .filter(|(class_name, path)| class_name == type_name && path != from_file)
+                .map(|(_, path)| path)
+                .collect();
+
+            if !matches.is_empty() {
+                // If we have a source set index, prefer same source set, then visible deps
+                if let Some(ref index) = self.source_set_index {
+                    let from_set = index.file_source_set(from_file);
+                    // First pass: prefer files in the same source set
+                    if let Some(from_set_name) = from_set {
+                        for path in &matches {
+                            if index.file_source_set(path) == Some(from_set_name) {
+                                return Resolution::Resolved((*path).clone());
+                            }
+                        }
+                    }
+                    // Second pass: any visible file
+                    for path in &matches {
+                        if index.can_see(from_file, path) {
+                            return Resolution::Resolved((*path).clone());
+                        }
+                    }
+                    // No visible match — fall through (don't resolve to invisible files)
+                } else {
+                    // No source set index: return first match (original behavior)
+                    return Resolution::Resolved(matches[0].clone());
                 }
             }
         }
@@ -827,6 +861,135 @@ mod tests {
                 assert_eq!(pkg, "java.util", "Should resolve via java.util wildcard");
             }
             other => panic!("expected External, got {:?}", other),
+        }
+    }
+
+    // =========================================================================
+    // Source set scoped same-package resolution
+    // =========================================================================
+
+    #[test]
+    fn test_type_ref_scoped_by_source_set() {
+        use crate::resolver::source_sets::{SourceSetConfig, SourceSetIndex};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create two modules with same package
+        let fw_src = root.join("framework/src/main/java/com/example");
+        fs::create_dir_all(&fw_src).unwrap();
+        fs::write(fw_src.join("Foo.java"), "package com.example;").unwrap();
+        fs::write(fw_src.join("Bar.java"), "package com.example;").unwrap();
+
+        let app_src = root.join("app/src/main/java/com/example");
+        fs::create_dir_all(&app_src).unwrap();
+        fs::write(app_src.join("Baz.java"), "package com.example;").unwrap();
+        fs::write(app_src.join("Bar.java"), "package com.example;").unwrap();
+
+        let known = vec![
+            fw_src.join("Foo.java"),
+            fw_src.join("Bar.java"),
+            app_src.join("Baz.java"),
+            app_src.join("Bar.java"),
+        ];
+
+        let configs = vec![
+            SourceSetConfig {
+                name: "framework".to_string(),
+                roots: vec!["framework/src/main/java".to_string()],
+                deps: vec![],
+            },
+            SourceSetConfig {
+                name: "app".to_string(),
+                roots: vec!["app/src/main/java".to_string()],
+                deps: vec!["framework".to_string()],
+            },
+        ];
+
+        let index = SourceSetIndex::build(&configs, root).unwrap();
+        let mut resolver = JavaResolver::new(root.to_path_buf(), known, None);
+        resolver.set_source_set_index(index);
+
+        // Framework file resolving "Bar" should get framework's Bar, not app's Bar
+        let fw_foo = fw_src.join("Foo.java");
+        let result = resolver.resolve_type_ref("Bar", &fw_foo);
+        match result {
+            Resolution::Resolved(path) => {
+                assert_eq!(
+                    path,
+                    fw_src.join("Bar.java"),
+                    "Framework should resolve Bar to its own source set"
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+
+        // App file resolving "Bar" should get app's Bar (visible: same set)
+        let app_baz = app_src.join("Baz.java");
+        let result = resolver.resolve_type_ref("Bar", &app_baz);
+        match result {
+            Resolution::Resolved(path) => {
+                assert_eq!(
+                    path,
+                    app_src.join("Bar.java"),
+                    "App should resolve Bar to its own source set"
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+
+        // App file resolving "Foo" should get framework's Foo (visible: app deps framework)
+        let result = resolver.resolve_type_ref("Foo", &app_baz);
+        match result {
+            Resolution::Resolved(path) => {
+                assert_eq!(
+                    path,
+                    fw_src.join("Foo.java"),
+                    "App should resolve Foo from framework (dep)"
+                );
+            }
+            other => panic!("expected Resolved, got {:?}", other),
+        }
+
+        // Framework file resolving "Baz" should NOT resolve (framework can't see app)
+        let result = resolver.resolve_type_ref("Baz", &fw_foo);
+        assert!(
+            !matches!(result, Resolution::Resolved(_)),
+            "Framework should not resolve Baz from app"
+        );
+    }
+
+    #[test]
+    fn test_type_ref_same_set_still_works() {
+        use crate::resolver::source_sets::{SourceSetConfig, SourceSetIndex};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let src = root.join("mod/src/main/java/com/example");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("A.java"), "package com.example;").unwrap();
+        fs::write(src.join("B.java"), "package com.example;").unwrap();
+
+        let known = vec![src.join("A.java"), src.join("B.java")];
+
+        let configs = vec![SourceSetConfig {
+            name: "mod".to_string(),
+            roots: vec!["mod/src/main/java".to_string()],
+            deps: vec![],
+        }];
+
+        let index = SourceSetIndex::build(&configs, root).unwrap();
+        let mut resolver = JavaResolver::new(root.to_path_buf(), known, None);
+        resolver.set_source_set_index(index);
+
+        let a = src.join("A.java");
+        let result = resolver.resolve_type_ref("B", &a);
+        match result {
+            Resolution::Resolved(path) => {
+                assert_eq!(path, src.join("B.java"));
+            }
+            other => panic!("expected Resolved, got {:?}", other),
         }
     }
 }

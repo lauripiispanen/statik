@@ -465,4 +465,83 @@ mod tests {
             "mod.rs should NOT be in the cycle"
         );
     }
+
+    /// Verify that source set filtering eliminates false cycles caused by
+    /// cross-module edges. This is the end-to-end verification for Phase 9.11D:
+    /// since `build_file_graph` drops cross-source-set edges (Phase B),
+    /// `detect_cycles` running on the filtered graph sees no false cycles.
+    #[test]
+    fn test_source_set_filtering_eliminates_false_cycles() {
+        use crate::resolver::source_sets::{SourceSetConfig, SourceSetIndex};
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Scenario: Two modules with same Java package create a false cycle.
+        // framework/src/com/example/FrameService.java imports app/src/com/example/AppHelper.java
+        // (due to same-package resolution leaking across module boundaries)
+        // and app imports framework legitimately.
+        // Without source sets: framework -> app -> framework = cycle
+        // With source sets: framework -> app edge is dropped, no cycle.
+
+        let configs = vec![
+            SourceSetConfig {
+                name: "framework".to_string(),
+                roots: vec!["framework/src".to_string()],
+                deps: vec![],
+            },
+            SourceSetConfig {
+                name: "app".to_string(),
+                roots: vec!["app/src".to_string()],
+                deps: vec!["framework".to_string()],
+            },
+        ];
+        let index = SourceSetIndex::build(&configs, root).unwrap();
+
+        let mut graph = FileGraph::new();
+        let fw_file = root.join("framework/src/com/example/FrameService.java");
+        let app_file = root.join("app/src/com/example/AppHelper.java");
+
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: fw_file,
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: app_file,
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // False edge: framework -> app (same-package leakage)
+        graph.add_import(make_edge(1, 2));
+        // Legitimate edge: app -> framework
+        graph.add_import(make_edge(2, 1));
+
+        // Without source set filtering: cycle exists
+        let result_unfiltered = detect_cycles(&graph);
+        assert_eq!(
+            result_unfiltered.cycles.len(),
+            1,
+            "unfiltered graph should have a false cycle"
+        );
+
+        // With source set filtering: framework -> app edge is dropped
+        let filtered = graph.filter_by_source_sets(&index);
+        let result_filtered = detect_cycles(&filtered);
+        assert!(
+            result_filtered.cycles.is_empty(),
+            "filtered graph should have no cycles (false cycle eliminated)"
+        );
+
+        // Verify the legitimate edge (app -> framework) is preserved
+        assert_eq!(filtered.direct_imports(FileId(2)), vec![FileId(1)]);
+        // Verify the false edge (framework -> app) is dropped
+        assert!(filtered.direct_imports(FileId(1)).is_empty());
+    }
 }

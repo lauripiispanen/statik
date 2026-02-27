@@ -248,6 +248,13 @@ struct ConfigWithEntryPoints {
     entry_points: Option<EntryPointConfig>,
 }
 
+/// Wrapper for deserializing the optional `[[source_sets]]` section.
+#[derive(Debug, Deserialize)]
+struct ConfigWithSourceSets {
+    #[serde(default)]
+    source_sets: Vec<crate::resolver::source_sets::SourceSetConfig>,
+}
+
 /// Load and parse a lint config from a TOML file.
 pub fn load_config(path: &Path) -> Result<LintConfig> {
     let content = std::fs::read_to_string(path)
@@ -259,6 +266,24 @@ pub fn load_config(path: &Path) -> Result<LintConfig> {
 pub fn parse_config(toml_str: &str) -> Result<LintConfig> {
     let config: LintConfig = toml::from_str(toml_str)?;
     Ok(config)
+}
+
+/// Load source set configs from a project, returning empty vec if no config exists.
+pub fn load_source_set_config(
+    project_root: &Path,
+) -> Vec<crate::resolver::source_sets::SourceSetConfig> {
+    let path = match find_config_path(project_root, None) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    match toml::from_str::<ConfigWithSourceSets>(&content) {
+        Ok(wrapper) => wrapper.source_sets,
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Load entry point config from a project, returning defaults if no config exists.

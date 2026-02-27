@@ -188,6 +188,24 @@ impl FileGraph {
         self.filter_edges(|edge| !edge.is_mod_declaration)
     }
 
+    /// Return a new FileGraph with edges filtered by source set visibility.
+    ///
+    /// Drops edges where the source set index says `from` cannot see `to`.
+    pub fn filter_by_source_sets(
+        &self,
+        index: &crate::resolver::source_sets::SourceSetIndex,
+    ) -> Self {
+        let files = &self.files;
+        self.filter_edges(|edge| {
+            let from_path = files.get(&edge.from).map(|f| f.path.as_path());
+            let to_path = files.get(&edge.to).map(|f| f.path.as_path());
+            match (from_path, to_path) {
+                (Some(from), Some(to)) => index.can_see(from, to),
+                _ => true, // keep edge if we can't resolve paths
+            }
+        })
+    }
+
     /// Return a new FileGraph containing only files whose paths match the given glob matcher.
     /// Edges are kept only between matching files.
     pub fn filter_to_paths(&self, matcher: &globset::GlobMatcher, project_root: &Path) -> Self {
@@ -880,5 +898,222 @@ mod tests {
         let filtered = graph.without_type_only_edges();
         assert!(filtered.direct_imports(FileId(1)).is_empty());
         assert!(filtered.direct_importers(FileId(2)).is_empty());
+    }
+
+    // =========================================================================
+    // Source set visibility filtering
+    // =========================================================================
+
+    mod source_set_tests {
+        use super::*;
+        use crate::resolver::source_sets::{SourceSetConfig, SourceSetIndex};
+        use tempfile::TempDir;
+
+        fn make_ss_config(name: &str, roots: &[&str], deps: &[&str]) -> SourceSetConfig {
+            SourceSetConfig {
+                name: name.to_string(),
+                roots: roots.iter().map(|r| r.to_string()).collect(),
+                deps: deps.iter().map(|d| d.to_string()).collect(),
+            }
+        }
+
+        fn make_file_at(id: u64, path: PathBuf) -> FileInfo {
+            FileInfo {
+                id: FileId(id),
+                path,
+                language: Language::Java,
+                exports: vec![],
+                is_entry_point: false,
+            }
+        }
+
+        fn make_edge_simple(from: u64, to: u64) -> FileImport {
+            FileImport {
+                from: FileId(from),
+                to: FileId(to),
+                imported_names: vec!["Foo".to_string()],
+                is_type_only: false,
+                is_mod_declaration: false,
+                line: 1,
+            }
+        }
+
+        #[test]
+        fn test_filter_keeps_same_source_set_edges() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![make_ss_config("framework", &["framework/src"], &[])];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("framework/src/A.java")));
+            graph.add_file(make_file_at(2, root.join("framework/src/B.java")));
+            graph.add_import(make_edge_simple(1, 2));
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert_eq!(filtered.direct_imports(FileId(1)), vec![FileId(2)]);
+        }
+
+        #[test]
+        fn test_filter_keeps_dependent_to_dependency_edges() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("framework", &["framework/src"], &[]),
+                make_ss_config("app", &["app/src"], &["framework"]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("app/src/App.java")));
+            graph.add_file(make_file_at(2, root.join("framework/src/Fw.java")));
+            graph.add_import(make_edge_simple(1, 2)); // app -> framework: allowed
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert_eq!(filtered.direct_imports(FileId(1)), vec![FileId(2)]);
+        }
+
+        #[test]
+        fn test_filter_drops_dependency_to_dependent_edges() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("framework", &["framework/src"], &[]),
+                make_ss_config("app", &["app/src"], &["framework"]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("framework/src/Fw.java")));
+            graph.add_file(make_file_at(2, root.join("app/src/App.java")));
+            graph.add_import(make_edge_simple(1, 2)); // framework -> app: NOT allowed
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert!(filtered.direct_imports(FileId(1)).is_empty());
+        }
+
+        #[test]
+        fn test_filter_drops_unrelated_source_set_edges() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("mod_a", &["mod_a/src"], &[]),
+                make_ss_config("mod_b", &["mod_b/src"], &[]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("mod_a/src/A.java")));
+            graph.add_file(make_file_at(2, root.join("mod_b/src/B.java")));
+            graph.add_import(make_edge_simple(1, 2)); // mod_a -> mod_b: NOT allowed
+            graph.add_import(make_edge_simple(2, 1)); // mod_b -> mod_a: NOT allowed
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert!(filtered.direct_imports(FileId(1)).is_empty());
+            assert!(filtered.direct_imports(FileId(2)).is_empty());
+        }
+
+        #[test]
+        fn test_filter_default_set_sees_everything() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("framework", &["framework/src"], &[]),
+                make_ss_config("app", &["app/src"], &["framework"]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            // File not in any source set (default set)
+            graph.add_file(make_file_at(1, root.join("other/src/Other.java")));
+            graph.add_file(make_file_at(2, root.join("framework/src/Fw.java")));
+            graph.add_file(make_file_at(3, root.join("app/src/App.java")));
+            graph.add_import(make_edge_simple(1, 2)); // default -> framework: allowed
+            graph.add_import(make_edge_simple(1, 3)); // default -> app: allowed
+            graph.add_import(make_edge_simple(2, 1)); // framework -> default: allowed
+            graph.add_import(make_edge_simple(3, 1)); // app -> default: allowed
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert_eq!(filtered.direct_imports(FileId(1)).len(), 2);
+            assert_eq!(filtered.direct_imports(FileId(2)), vec![FileId(1)]);
+            assert_eq!(filtered.direct_imports(FileId(3)), vec![FileId(1)]);
+        }
+
+        #[test]
+        fn test_filter_empty_config_no_filtering() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs: Vec<SourceSetConfig> = vec![];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("a/A.java")));
+            graph.add_file(make_file_at(2, root.join("b/B.java")));
+            graph.add_import(make_edge_simple(1, 2));
+            graph.add_import(make_edge_simple(2, 1));
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert_eq!(filtered.direct_imports(FileId(1)), vec![FileId(2)]);
+            assert_eq!(filtered.direct_imports(FileId(2)), vec![FileId(1)]);
+        }
+
+        #[test]
+        fn test_filter_preserves_files_and_unresolved() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("mod_a", &["mod_a/src"], &[]),
+                make_ss_config("mod_b", &["mod_b/src"], &[]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("mod_a/src/A.java")));
+            graph.add_file(make_file_at(2, root.join("mod_b/src/B.java")));
+            graph.add_import(make_edge_simple(1, 2));
+            graph.add_unresolved(UnresolvedImport {
+                file: FileId(1),
+                import_path: "com.external.Lib".to_string(),
+                reason: UnresolvedReason::External("com.external".to_string()),
+                line: 5,
+            });
+
+            let filtered = graph.filter_by_source_sets(&index);
+
+            // Files are preserved even when edges are dropped
+            assert_eq!(filtered.file_count(), 2);
+            // Unresolved imports are preserved
+            assert_eq!(filtered.unresolved.len(), 1);
+            // Edge is dropped
+            assert!(filtered.direct_imports(FileId(1)).is_empty());
+        }
+
+        #[test]
+        fn test_filter_transitive_deps_allowed() {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+
+            let configs = vec![
+                make_ss_config("core", &["core/src"], &[]),
+                make_ss_config("framework", &["framework/src"], &["core"]),
+                make_ss_config("app", &["app/src"], &["framework"]),
+            ];
+            let index = SourceSetIndex::build(&configs, root).unwrap();
+
+            let mut graph = FileGraph::new();
+            graph.add_file(make_file_at(1, root.join("app/src/App.java")));
+            graph.add_file(make_file_at(2, root.join("core/src/Core.java")));
+            graph.add_import(make_edge_simple(1, 2)); // app -> core: allowed (transitive via framework)
+
+            let filtered = graph.filter_by_source_sets(&index);
+            assert_eq!(filtered.direct_imports(FileId(1)), vec![FileId(2)]);
+        }
     }
 }

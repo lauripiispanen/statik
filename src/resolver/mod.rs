@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 pub mod java;
 pub mod rust;
+pub mod source_sets;
 pub mod tsconfig;
 pub mod typescript;
 

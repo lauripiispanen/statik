@@ -454,11 +454,10 @@ pub fn detect_dead_symbols(
             // Additionally: main() at file scope is always seeded (private in Rust).
             for &sym_id in symbol_ids {
                 if let Some(symbol) = symbol_graph.symbols.get(&sym_id) {
-                    if symbol.visibility != Visibility::Private {
-                        entry_symbols.push(sym_id);
-                    } else if symbol.name == "main"
-                        && symbol.parent.is_none()
-                        && matches!(symbol.kind, SymbolKind::Function)
+                    if symbol.visibility != Visibility::Private
+                        || (symbol.name == "main"
+                            && symbol.parent.is_none()
+                            && matches!(symbol.kind, SymbolKind::Function))
                     {
                         entry_symbols.push(sym_id);
                     }

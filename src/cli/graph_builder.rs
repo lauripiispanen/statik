@@ -42,6 +42,21 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         known_paths.clone(),
         java_config.map(|c| c.source_roots),
     );
+
+    // Load source set config for visibility filtering
+    let source_set_configs = crate::linting::config::load_source_set_config(project_root);
+    let source_set_index = if !source_set_configs.is_empty() {
+        let index = crate::resolver::source_sets::SourceSetIndex::build(
+            &source_set_configs,
+            project_root,
+        )?;
+        // Pass a clone to the Java resolver for scoped same-package resolution
+        java_resolver.set_source_set_index(index.clone());
+        Some(index)
+    } else {
+        None
+    };
+
     let rust_resolver = RustResolver::new(project_root.to_path_buf(), known_paths);
 
     // Build path -> FileId lookup
@@ -239,6 +254,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 line,
             });
         }
+    }
+
+    // Post-filter edges by source set visibility
+    if let Some(ref index) = source_set_index {
+        graph = graph.filter_by_source_sets(index);
     }
 
     Ok(graph)

@@ -49,25 +49,21 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> Result<Vec<Disco
 
     // Add exclude patterns as ignore overrides (defaults + user config)
     {
-        let has_patterns = !config.exclude.is_empty() || !config.include.is_empty();
-        let has_defaults = !DEFAULT_EXCLUDE_PATTERNS.is_empty();
-        if has_patterns || has_defaults {
-            let mut overrides = ignore::overrides::OverrideBuilder::new(root);
-            for pattern in DEFAULT_EXCLUDE_PATTERNS {
-                overrides
-                    .add(&format!("!{}", pattern))
-                    .context("invalid default exclude pattern")?;
-            }
-            for pattern in &config.exclude {
-                overrides
-                    .add(&format!("!{}", pattern))
-                    .context("invalid exclude pattern")?;
-            }
-            for pattern in &config.include {
-                overrides.add(pattern).context("invalid include pattern")?;
-            }
-            builder.overrides(overrides.build().context("failed to build overrides")?);
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for pattern in DEFAULT_EXCLUDE_PATTERNS {
+            overrides
+                .add(&format!("!{}", pattern))
+                .context("invalid default exclude pattern")?;
         }
+        for pattern in &config.exclude {
+            overrides
+                .add(&format!("!{}", pattern))
+                .context("invalid exclude pattern")?;
+        }
+        for pattern in &config.include {
+            overrides.add(pattern).context("invalid include pattern")?;
+        }
+        builder.overrides(overrides.build().context("failed to build overrides")?);
     }
 
     for entry in builder.build() {

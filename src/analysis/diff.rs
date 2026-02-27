@@ -559,12 +559,12 @@ fn compute_cycle_changes(graph_before: &FileGraph, graph_after: &FileGraph) -> V
     let normalized_before: HashSet<BTreeSet<PathBuf>> = cycles_before
         .cycles
         .iter()
-        .map(|c| normalize_cycle(c))
+        .map(normalize_cycle)
         .collect();
     let normalized_after: HashSet<BTreeSet<PathBuf>> = cycles_after
         .cycles
         .iter()
-        .map(|c| normalize_cycle(c))
+        .map(normalize_cycle)
         .collect();
 
     let mut changes = Vec::new();
