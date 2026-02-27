@@ -1507,6 +1507,13 @@ Tasks:
 **Acceptance**: `statik bus-factor --sort risk` shows the most
 organizationally risky files first — high fan-in with a single dominant author.
 
+**Known bug (confirmed by external evaluation)**: `fan_in` is still 0 on real
+multi-module projects despite suffix matching fix. The file graph stores
+absolute paths, commit history stores relative paths, and the suffix match in
+`fan_in_suffix_lookup` doesn't handle all cases. Files with 200+ importers
+(confirmed by `fan-in-limit` lint rule) report `fan_in: 0` in `bus-factor`.
+`risk_score` is therefore always 0.0. See 10.4b for the fix.
+
 ---
 
 ### 10.5 `statik churn` — change frequency and co-change analysis ✅
@@ -1573,6 +1580,163 @@ that cross team boundaries, highlighting organizational coordination costs.
 
 ---
 
+### 10.4b BUG: Fix bus-factor `fan_in` path matching
+**Complexity**: S
+**Prerequisites**: 10.4
+**Files**: `src/analysis/ownership.rs`
+
+**The bug**: `fan_in` is always 0 on real multi-module projects. The suffix
+matching in `fan_in_suffix_lookup` was added to bridge absolute paths (file
+graph) vs relative paths (commit history), but it fails on projects where the
+file graph paths and git log paths have non-trivial prefix differences (e.g.,
+multi-module Gradle/Maven projects with deep module paths).
+
+**Evidence**: A file confirmed to have 200+ importers via the `fan-in-limit`
+lint rule reports `fan_in: 0` in `bus-factor`. The lint system uses `FileId`
+lookups (correct), but bus-factor uses string path matching (broken).
+
+Tasks:
+- [ ] Root-cause the path mismatch: compare how `fan_in_by_path` keys look vs
+  how `file_stats` paths look in a multi-module project
+- [ ] Fix: use `FileId`-based lookup instead of string path matching. The
+  `FileGraph` already maps paths to `FileId`s — look up fan_in by `FileId`,
+  then join with ownership data by path
+- [ ] Add a test that catches this: create a file graph with absolute paths
+  and commit history with relative paths, verify non-zero `fan_in`
+- [ ] Verify with `statik bus-factor` on a real multi-module project
+
+**Acceptance**: `statik bus-factor` reports non-zero `fan_in` for files that
+have importers. `risk_score` is meaningful, not always 0.0.
+
+---
+
+### 10.4c Per-person bus factor view (`--by-author`)
+**Complexity**: S
+**Prerequisites**: 10.4b (fan_in fix)
+**Files**: `src/analysis/ownership.rs`, `src/cli/commands.rs`
+
+**Motivation**: External evaluation showed teams need to know "which *people*
+are single points of failure?" — not just which files. Currently this requires
+scripting `owners --top 1` output externally.
+
+Tasks:
+- [ ] Add `--by-author` flag to `statik bus-factor`
+- [ ] Aggregate per author: count of files where they're sole owner (>80%),
+  total files touched, top areas (directories) they solely own
+- [ ] Include total blast radius of their bus-factor-1 files (sum of fan_in)
+- [ ] Sort by sole-owned file count descending
+- [ ] Text/JSON output with author, sole-owned count, total files, key areas
+
+**Acceptance**: `statik bus-factor --by-author` shows per-person ownership
+concentration — how many files each person solely owns and which areas.
+
+---
+
+### 10.7 Adaptive ownership half-life
+**Complexity**: S
+**Prerequisites**: 10.2
+**Files**: `src/analysis/ownership.rs`
+
+**The problem**: The fixed 180-day half-life for recency weighting doesn't
+scale with file age. For an 8-year-old file, the original creator's
+contribution decays through ~16 half-lives (2^16 = 65,536x decay), making it
+effectively zero — even though they're the person who actually understands the
+code. A developer who made a 2-line tweak last year is reported as 99% owner.
+
+**Evidence**: On a large project, a file created in 2018 (90 lines) had two
+trivial edits in 2024 (5 lines total). Statik reports the tweaker as 99.3%
+owner because the creator's contribution has decayed to nearly zero.
+
+Possible approaches:
+- **Adaptive half-life**: `half_life = max(180, file_age_days * 0.25)`. An
+  8-year-old file gets a ~2-year half-life; a 6-month-old file stays at 180d.
+- **`git blame`-based metric**: who wrote the lines still in the file today.
+  More expensive but directly measures surviving contribution.
+- **Hybrid**: commit-based for "who maintains this" + blame-based for "who
+  built this" — surface both.
+
+Tasks:
+- [ ] Implement adaptive half-life: scale with file age
+- [ ] Add `--half-life-mode` flag: `fixed` (current), `adaptive` (new default)
+- [ ] Consider adding `git blame`-based scoring as an alternative
+- [ ] Add tests comparing fixed vs adaptive on known old/new file scenarios
+
+**Acceptance**: For an 8-year-old file with a recent trivial edit, the original
+creator retains meaningful ownership percentage (>10%) rather than decaying to
+near-zero.
+
+---
+
+### 10.8 Wildcard import source set boundary enforcement
+**Complexity**: S
+**Prerequisites**: 8.1 (source sets)
+**Files**: `src/resolver/java.rs`
+
+**The bug**: Java wildcard imports (`import package.*`) resolve to files across
+source set boundaries. For example, a wildcard import in a production source
+set can resolve to test files in a different module's test source set, creating
+false dependency edges and false positives in boundary lint rules.
+
+Tasks:
+- [ ] When resolving wildcard imports, filter candidate files by source set
+  visibility — a production source set should not resolve to test source sets
+  in other modules
+- [ ] Add source set dependency declaration (already exists in config as
+  `depends_on`): a source set can only resolve imports to its own files or
+  files in declared dependencies
+- [ ] Add test: wildcard import does not resolve across source set boundaries
+
+**Acceptance**: Wildcard imports in a production source set do not create
+edges to test files in other source sets.
+
+---
+
+### 10.9 Suppress unknown language warnings during indexing
+**Complexity**: S
+**Prerequisites**: None
+**Files**: `src/cli/index.rs`
+
+**The problem**: Projects with vendored libraries in unsupported languages
+(e.g., Python bindings in a Java project) produce 100+ "no parser for
+language" warnings during indexing. These are harmless but noisy.
+
+Tasks:
+- [ ] Silently skip files in languages without a registered parser (no warning)
+- [ ] Add `--warn-unsupported` flag to opt into the current warning behavior
+- [ ] Alternatively, support `--exclude "*.py"` on `statik index` to filter
+  files before language detection
+
+**Acceptance**: `statik index` on a project with vendored files in unsupported
+languages produces no warnings by default.
+
+---
+
+## External Evaluation Findings
+
+Summary of feedback from an external evaluation on a large multi-module project
+(~7K files, 130K commits, multi-module Gradle, mixed Java/JS).
+
+**What works well**:
+- Source sets are essential and transformative for multi-module projects (7x
+  more symbols resolved, 9x faster indexing with source sets configured)
+- Dead code detection found genuinely dead files with high confidence
+- Architectural linting caught god objects (200+ importers) and confirmed
+  clean module boundaries
+- `deps --between` correctly analyzed cross-module coupling
+- Churn with deep history (50K commits) accurately identified hot spots
+- Co-change analysis found hundreds of hidden couplings including
+  framework-level coupling invisible to static analysis
+- Performance is excellent: 15s full index, 1.6s incremental, ~2s lint on 7K files
+
+**What needs fixing** (see tasks above):
+- Bus-factor `fan_in` always 0 (path mismatch bug) — 10.4b
+- Wildcard imports cross source set boundaries — 10.8
+- Ownership recency weighting overvalues trivial recent edits — 10.7
+- Unknown language warnings are noisy — 10.9
+- Per-person bus factor view needed — 10.4c
+
+---
+
 ## Summary of Complexity Estimates
 
 | Phase | S tasks | M tasks | L tasks | XL tasks | Total tasks |
@@ -1589,10 +1753,13 @@ that cross team boundaries, highlighting organizational coordination costs.
 | 10    | 1       | 5       | 0       | 0        | 6           |
 | **Total** | **21** | **30** | **11** | **2** | **66** |
 
-**Priority guidance**: Phase 2b (advanced lint rules) and Phase 7 (agent-friendly
-CLI) are now complete. Phase 3b (Rust support) is complete including dogfooding fixes.
-See **Phase 8: Dogfooding-Driven Fixes** below for the highest-impact next work
-identified by running statik on itself.
+**Priority guidance**: Phase 2b (advanced lint rules), Phase 7 (agent-friendly
+CLI), and Phase 10 core (10.1-10.5: git history, owners, bus-factor, churn) are
+complete. Phase 3b (Rust support) is complete including dogfooding fixes.
+**Highest-priority next work**: 10.4b (bus-factor fan_in fix — confirmed broken
+on real projects), 10.7 (adaptive ownership half-life), 10.4c (per-person bus
+factor), 10.8 (wildcard import source set boundaries). See also **Phase 8:
+Dogfooding-Driven Fixes** for scope/source set improvements.
 
 ---
 
