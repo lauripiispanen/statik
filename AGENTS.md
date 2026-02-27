@@ -19,3 +19,4 @@
 - Use proper error handling on user-facing paths (no `unwrap()`)
 - Keep `commands.rs` focused on orchestration; formatting goes in `output.rs`, graph building in `graph_builder.rs`
 - Tests should be substantive — verify behavior, not just absence of crashes
+- When combining data from different subsystems (e.g., file graph paths vs git history paths), normalize path formats. The file graph uses absolute paths; git history uses relative paths. Always convert before comparison and write tests that assert non-trivial values to catch silent mismatches.
