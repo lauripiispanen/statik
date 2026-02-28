@@ -1737,6 +1737,135 @@ Summary of feedback from an external evaluation on a large multi-module project
 
 ---
 
+## Phase 11: SCIP Ingestion (Compiler-Grade Precision)
+
+Optional enrichment layer: ingest SCIP (Source Code Intelligence Protocol)
+indexes from external language servers/compilers to get fully type-resolved
+references without embedding any compiler. Statik stays fast for tree-sitter
+indexing; SCIP data upgrades precision when available.
+
+**Key insight**: Statik's value is graph algorithms (impact, dead code, cycles,
+lint, ownership). SCIP ingestion lets purpose-built indexers handle parsing
+precision while statik focuses on graph intelligence.
+
+### 11.1 SCIP protobuf reader
+**Complexity**: M
+**Prerequisites**: None
+**Files**: new `src/scip/mod.rs`, `Cargo.toml`
+
+Tasks:
+- [ ] Add `prost` dependency for protobuf parsing
+- [ ] Download/vendor the SCIP protobuf schema from sourcegraph/scip
+- [ ] Implement SCIP index reader: parse `.scip` files, extract documents,
+  occurrences, symbol information
+- [ ] Map SCIP symbol roles (definition, reference, import) to statik's
+  `SymbolKind`, `RefKind`, `ImportRecord` types
+- [ ] Map SCIP symbol names to statik's `SymbolId` scheme
+- [ ] Handle multi-language SCIP indexes (different documents may be different
+  languages)
+- [ ] Add tests with a small hand-crafted `.scip` file
+
+**Acceptance**: A `.scip` file can be parsed and its symbols/references
+mapped to statik's type system.
+
+---
+
+### 11.2 `statik enrich` command
+**Complexity**: M
+**Prerequisites**: 11.1
+**Files**: `src/cli/commands.rs`, `src/main.rs`, `src/db/mod.rs`
+
+Import a SCIP index into the existing SQLite database, upgrading heuristic
+tree-sitter references to precise compiler-resolved references.
+
+Tasks:
+- [ ] Add `Commands::Enrich` variant with `<scip-file>` argument
+- [ ] Implement merge logic: for files present in both tree-sitter index and
+  SCIP index, replace heuristic references with SCIP references
+- [ ] Retain tree-sitter data for files not covered by the SCIP index
+- [ ] Add `enriched: bool` or `source: enum { TreeSitter, Scip }` to reference
+  records in the DB
+- [ ] Update confidence system: SCIP-sourced references get Certain confidence
+- [ ] Support multiple enrichments (e.g., `enrich java.scip` then `enrich
+  cpp.scip`)
+- [ ] Add tests: enrich resolves previously-unresolved imports
+
+**Acceptance**: `statik enrich project.scip` imports SCIP data. `statik
+dead-code` after enrichment shows fewer unresolved imports and higher
+confidence on more files.
+
+---
+
+### 11.3 C++ support via scip-clang
+**Complexity**: M
+**Prerequisites**: 11.2
+**Files**: `src/model/mod.rs`, `src/discovery/mod.rs`
+
+With SCIP ingestion working, C++ is automatically supported — no tree-sitter
+C++ parser needed.
+
+Tasks:
+- [ ] Add `Language::Cpp` variant (and `Language::C`, `Language::Header`)
+- [ ] Add file discovery for `.cpp`, `.cc`, `.cxx`, `.c`, `.h`, `.hpp`, `.hxx`
+- [ ] Add default exclude patterns for C++ projects (`build/`, `cmake-build-*/`,
+  `*.o`, `*.a`)
+- [ ] Ensure `statik enrich` correctly handles C++ SCIP indexes from
+  `scip-clang`
+- [ ] Test: index a C++ project via `scip-clang`, enrich, verify deps/impact
+  work
+
+**Acceptance**: `statik deps SomeFile.cpp` works after enriching with a
+`scip-clang` index. `statik impact SomeFile.cpp` shows the correct blast
+radius.
+
+---
+
+### 11.4 Cross-language dependency edges
+**Complexity**: L
+**Prerequisites**: 11.2
+**Files**: `src/model/file_graph.rs`, `src/cli/commands.rs`, new
+`src/linting/config.rs` additions
+
+When multiple SCIP indexes are imported (e.g., Java + C++), create cross-
+language edges based on configured boundary mappings.
+
+Tasks:
+- [ ] Add `[cross_language]` config section for mapping symbols across
+  language boundaries (e.g., C++ `LogicFoo::bar()` → Java `Foo.bar()`)
+- [ ] Auto-detect common cross-language patterns (JNI, gRPC protobuf, shared
+  symbol names)
+- [ ] Create `FileImport` edges across language boundaries
+- [ ] Ensure `statik impact` traces across language boundaries
+- [ ] Ensure `statik dead-code` considers cross-language usage
+- [ ] Add tests: change in C++ file shows affected Java files via cross-
+  language edges
+
+**Acceptance**: `statik impact SomeFile.cpp` traces through the C++ graph,
+crosses the language boundary, and shows affected Java files. This is the
+"full blast radius across the language boundary" use case.
+
+---
+
+### 11.5 Confidence upgrade for enriched data
+**Complexity**: S
+**Prerequisites**: 11.2
+**Files**: `src/analysis/dead_code.rs`, `src/analysis/impact.rs`
+
+Tasks:
+- [ ] When SCIP data is available for a file, upgrade all references to
+  Certain confidence
+- [ ] In dead code analysis, skip the "has unresolved imports" confidence
+  downgrade for SCIP-enriched files
+- [ ] In impact analysis, mark SCIP-resolved edges as precise (vs heuristic)
+- [ ] Surface enrichment status in `statik summary`: "X files enriched via
+  SCIP, Y files tree-sitter only"
+- [ ] Add tests
+
+**Acceptance**: `statik dead-code` after enrichment reports higher confidence
+on enriched files. `statik summary` shows enrichment coverage.
+
+---
+
 ## Summary of Complexity Estimates
 
 | Phase | S tasks | M tasks | L tasks | XL tasks | Total tasks |
@@ -1751,7 +1880,8 @@ Summary of feedback from an external evaluation on a large multi-module project
 | 6     | 0       | 3       | 2       | 1        | 6           |
 | 7     | 7       | 2       | 0       | 0        | 9           |
 | 10    | 1       | 5       | 0       | 0        | 6           |
-| **Total** | **21** | **30** | **11** | **2** | **66** |
+| 11    | 1       | 3       | 1       | 0        | 5           |
+| **Total** | **22** | **33** | **12** | **2** | **71** |
 
 **Priority guidance**: Phase 2b (advanced lint rules), Phase 7 (agent-friendly
 CLI), and Phase 10 core (10.1-10.5: git history, owners, bus-factor, churn) are
@@ -1759,7 +1889,10 @@ complete. Phase 3b (Rust support) is complete including dogfooding fixes.
 **Highest-priority next work**: 10.4b (bus-factor fan_in fix — confirmed broken
 on real projects), 10.7 (adaptive ownership half-life), 10.4c (per-person bus
 factor), 10.8 (wildcard import source set boundaries). See also **Phase 8:
-Dogfooding-Driven Fixes** for scope/source set improvements.
+Dogfooding-Driven Fixes** for scope/source set improvements. **Phase 11 (SCIP
+ingestion)** is a strategic priority — validated by external evaluation as "the
+cleanest path to making the graph analysis actually precise." Can be built
+alongside any other phase.
 
 ---
 

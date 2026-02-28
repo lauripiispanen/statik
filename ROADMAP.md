@@ -548,16 +548,143 @@ ownership with the existing dependency graph, which is already built.
 
 ---
 
+### Phase 11: SCIP Ingestion (Compiler-Grade Precision Without a Compiler)
+
+**Goal**: Optionally ingest SCIP (Source Code Intelligence Protocol) indexes
+from external language servers and compilers. This gives statik fully resolved,
+type-aware symbol references without embedding any compiler frontend. Statik
+stays fast and lightweight for its own tree-sitter indexing (file-level deps,
+architectural lint, CI checks), but can optionally consume richer data for
+deep analysis.
+
+**Key insight from external evaluation**: "The graph algorithms are the hard
+and valuable part — the parsing is commodity." Statik's moat is impact
+analysis, dead code detection, cycle detection, ownership, and architectural
+linting over the dependency graph. SCIP ingestion lets purpose-built indexers
+handle the precision problem while statik focuses on graph intelligence.
+
+**Why SCIP**: SCIP is a standardized protobuf format created by Sourcegraph.
+Indexers already exist for all languages statik cares about:
+- `scip-typescript` — via tsc, fully type-resolved
+- `scip-java` — via a Gradle/Maven plugin using JDT
+- `rust-analyzer` — emits SCIP natively
+- `scip-clang` — via clang, works on Chromium/LLVM-scale codebases
+
+**What it solves**:
+
+1. **Unresolved imports**: An external evaluation on a 7K-file multi-module
+   project had 5,000+ unresolved imports with tree-sitter heuristics. SCIP
+   resolution would eliminate most of these, upgrading dead code detection
+   from "high confidence" to "certain confidence" on many more files.
+
+2. **C++ support**: The roadmap explicitly excludes C++ via tree-sitter (the
+   preprocessor makes it unreliable). `scip-clang` sidesteps this entirely —
+   statik gets precise C++ dependency data without touching the preprocessor.
+
+3. **Cross-language dependency graphs**: A project with C++ client code and
+   Java server code could have a unified dependency graph. `statik impact
+   SomeFile.cpp` could trace through the C++ call graph, cross the language
+   boundary, and show affected Java files on the server side.
+
+4. **Symbol-level precision**: Tree-sitter can't resolve dynamic dispatch,
+   overloaded methods, or generic type parameters. SCIP indexes have fully
+   resolved references — `statik impact --symbol SomeClass.someMethod` could
+   show the precise 8 files affected by changing that specific method, not the
+   29 files that depend on anything in SomeClass.
+
+5. **Wildcard import precision**: Java `import package.*` currently resolves
+   heuristically and can cross source set boundaries. SCIP knows exactly which
+   symbols are used at compile time.
+
+**Architecture**: SCIP ingestion is an optional enrichment layer, not a
+replacement for tree-sitter:
+
+```
+                    ┌─────────────────┐
+                    │  statik index   │  (fast, always available)
+                    │  tree-sitter    │  → file-level graph
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  statik enrich  │  (optional, richer)
+                    │  SCIP ingestion │  → symbol-level graph
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  graph analysis │  (same algorithms)
+                    │  impact, dead,  │  → works on either graph
+                    │  cycles, lint   │
+                    └─────────────────┘
+```
+
+Tree-sitter indexing remains the default and works without any external tools.
+`statik enrich <scip-index-file>` imports a SCIP index into the existing
+SQLite database, upgrading heuristic references to precise references. All
+existing graph algorithms work on either data source without modification.
+
+**Deliverables**:
+
+1. **SCIP protobuf reader** — Parse `.scip` files (protobuf format) and map
+   SCIP occurrences/symbols to statik's existing `SymbolId`, `FileId`,
+   `Reference` types.
+
+2. **`statik enrich` command** — Import a SCIP index file into the existing
+   database. Merge with tree-sitter data: SCIP references replace heuristic
+   references for files that appear in both; tree-sitter data is retained for
+   files not covered by the SCIP index.
+
+3. **Cross-language edge creation** — When multiple SCIP indexes are imported
+   (e.g., one from `scip-java`, one from `scip-clang`), create cross-language
+   edges based on shared symbol names or configured boundary mappings.
+
+4. **C++ support via scip-clang** — With SCIP ingestion working, C++ is
+   automatically supported. No tree-sitter C++ parser needed. Add `Language::Cpp`
+   variant and ensure file discovery handles `.cpp`, `.h`, `.hpp`.
+
+5. **Confidence upgrade** — When SCIP data is available for a file, upgrade
+   its references from heuristic confidence to Certain. Reflect this in dead
+   code, impact, and lint output.
+
+**Dependencies**: None — SCIP ingestion can be built alongside any other phase.
+It only needs the existing database schema and graph infrastructure.
+
+**Complexity**: Medium. The SCIP protobuf format is well-documented. The main
+work is mapping SCIP's symbol scheme to statik's existing types and handling
+the merge logic. Cross-language edges are the hardest part.
+
+**Success Criteria**:
+- `statik enrich java-index.scip` imports a SCIP index and upgrades reference
+  precision. Unresolved imports drop by >90%.
+- `statik dead-code` after enrichment reports more dead code at higher
+  confidence.
+- C++ files indexed via `scip-clang` appear in the dependency graph alongside
+  Java/TS files.
+- All existing commands work unchanged on enriched data.
+- `statik index` (tree-sitter only) performance is unaffected.
+
+**Risks & Mitigations**:
+- **SCIP index generation adds build time**: `scip-clang` adds ~30-50% to C++
+  build time. Mitigate: run SCIP indexing in nightly/weekly CI, not on every
+  commit. Statik's own tree-sitter indexing remains instant for per-PR checks.
+- **SCIP format stability**: SCIP is versioned and maintained by Sourcegraph.
+  Pin the protobuf version and update deliberately.
+- **Cross-language edge heuristics**: Matching symbols across language
+  boundaries (C++ `LogicFoo::bar()` → Java `Foo.bar()`) requires project-
+  specific configuration. Provide a `[cross_language]` config section for
+  custom mappings rather than attempting automatic detection.
+
+---
+
 ## Risk Summary
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
 | Rule DSL becomes a language | High | Start with globs only. No predicate language in v1. Extend to regex if needed. |
-| Multi-language fragments focus | Critical | Java only in Phase 3. No C++ via tree-sitter. |
+| Multi-language fragments focus | Critical | Java only in Phase 3. No C++ via tree-sitter. C++ possible via SCIP ingestion (Phase 11). |
 | Semantic diff is research-grade | Critical | Structural diff instead. Compare export surfaces, not AST trees. |
 | SQLite won't scale for large codebases | High | Lazy loading in Phase 1. Streaming queries before adding languages. |
 | Competing in a saturated market | High | Architectural linting + confidence scores are unique differentiators. |
-| JDT-like depth exceeds tree-sitter capabilities | Medium | Define "deep" as symbol-level, not type-level. Tree-sitter is a parser, not a type checker. |
+| JDT-like depth exceeds tree-sitter capabilities | Medium | Define "deep" as symbol-level, not type-level. Tree-sitter is a parser, not a type checker. SCIP ingestion (Phase 11) provides type-resolved data without embedding a compiler. |
 | Java resolver is 70% of the effort | High | Start with convention-based resolution. Treat classpath imports as External. |
 | Integration maintenance burden | Medium | Keep integrations thin. CLI is the source of truth. |
 | Git log slow on huge repos | Medium | Incremental indexing + `--history-depth` limit. Opt-in via `--with-history`. Confirmed: 50K commits in ~80s is acceptable. |
@@ -569,12 +696,15 @@ ownership with the existing dependency graph, which is already built.
 
 ## What This Roadmap Explicitly Does NOT Include
 
-- **C++ support via tree-sitter**: The preprocessor makes this unreliable. If C++
-  is revisited, it should be via libclang, which is a different architecture.
+- **C++ support via tree-sitter**: The preprocessor makes this unreliable.
+  C++ support is planned via SCIP ingestion (Phase 11) using `scip-clang`,
+  which leverages clang's own AST rather than tree-sitter's pre-preprocessed view.
 - **Full semantic diff**: Tree matching (GumTree-style) is an active research area.
   We do structural diff instead.
-- **Type inference or type checking**: statik is a parser-based tool. If it requires
-  running tsc or javac, it's out of scope.
+- **Embedding compilers (JDT, libclang, tsc)**: statik does not run compilers.
+  Instead, Phase 11 (SCIP ingestion) consumes compiler output via the
+  standardized SCIP format. The heavy compilation happens externally (during
+  normal builds); statik reads the result in seconds.
 - **node_modules resolution**: Documented as a limitation. External packages are
   identified but not resolved into node_modules.
 - **Python parser**: Discovery supports Python but a parser is not planned. Focus
