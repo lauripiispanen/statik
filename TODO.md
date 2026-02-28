@@ -1596,14 +1596,14 @@ lint rule reports `fan_in: 0` in `bus-factor`. The lint system uses `FileId`
 lookups (correct), but bus-factor uses string path matching (broken).
 
 Tasks:
-- [ ] Root-cause the path mismatch: compare how `fan_in_by_path` keys look vs
+- [x] Root-cause the path mismatch: compare how `fan_in_by_path` keys look vs
   how `file_stats` paths look in a multi-module project
-- [ ] Fix: use `FileId`-based lookup instead of string path matching. The
+- [x] Fix: use `FileId`-based lookup instead of string path matching. The
   `FileGraph` already maps paths to `FileId`s — look up fan_in by `FileId`,
   then join with ownership data by path
-- [ ] Add a test that catches this: create a file graph with absolute paths
+- [x] Add a test that catches this: create a file graph with absolute paths
   and commit history with relative paths, verify non-zero `fan_in`
-- [ ] Verify with `statik bus-factor` on a real multi-module project
+- [x] Verify with `statik bus-factor` on a real multi-module project
 
 **Acceptance**: `statik bus-factor` reports non-zero `fan_in` for files that
 have importers. `risk_score` is meaningful, not always 0.0.
@@ -1620,12 +1620,12 @@ are single points of failure?" — not just which files. Currently this requires
 scripting `owners --top 1` output externally.
 
 Tasks:
-- [ ] Add `--by-author` flag to `statik bus-factor`
-- [ ] Aggregate per author: count of files where they're sole owner (>80%),
+- [x] Add `--by-author` flag to `statik bus-factor`
+- [x] Aggregate per author: count of files where they're sole owner (>80%),
   total files touched, top areas (directories) they solely own
-- [ ] Include total blast radius of their bus-factor-1 files (sum of fan_in)
-- [ ] Sort by sole-owned file count descending
-- [ ] Text/JSON output with author, sole-owned count, total files, key areas
+- [x] Include total blast radius of their bus-factor-1 files (sum of fan_in)
+- [x] Sort by sole-owned file count descending
+- [x] Text/JSON output with author, sole-owned count, total files, key areas
 
 **Acceptance**: `statik bus-factor --by-author` shows per-person ownership
 concentration — how many files each person solely owns and which areas.
@@ -1656,10 +1656,10 @@ Possible approaches:
   built this" — surface both.
 
 Tasks:
-- [ ] Implement adaptive half-life: scale with file age
-- [ ] Add `--half-life-mode` flag: `fixed` (current), `adaptive` (new default)
+- [x] Implement adaptive half-life: scale with file age
+- [x] Add `--half-life-mode` flag: `fixed` (current), `adaptive` (new default)
 - [ ] Consider adding `git blame`-based scoring as an alternative
-- [ ] Add tests comparing fixed vs adaptive on known old/new file scenarios
+- [x] Add tests comparing fixed vs adaptive on known old/new file scenarios
 
 **Acceptance**: For an 8-year-old file with a recent trivial edit, the original
 creator retains meaningful ownership percentage (>10%) rather than decaying to
@@ -1678,13 +1678,13 @@ set can resolve to test files in a different module's test source set, creating
 false dependency edges and false positives in boundary lint rules.
 
 Tasks:
-- [ ] When resolving wildcard imports, filter candidate files by source set
+- [x] When resolving wildcard imports, filter candidate files by source set
   visibility — a production source set should not resolve to test source sets
   in other modules
-- [ ] Add source set dependency declaration (already exists in config as
+- [x] Add source set dependency declaration (already exists in config as
   `depends_on`): a source set can only resolve imports to its own files or
   files in declared dependencies
-- [ ] Add test: wildcard import does not resolve across source set boundaries
+- [x] Add test: wildcard import does not resolve across source set boundaries
 
 **Acceptance**: Wildcard imports in a production source set do not create
 edges to test files in other source sets.
@@ -1701,9 +1701,9 @@ edges to test files in other source sets.
 language" warnings during indexing. These are harmless but noisy.
 
 Tasks:
-- [ ] Silently skip files in languages without a registered parser (no warning)
+- [x] Silently skip files in languages without a registered parser (no warning)
 - [ ] Add `--warn-unsupported` flag to opt into the current warning behavior
-- [ ] Alternatively, support `--exclude "*.py"` on `statik index` to filter
+- [x] Support `--exclude "*.py"` on `statik index` to filter
   files before language detection
 
 **Acceptance**: `statik index` on a project with vendored files in unsupported
@@ -1728,12 +1728,12 @@ Summary of feedback from an external evaluation on a large multi-module project
   framework-level coupling invisible to static analysis
 - Performance is excellent: 15s full index, 1.6s incremental, ~2s lint on 7K files
 
-**What needs fixing** (see tasks above):
-- Bus-factor `fan_in` always 0 (path mismatch bug) — 10.4b
-- Wildcard imports cross source set boundaries — 10.8
-- Ownership recency weighting overvalues trivial recent edits — 10.7
-- Unknown language warnings are noisy — 10.9
-- Per-person bus factor view needed — 10.4c
+**What was fixed**:
+- ~~Bus-factor `fan_in` always 0 (path mismatch bug)~~ — 10.4b ✅
+- ~~Wildcard imports cross source set boundaries~~ — 10.8 ✅
+- ~~Ownership recency weighting overvalues trivial recent edits~~ — 10.7 ✅
+- ~~Unknown language warnings are noisy~~ — 10.9 ✅
+- ~~Per-person bus factor view needed~~ — 10.4c ✅
 
 ---
 
@@ -1944,9 +1944,9 @@ on enriched files. `statik summary` shows enrichment coverage.
 **Priority guidance**: Phase 2b (advanced lint rules), Phase 7 (agent-friendly
 CLI), and Phase 10 core (10.1-10.5: git history, owners, bus-factor, churn) are
 complete. Phase 3b (Rust support) is complete including dogfooding fixes.
-**Highest-priority next work**: 10.4b (bus-factor fan_in fix — confirmed broken
-on real projects), 10.7 (adaptive ownership half-life), 10.4c (per-person bus
-factor), 10.8 (wildcard import source set boundaries). See also **Phase 8:
+Phase 10 dogfooding fixes (10.4b, 10.4c, 10.7, 10.8, 10.9) are now complete.
+**Highest-priority next work**: 10.5 (`statik who` — impact-aware reviewer
+suggestion), 10.6 (team boundary analysis). See also **Phase 8:
 Dogfooding-Driven Fixes** for scope/source set improvements. **Phase 11 (SCIP
 ingestion)** is a strategic priority — validated by external evaluation as "the
 cleanest path to making the graph analysis actually precise." Can be built

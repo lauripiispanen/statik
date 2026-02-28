@@ -466,7 +466,7 @@ integrations.
 
 ---
 
-### Phase 10: Human / Committer Analysis (VCS History Intelligence) — PARTIALLY COMPLETE
+### Phase 10: Human / Committer Analysis (VCS History Intelligence) — MOSTLY COMPLETE
 
 **Goal**: Add a "people layer" to statik's code graph. Git history records every
 human interaction with every file. Combined with the existing dependency graph,
@@ -474,10 +474,9 @@ this answers questions no other CLI tool can: "if I change this file, who should
 I talk to?", "what's the bus factor of this critical module?", and "which files
 change together but have no import relationship?"
 
-**Status**: Core commands delivered (10.1-10.5). External evaluation on a large
-multi-module project (~7K files, 130K commits) validated the approach. Known
-bugs: bus-factor `fan_in` path matching broken on multi-module projects,
-ownership recency weighting overvalues trivial recent edits on old files.
+**Status**: Core commands delivered (10.1-10.5). Dogfooding fixes delivered
+(10.4b, 10.4c, 10.7, 10.8, 10.9). External evaluation on a large
+multi-module project (~7K files, 130K commits) validated the approach.
 
 **Delivered**:
 
@@ -486,38 +485,42 @@ ownership recency weighting overvalues trivial recent edits on old files.
    indexing and `--history-depth` supported. 50K commits indexed in ~80s.
 
 2. **Ownership model** (10.2 ✅) -- `statik owners <glob>` with recency-weighted
-   scoring, `--top N`, `--half-life` flags. Works well but the fixed half-life
-   overweights trivial recent edits on old files (see 10.7 for fix).
+   scoring, `--top N`, `--half-life`, `--half-life-mode` flags. Adaptive
+   half-life (default) scales with file age so original creators retain
+   meaningful ownership.
 
-3. **Bus factor analysis** (10.4 ✅, bug in 10.4b) -- `statik bus-factor` computes
-   knowledge concentration risk. **Known bug**: `fan_in` is always 0 on real
-   multi-module projects due to path matching issue. Risk score is broken.
+3. **Bus factor analysis** (10.4 ✅) -- `statik bus-factor` computes
+   knowledge concentration risk. Uses FileId-based lookup for fan_in
+   (10.4b fix). Supports `--by-author` for per-person ownership
+   concentration view (10.4c).
 
 4. **Change frequency and co-change** (10.5 ✅) -- `statik churn` with
    `--co-change` mode. Found hundreds of hidden couplings on a real project,
    including framework-level coupling invisible to static analysis.
 
+5. **Adaptive ownership half-life** (10.7 ✅) -- `--half-life-mode` flag
+   with `adaptive` (default) and `fixed` modes. Adaptive mode scales
+   half-life with file age, preventing original creators from decaying to
+   zero ownership on old files.
+
+6. **Wildcard import source set boundaries** (10.8 ✅) -- Wildcard imports
+   are scoped to source set visibility, preventing false dependency edges
+   from production code to test source sets in other modules.
+
+7. **Suppressed unknown language warnings** (10.9 ✅) -- Single summary
+   line instead of per-file warnings for files in unsupported languages.
+
 **Remaining**:
 
-5. **Impact-aware reviewer suggestion** (`statik who <file>`) -- The
+8. **Impact-aware reviewer suggestion** (`statik who <file>`) -- The
    highest-value command. Runs blast radius analysis, computes ownership for
    all affected files, aggregates across the dependency graph, and suggests
    a minimal reviewer set. This is `git blame` meets `statik impact` -- it
    follows dependencies, not just file history.
 
-6. **Team boundary analysis** (`statik team-coupling`) -- Optional,
+9. **Team boundary analysis** (`statik team-coupling`) -- Optional,
    config-driven. When a people-to-team mapping is available, detect
    misalignment between team boundaries and code boundaries.
-
-7. **Per-person bus factor** (`bus-factor --by-author`) -- Aggregate per person:
-   sole-owned file count, key areas, total blast radius of their bus-factor-1
-   files. Requested by external evaluation.
-
-8. **Adaptive ownership half-life** (10.7) -- Scale half-life with file age so
-   original creators of old files retain meaningful ownership.
-
-9. **Bus-factor fan_in fix** (10.4b) -- Use FileId-based lookup instead of
-   string path matching to fix the path mismatch bug.
 
 **Dependencies**: Existing `impact` command for `statik who`. Existing
 `FileGraph` for fan-in data in `bus-factor`. Git repository required (already
@@ -753,8 +756,8 @@ the merge logic. Cross-language edges are the hardest part.
 | Integration maintenance burden | Medium | Keep integrations thin. CLI is the source of truth. |
 | Git log slow on huge repos | Medium | Incremental indexing + `--history-depth` limit. Opt-in via `--with-history`. Confirmed: 50K commits in ~80s is acceptable. |
 | Author identity fragmentation | Low | Treat name+email as identity for v1. `.mailmap` support later if needed. |
-| Ownership recency overweighting | Medium | Fixed 180-day half-life makes old file creators invisible. Implement adaptive half-life scaling with file age. |
-| Cross-subsystem path formats | Medium | File graph uses absolute paths, git history uses relative. Caused bus-factor fan_in bug. Use FileId-based joins instead of string matching. |
+| Ownership recency overweighting | ~~Medium~~ Resolved | ~~Fixed 180-day half-life makes old file creators invisible.~~ Adaptive half-life mode implemented (default). Scales with file age. |
+| Cross-subsystem path formats | ~~Medium~~ Resolved | ~~File graph uses absolute paths, git history uses relative. Caused bus-factor fan_in bug.~~ Fixed: uses FileId-based joins instead of string matching. |
 
 ---
 

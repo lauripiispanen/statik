@@ -73,7 +73,15 @@ Re-running `index` only re-parses files whose modification time changed. Deleted
 ```
 statik index .
 statik index /path/to/project --format json
+statik index --with-history                          # also index git commit history
+statik index --with-history --history-depth 5000     # limit to last 5000 commits
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Force full re-index (ignore cached data) |
+| `--with-history` | Also index git commit history (authors, file changes). Required for `owners`, `bus-factor`, and `churn` commands |
+| `--history-depth <N>` | Limit history to the last N commits |
 
 ### `statik deps <path>`
 
@@ -627,6 +635,63 @@ statik callers processData --format json
 | Flag | Description |
 |------|-------------|
 | `--file <path>` | Filter callers to a specific file |
+
+### `statik owners <glob>`
+
+Show file ownership based on git history. Requires `statik index --with-history` to have been run first. Uses recency-weighted commit scoring to determine who "owns" each file.
+
+```
+statik owners "src/**"
+statik owners "src/core/**" --top 5
+statik owners "src/**" --half-life 365
+statik owners "src/**" --half-life-mode fixed
+statik owners "src/**" --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--top <N>` | Show only top N owners per file (default: 3) |
+| `--half-life <days>` | Recency half-life in days (default: 180) |
+| `--half-life-mode fixed\|adaptive` | Half-life mode (default: `adaptive`). Adaptive mode scales the half-life with file age so original creators of old files retain meaningful ownership |
+
+### `statik bus-factor [glob]`
+
+Analyze bus factor risk: ownership concentration combined with dependency fan-in. Identifies files where knowledge is concentrated in too few people and that knowledge is critical (many other files depend on them).
+
+```
+statik bus-factor
+statik bus-factor "src/core/**"
+statik bus-factor --threshold 0.2
+statik bus-factor --by-author
+statik bus-factor --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--threshold <0.0-1.0>` | Ownership threshold for counting as a contributor (default: 0.1 = 10%) |
+| `--half-life <days>` | Recency half-life in days (default: 180) |
+| `--half-life-mode fixed\|adaptive` | Half-life mode (default: `adaptive`). Adaptive mode scales the half-life with file age |
+| `--by-author` | Show per-person ownership concentration instead of per-file. Aggregates sole-owned file count, key areas, and total blast radius per author |
+
+### `statik churn [glob]`
+
+Analyze file change frequency and co-change patterns from git history. Identifies hot files (changed frequently) and hidden couplings (files that change together without a direct dependency).
+
+```
+statik churn
+statik churn "src/**"
+statik churn --co-change
+statik churn --co-change --min-co-changes 5
+statik churn --since 2024-01-01
+statik churn --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--co-change` | Switch to co-change analysis mode (find files that change together) |
+| `--since <YYYY-MM-DD>` | Only include changes after this date |
+| `--until <YYYY-MM-DD>` | Only include changes before this date |
+| `--min-co-changes <N>` | Minimum co-change count to report (default: 3) |
 
 ## Global Flags
 
