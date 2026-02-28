@@ -1,5 +1,5 @@
 /target/
-.statik/
+.statik/*
 !.statik/rules.toml
 .claude/
 *.db

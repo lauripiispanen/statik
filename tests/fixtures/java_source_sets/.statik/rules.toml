@@ -1,0 +1,20 @@
+rules = []
+
+[[source_sets]]
+name = "framework"
+roots = ["framework/src/main/java"]
+
+[[source_sets]]
+name = "framework-test"
+roots = ["framework/src/test/java"]
+deps = ["framework"]
+
+[[source_sets]]
+name = "app"
+roots = ["app/src/main/java"]
+deps = ["framework"]
+
+[[source_sets]]
+name = "app-test"
+roots = ["app/src/test/java"]
+deps = ["app", "framework"]
