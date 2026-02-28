@@ -596,31 +596,65 @@ Indexers already exist for all languages statik cares about:
    heuristically and can cross source set boundaries. SCIP knows exactly which
    symbols are used at compile time.
 
-**Architecture**: SCIP ingestion is an optional enrichment layer, not a
-replacement for tree-sitter:
+**Benchmarks** (from external testing on a 2.5M-line multi-module codebase,
+~7K Java files + ~7K C++ translation units):
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| `statik index` (tree-sitter) | 15s cold, 1.6s incremental | No build needed, works from fresh clone |
+| `scip-clang` (C++) | 19s | No build needed — reads `compile_commands.json` directly |
+| `scip-java` (Java, cold) | 49s | Requires JDK + Gradle build (35s compile + 14s convert) |
+| `scip-java` (Java, incremental) | 25s | 10s compile + 15s convert (no incremental convert) |
+| Both SCIP in parallel | ~49s | Wall clock bottlenecked by Java |
+| **Total: tree-sitter + both SCIP** | **~64s** | Full precise cross-language analysis |
+
+Index sizes: Java SCIP = 179MB, C++ SCIP = 33MB. These are ephemeral
+artifacts (CI-generated, pulled by devs), not committed to git.
+
+Key observation: `scip-clang` is the better UX model — no build needed, no
+plugin injection, just point at `compile_commands.json`. `scip-java` requires
+instrumenting the build with a `semanticdb` compiler plugin and has no
+incremental conversion (always reprocesses all files, ~15s floor).
+
+**Architecture**: Two-tier resolution — tree-sitter is always the fast path,
+SCIP is optional enrichment:
 
 ```
-                    ┌─────────────────┐
-                    │  statik index   │  (fast, always available)
-                    │  tree-sitter    │  → file-level graph
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  statik enrich  │  (optional, richer)
-                    │  SCIP ingestion │  → symbol-level graph
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  graph analysis │  (same algorithms)
-                    │  impact, dead,  │  → works on either graph
-                    │  cycles, lint   │
-                    └─────────────────┘
+Fast path (always works, no build, <2s):
+  statik index         → tree-sitter       → file-level graph
+  statik lint          → 2s                 → architecture rules
+
+Precise path (needs build artifacts, ~25-49s):
+  scip-clang ...  &    → reads compile_commands.json
+  scip-java ...   &    → instruments Gradle build
+  wait
+  statik enrich *.scip → merges into SQLite → symbol-level graph
+  statik dead-code     → precise            → Certain confidence
+  statik impact X.java → method-level       → specific symbol blast radius
 ```
 
-Tree-sitter indexing remains the default and works without any external tools.
-`statik enrich <scip-index-file>` imports a SCIP index into the existing
-SQLite database, upgrading heuristic references to precise references. All
-existing graph algorithms work on either data source without modification.
+**Critical design decisions**:
+
+1. **Tree-sitter is always the fast path.** `statik index` and `statik lint`
+   never require a build. Tree-sitter resolution is "good enough" for
+   architectural lint rules (which are file-level anyway).
+
+2. **SCIP data has a timestamp.** When a file's mtime is newer than the SCIP
+   index, statik falls back to tree-sitter resolution for that file. Stale
+   SCIP is worse than no SCIP — it gives false confidence.
+
+3. **SCIP is generated in CI, not locally** (by default). The natural place
+   is the CI build pipeline — the build is already happening, adding SCIP
+   indexing is 30-50% extra time but amortized. CI stores SCIP indexes as
+   artifacts; developers pull them. Local analysis gets precision for free
+   on files they haven't changed. However, the 49s cold / 25s incremental
+   numbers are fast enough that some developers may choose to run SCIP
+   locally when they need precision.
+
+4. **Precision-sensitive commands opt into SCIP.** `statik lint` → always
+   tree-sitter (fast, file-level rules don't need symbol precision).
+   `statik dead-code` / `statik impact` → uses SCIP if available, warns if
+   stale.
 
 **Deliverables**:
 
@@ -628,20 +662,26 @@ existing graph algorithms work on either data source without modification.
    SCIP occurrences/symbols to statik's existing `SymbolId`, `FileId`,
    `Reference` types.
 
-2. **`statik enrich` command** — Import a SCIP index file into the existing
-   database. Merge with tree-sitter data: SCIP references replace heuristic
-   references for files that appear in both; tree-sitter data is retained for
-   files not covered by the SCIP index.
+2. **`statik enrich` command** — Import one or more SCIP index files into the
+   existing database. Merge with tree-sitter data: SCIP references replace
+   heuristic references for files that appear in both; tree-sitter data is
+   retained for files not covered by the SCIP index. Store the SCIP generation
+   timestamp for staleness tracking.
 
-3. **Cross-language edge creation** — When multiple SCIP indexes are imported
+3. **Staleness tracking** — Per-file mtime comparison against the SCIP
+   generation timestamp. When a file is edited after the SCIP index was
+   generated, fall back to tree-sitter for that file. Surface staleness in
+   `statik summary` ("X files enriched, Y stale").
+
+4. **Cross-language edge creation** — When multiple SCIP indexes are imported
    (e.g., one from `scip-java`, one from `scip-clang`), create cross-language
    edges based on shared symbol names or configured boundary mappings.
 
-4. **C++ support via scip-clang** — With SCIP ingestion working, C++ is
+5. **C++ support via scip-clang** — With SCIP ingestion working, C++ is
    automatically supported. No tree-sitter C++ parser needed. Add `Language::Cpp`
    variant and ensure file discovery handles `.cpp`, `.h`, `.hpp`.
 
-5. **Confidence upgrade** — When SCIP data is available for a file, upgrade
+6. **Confidence upgrade** — When SCIP data is available for a file, upgrade
    its references from heuristic confidence to Certain. Reflect this in dead
    code, impact, and lint output.
 
@@ -652,6 +692,18 @@ It only needs the existing database schema and graph infrastructure.
 work is mapping SCIP's symbol scheme to statik's existing types and handling
 the merge logic. Cross-language edges are the hardest part.
 
+**Open questions**:
+
+1. **SCIP ingestion time** — How fast can statik read 179MB + 33MB of SCIP
+   data and merge it into SQLite? This determines whether the workflow feels
+   smooth. Target: <5s for the merge step.
+2. **Index storage** — 212MB total of SCIP indexes. Store in `.statik/`?
+   The SQLite DB after ingestion may be much smaller if statik only stores
+   resolved edges, not the full SCIP data.
+3. **Incremental SCIP conversion** — `scip-java`'s `index-semanticdb` has no
+   incremental mode (~15s floor even for 1-file changes). Worth filing as
+   feedback with Sourcegraph.
+
 **Success Criteria**:
 - `statik enrich java-index.scip` imports a SCIP index and upgrades reference
   precision. Unresolved imports drop by >90%.
@@ -660,18 +712,27 @@ the merge logic. Cross-language edges are the hardest part.
 - C++ files indexed via `scip-clang` appear in the dependency graph alongside
   Java/TS files.
 - All existing commands work unchanged on enriched data.
-- `statik index` (tree-sitter only) performance is unaffected.
+- `statik index` (tree-sitter only) performance is unaffected — the fast path
+  never regresses.
+- Stale SCIP data (file edited after SCIP generation) falls back to
+  tree-sitter automatically.
 
 **Risks & Mitigations**:
-- **SCIP index generation adds build time**: `scip-clang` adds ~30-50% to C++
-  build time. Mitigate: run SCIP indexing in nightly/weekly CI, not on every
-  commit. Statik's own tree-sitter indexing remains instant for per-PR checks.
+- **SCIP index generation adds build time**: Benchmarked at 19s for C++
+  (no build needed) and 49s for Java (requires build). Mitigate: run SCIP
+  indexing in CI and distribute artifacts. The 25s incremental Java number
+  is also acceptable for local use.
 - **SCIP format stability**: SCIP is versioned and maintained by Sourcegraph.
   Pin the protobuf version and update deliberately.
+- **Large SCIP index files**: 179MB for Java on a 7K-file project. Mitigate:
+  store as CI artifacts, not in git. Statik extracts only resolved edges
+  into SQLite, not the full SCIP payload.
 - **Cross-language edge heuristics**: Matching symbols across language
-  boundaries (C++ `LogicFoo::bar()` → Java `Foo.bar()`) requires project-
-  specific configuration. Provide a `[cross_language]` config section for
-  custom mappings rather than attempting automatic detection.
+  boundaries requires project-specific configuration. Provide a
+  `[cross_language]` config section for custom mappings rather than
+  attempting automatic detection.
+- **Java 25 not yet supported by scip-java**: The `semanticdb-javac` plugin
+  requires JDK 21 or earlier. Monitor Sourcegraph releases for updates.
 
 ---
 

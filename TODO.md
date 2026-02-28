@@ -1748,6 +1748,26 @@ indexing; SCIP data upgrades precision when available.
 lint, ownership). SCIP ingestion lets purpose-built indexers handle parsing
 precision while statik focuses on graph intelligence.
 
+**Benchmarks** (from external testing on a 2.5M-line multi-module codebase):
+
+| Operation | Time | Index size |
+|-----------|------|------------|
+| `scip-clang` (7K C++ TUs) | 19s | 33MB |
+| `scip-java` cold (6.7K Java files) | 49s (35s compile + 14s convert) | 179MB |
+| `scip-java` incremental (1 file) | 25s (10s compile + 15s convert) | — |
+| Both in parallel | ~49s (bottleneck: Java) | 212MB total |
+
+Note: `scip-clang` is much simpler — no build needed, just reads
+`compile_commands.json`. `scip-java` requires instrumenting the Gradle build
+with a `semanticdb-javac` plugin and has no incremental conversion mode
+(the `index-semanticdb` step always reprocesses all files, ~15s floor).
+
+**Design principle**: Tree-sitter is always the fast path. `statik index` and
+`statik lint` never require a build. SCIP is generated in CI (where the build
+is already happening) and optionally pulled by developers for local precision.
+When a file's mtime is newer than the SCIP index, statik falls back to
+tree-sitter for that file — stale SCIP is worse than no SCIP.
+
 ### 11.1 SCIP protobuf reader
 **Complexity**: M
 **Prerequisites**: None
@@ -1763,10 +1783,11 @@ Tasks:
 - [ ] Map SCIP symbol names to statik's `SymbolId` scheme
 - [ ] Handle multi-language SCIP indexes (different documents may be different
   languages)
+- [ ] Benchmark: reading a 179MB `.scip` file should complete in <5s
 - [ ] Add tests with a small hand-crafted `.scip` file
 
 **Acceptance**: A `.scip` file can be parsed and its symbols/references
-mapped to statik's type system.
+mapped to statik's type system. A 179MB SCIP index is read in <5s.
 
 ---
 
@@ -1775,34 +1796,63 @@ mapped to statik's type system.
 **Prerequisites**: 11.1
 **Files**: `src/cli/commands.rs`, `src/main.rs`, `src/db/mod.rs`
 
-Import a SCIP index into the existing SQLite database, upgrading heuristic
-tree-sitter references to precise compiler-resolved references.
+Import one or more SCIP indexes into the existing SQLite database, upgrading
+heuristic tree-sitter references to precise compiler-resolved references.
 
 Tasks:
-- [ ] Add `Commands::Enrich` variant with `<scip-file>` argument
+- [ ] Add `Commands::Enrich` variant with `<scip-file>...` argument (accepts
+  multiple files)
 - [ ] Implement merge logic: for files present in both tree-sitter index and
   SCIP index, replace heuristic references with SCIP references
 - [ ] Retain tree-sitter data for files not covered by the SCIP index
 - [ ] Add `enriched: bool` or `source: enum { TreeSitter, Scip }` to reference
   records in the DB
+- [ ] Store the SCIP index generation timestamp for staleness tracking
 - [ ] Update confidence system: SCIP-sourced references get Certain confidence
-- [ ] Support multiple enrichments (e.g., `enrich java.scip` then `enrich
-  cpp.scip`)
+- [ ] Support multiple enrichments (e.g., `enrich java.scip cpp.scip`)
+- [ ] Only store resolved edges in SQLite, not full SCIP payload (keep DB
+  small even when SCIP indexes are large)
+- [ ] Benchmark: ingesting 212MB of SCIP data should complete in <5s
 - [ ] Add tests: enrich resolves previously-unresolved imports
 
 **Acceptance**: `statik enrich project.scip` imports SCIP data. `statik
 dead-code` after enrichment shows fewer unresolved imports and higher
-confidence on more files.
+confidence on more files. Ingestion completes in <5s.
 
 ---
 
-### 11.3 C++ support via scip-clang
+### 11.3 Staleness tracking
+**Complexity**: S
+**Prerequisites**: 11.2
+**Files**: `src/cli/commands.rs`, `src/db/mod.rs`
+
+When a file is edited after the SCIP index was generated, its SCIP data is
+stale. Statik must fall back to tree-sitter for that file automatically.
+
+Tasks:
+- [ ] Store SCIP generation timestamp in DB metadata per enrichment
+- [ ] Per-file mtime comparison: if file mtime > SCIP timestamp, mark that
+  file's SCIP references as stale
+- [ ] Stale files use tree-sitter resolution (same as unenriched files)
+- [ ] Surface staleness in `statik summary`: "X files enriched, Y stale,
+  Z tree-sitter only"
+- [ ] Add `--precise` flag to precision-sensitive commands (`dead-code`,
+  `impact`) that warns if >10% of files have stale SCIP data
+- [ ] Add tests
+
+**Acceptance**: After enriching then editing a file, `statik dead-code` uses
+tree-sitter resolution for the edited file and SCIP for unchanged files.
+
+---
+
+### 11.4 C++ support via scip-clang
 **Complexity**: M
 **Prerequisites**: 11.2
 **Files**: `src/model/mod.rs`, `src/discovery/mod.rs`
 
 With SCIP ingestion working, C++ is automatically supported — no tree-sitter
-C++ parser needed.
+C++ parser needed. `scip-clang` is fast (19s for 7K TUs) and simple (reads
+`compile_commands.json` directly, no build instrumentation needed).
 
 Tasks:
 - [ ] Add `Language::Cpp` variant (and `Language::C`, `Language::Header`)
@@ -1820,18 +1870,19 @@ radius.
 
 ---
 
-### 11.4 Cross-language dependency edges
+### 11.5 Cross-language dependency edges
 **Complexity**: L
 **Prerequisites**: 11.2
 **Files**: `src/model/file_graph.rs`, `src/cli/commands.rs`, new
 `src/linting/config.rs` additions
 
 When multiple SCIP indexes are imported (e.g., Java + C++), create cross-
-language edges based on configured boundary mappings.
+language edges based on configured boundary mappings. This is the highest-
+value feature for mixed-language codebases.
 
 Tasks:
 - [ ] Add `[cross_language]` config section for mapping symbols across
-  language boundaries (e.g., C++ `LogicFoo::bar()` → Java `Foo.bar()`)
+  language boundaries
 - [ ] Auto-detect common cross-language patterns (JNI, gRPC protobuf, shared
   symbol names)
 - [ ] Create `FileImport` edges across language boundaries
@@ -1841,12 +1892,11 @@ Tasks:
   language edges
 
 **Acceptance**: `statik impact SomeFile.cpp` traces through the C++ graph,
-crosses the language boundary, and shows affected Java files. This is the
-"full blast radius across the language boundary" use case.
+crosses the language boundary, and shows affected Java files.
 
 ---
 
-### 11.5 Confidence upgrade for enriched data
+### 11.6 Confidence upgrade for enriched data
 **Complexity**: S
 **Prerequisites**: 11.2
 **Files**: `src/analysis/dead_code.rs`, `src/analysis/impact.rs`
@@ -1880,8 +1930,8 @@ on enriched files. `statik summary` shows enrichment coverage.
 | 6     | 0       | 3       | 2       | 1        | 6           |
 | 7     | 7       | 2       | 0       | 0        | 9           |
 | 10    | 1       | 5       | 0       | 0        | 6           |
-| 11    | 1       | 3       | 1       | 0        | 5           |
-| **Total** | **22** | **33** | **12** | **2** | **71** |
+| 11    | 2       | 3       | 1       | 0        | 6           |
+| **Total** | **23** | **33** | **12** | **2** | **72** |
 
 **Priority guidance**: Phase 2b (advanced lint rules), Phase 7 (agent-friendly
 CLI), and Phase 10 core (10.1-10.5: git history, owners, bus-factor, churn) are
