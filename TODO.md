@@ -1768,16 +1768,24 @@ is already happening) and optionally pulled by developers for local precision.
 When a file's mtime is newer than the SCIP index, statik falls back to
 tree-sitter for that file — stale SCIP is worse than no SCIP.
 
-### 11.1 SCIP protobuf reader
+### 11.1 SCIP index reader
 **Complexity**: M
 **Prerequisites**: None
 **Files**: new `src/scip/mod.rs`, `Cargo.toml`
 
+The official [`scip` crate](https://crates.io/crates/scip) (v0.6.1) provides
+Rust bindings with protobuf types (`Index`, `Document`, `Occurrence`,
+`SymbolInformation`) and utility functions. No need to vendor the schema or
+use `prost` directly.
+
+`scip-clang` is a standalone C++ binary (links Clang/LLVM, builds with Bazel)
+— not embeddable as a library. The integration is: `scip-clang` runs
+externally and produces `index.scip`, which statik reads via the `scip` crate.
+
 Tasks:
-- [ ] Add `prost` dependency for protobuf parsing
-- [ ] Download/vendor the SCIP protobuf schema from sourcegraph/scip
-- [ ] Implement SCIP index reader: parse `.scip` files, extract documents,
-  occurrences, symbol information
+- [ ] Add `scip` crate dependency to `Cargo.toml`
+- [ ] Implement SCIP index reader using the crate's `Index`, `Document`,
+  `Occurrence` types
 - [ ] Map SCIP symbol roles (definition, reference, import) to statik's
   `SymbolKind`, `RefKind`, `ImportRecord` types
 - [ ] Map SCIP symbol names to statik's `SymbolId` scheme

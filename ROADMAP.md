@@ -658,9 +658,12 @@ Precise path (needs build artifacts, ~25-49s):
 
 **Deliverables**:
 
-1. **SCIP protobuf reader** — Parse `.scip` files (protobuf format) and map
-   SCIP occurrences/symbols to statik's existing `SymbolId`, `FileId`,
-   `Reference` types.
+1. **SCIP index reader** — Read `.scip` files using the official
+   [`scip` Rust crate](https://crates.io/crates/scip) (v0.6.1, provides
+   protobuf types and utilities). Map SCIP occurrences/symbols to statik's
+   existing `SymbolId`, `FileId`, `Reference` types. Note: `scip-clang` is a
+   standalone C++ binary (not embeddable) — statik reads its output via the
+   `scip` crate.
 
 2. **`statik enrich` command** — Import one or more SCIP index files into the
    existing database. Merge with tree-sitter data: SCIP references replace
