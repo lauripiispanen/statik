@@ -326,6 +326,30 @@ impl JavaResolver {
         }
         Vec::new()
     }
+
+    /// Resolve a wildcard import, filtering by source set visibility.
+    ///
+    /// Like `resolve_wildcard`, but only returns files that `from_file` is
+    /// allowed to see according to the source set index. When no source set
+    /// index is configured, behaves identically to `resolve_wildcard`.
+    pub fn resolve_wildcard_scoped(&self, package_fqn: &str, from_file: &Path) -> Vec<PathBuf> {
+        if Self::is_likely_external(package_fqn) || package_fqn.starts_with("java.") {
+            return Vec::new();
+        }
+        if let Some(files) = self.package_files.get(package_fqn) {
+            let candidates: Vec<PathBuf> = files.iter().map(|(_, path)| path.clone()).collect();
+            if let Some(ref index) = self.source_set_index {
+                candidates
+                    .into_iter()
+                    .filter(|path| index.can_see(from_file, path))
+                    .collect()
+            } else {
+                candidates
+            }
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 const JAVA_LANG_TYPES: &[&str] = &[
@@ -991,5 +1015,95 @@ mod tests {
             }
             other => panic!("expected Resolved, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // Wildcard import source set scoping tests
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_wildcard_scoped_respects_source_sets() {
+        use crate::resolver::source_sets::{SourceSetConfig, SourceSetIndex};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create framework source set with package com.example
+        let fw_src = root.join("framework/src/main/java/com/example");
+        fs::create_dir_all(&fw_src).unwrap();
+        fs::write(fw_src.join("FwClass.java"), "package com.example;").unwrap();
+
+        // Create app source set with same package com.example
+        let app_src = root.join("app/src/main/java/com/example");
+        fs::create_dir_all(&app_src).unwrap();
+        fs::write(app_src.join("AppClass.java"), "package com.example;").unwrap();
+
+        let known = vec![fw_src.join("FwClass.java"), app_src.join("AppClass.java")];
+
+        let configs = vec![
+            SourceSetConfig {
+                name: "framework".to_string(),
+                roots: vec!["framework/src/main/java".to_string()],
+                deps: vec![],
+            },
+            SourceSetConfig {
+                name: "app".to_string(),
+                roots: vec!["app/src/main/java".to_string()],
+                deps: vec!["framework".to_string()],
+            },
+        ];
+
+        let index = SourceSetIndex::build(&configs, root).unwrap();
+        let mut resolver = JavaResolver::new(root.to_path_buf(), known, None);
+        resolver.set_source_set_index(index);
+
+        // Framework file using wildcard import should NOT see app files
+        let fw_file = fw_src.join("FwClass.java");
+        let fw_results = resolver.resolve_wildcard_scoped("com.example", &fw_file);
+        assert!(
+            fw_results.iter().all(|p| p.starts_with(root.join("framework"))),
+            "Framework wildcard should not include app files, got {:?}",
+            fw_results
+        );
+
+        // App file using wildcard import should see both app and framework files
+        let app_file = app_src.join("AppClass.java");
+        let app_results = resolver.resolve_wildcard_scoped("com.example", &app_file);
+        assert!(
+            app_results.iter().any(|p| p.starts_with(root.join("framework"))),
+            "App wildcard should include framework files"
+        );
+        assert!(
+            app_results.iter().any(|p| p.starts_with(root.join("app"))),
+            "App wildcard should include app files"
+        );
+    }
+
+    #[test]
+    fn test_resolve_wildcard_scoped_no_source_sets() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        let src = root.join("src/main/java/com/example");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("A.java"), "package com.example;").unwrap();
+        fs::write(src.join("B.java"), "package com.example;").unwrap();
+
+        let known = vec![src.join("A.java"), src.join("B.java")];
+        let resolver = JavaResolver::new(root.to_path_buf(), known, None);
+
+        // Without source sets, scoped behaves like unscoped
+        let results = resolver.resolve_wildcard_scoped("com.example", &src.join("A.java"));
+        assert_eq!(results.len(), 2, "Should return all files without source set filtering");
+    }
+
+    #[test]
+    fn test_resolve_wildcard_scoped_external_package() {
+        let (dir, known_files) = setup_maven_project();
+        let resolver = JavaResolver::new(dir.path().to_path_buf(), known_files, None);
+
+        let from_file = dir.path().join("src/main/java/com/example/App.java");
+        let results = resolver.resolve_wildcard_scoped("java.util", &from_file);
+        assert!(results.is_empty(), "External packages should return empty");
     }
 }

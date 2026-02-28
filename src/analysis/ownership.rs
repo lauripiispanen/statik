@@ -93,6 +93,55 @@ pub fn compute_ownership(
     scores
 }
 
+/// Half-life mode for ownership scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfLifeMode {
+    /// Fixed half-life (the `half_life_days` parameter is used directly).
+    Fixed,
+    /// Adaptive half-life: scales with file age so old-file creators retain
+    /// meaningful ownership.
+    ///
+    /// `effective_half_life = max(half_life_days, file_age_days * 0.25)`
+    Adaptive,
+}
+
+/// Compute ownership with adaptive half-life that scales with file age.
+///
+/// For young files (age < 4 * half_life_days), this behaves identically to
+/// `compute_ownership`. For older files the half-life grows proportionally,
+/// preventing the original creator's contribution from decaying to zero.
+pub fn compute_ownership_adaptive(
+    commits: &[CommitRecord],
+    now_timestamp: i64,
+    base_half_life_days: f64,
+) -> Vec<OwnershipScore> {
+    if commits.is_empty() {
+        return Vec::new();
+    }
+
+    // File age = time since earliest commit
+    let earliest_timestamp = commits.iter().map(|c| c.timestamp).min().unwrap_or(now_timestamp);
+    let file_age_days = ((now_timestamp - earliest_timestamp) as f64) / 86400.0;
+
+    // Adaptive half-life: scale with file age, minimum = base_half_life_days
+    let half_life = (file_age_days * 0.25).max(base_half_life_days);
+
+    compute_ownership(commits, now_timestamp, half_life)
+}
+
+/// Dispatch to the correct ownership computation based on `HalfLifeMode`.
+fn compute_ownership_with_mode(
+    commits: &[CommitRecord],
+    now_timestamp: i64,
+    half_life_days: f64,
+    mode: HalfLifeMode,
+) -> Vec<OwnershipScore> {
+    match mode {
+        HalfLifeMode::Fixed => compute_ownership(commits, now_timestamp, half_life_days),
+        HalfLifeMode::Adaptive => compute_ownership_adaptive(commits, now_timestamp, half_life_days),
+    }
+}
+
 /// Compute ownership for a single file from the database.
 pub fn compute_file_ownership(
     db: &Database,
@@ -139,6 +188,7 @@ pub fn compute_owners(
     glob_pattern: Option<&str>,
     top: usize,
     half_life_days: f64,
+    mode: HalfLifeMode,
 ) -> anyhow::Result<OwnersResult> {
     let all_file_commits = db.get_all_file_commits()
         .context("Failed to load commit history")?;
@@ -189,7 +239,7 @@ pub fn compute_owners(
         }
 
         let commits = &by_file[path];
-        let mut owners = compute_ownership(commits, now_timestamp, half_life_days);
+        let mut owners = compute_ownership_with_mode(commits, now_timestamp, half_life_days, mode);
 
         for owner in &owners {
             all_authors.insert(owner.author_email.clone());
@@ -237,6 +287,29 @@ pub struct BusFactorResult {
     pub count: usize,
 }
 
+/// Per-author bus factor entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorBusFactorEntry {
+    pub author_name: String,
+    pub author_email: String,
+    /// Number of files where this person is sole owner (above sole-owner threshold).
+    pub sole_owned_files: usize,
+    /// Total files this person has touched.
+    pub total_files: usize,
+    /// Sum of fan_in for their sole-owned files (total blast radius).
+    pub total_blast_radius: usize,
+    /// Top directories they solely own (up to 5).
+    pub key_areas: Vec<String>,
+}
+
+/// Result of the `bus-factor --by-author` command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorBusFactorResult {
+    pub command: String,
+    pub authors: Vec<AuthorBusFactorEntry>,
+    pub count: usize,
+}
+
 /// Count how many authors hold at least `threshold` percentage of ownership.
 ///
 /// `threshold` is in the range 0.0-1.0 (e.g., 0.1 = 10%).
@@ -255,6 +328,8 @@ pub fn compute_bus_factor_analysis(
     glob_pattern: Option<&str>,
     threshold: f64,
     half_life_days: f64,
+    project_root: &std::path::Path,
+    mode: HalfLifeMode,
 ) -> anyhow::Result<BusFactorResult> {
     let all_file_commits = db
         .get_all_file_commits()
@@ -286,35 +361,16 @@ pub fn compute_bus_factor_analysis(
         None => None,
     };
 
-    // Build path-to-fan-in lookup from the file graph.
-    // File graph uses absolute paths; commit history uses relative paths.
-    // We store both the full path and attempt suffix matching for lookups.
-    let mut fan_in_by_path: std::collections::HashMap<String, usize> =
+    // Build relative-path-to-FileId lookup from the file graph.
+    // File graph stores absolute paths; commit history stores relative paths.
+    // By stripping the project root, we can match them directly.
+    let mut rel_path_to_id: std::collections::HashMap<String, crate::model::FileId> =
         std::collections::HashMap::new();
     for (_, info) in graph.all_files() {
-        let full_path = info.path.to_string_lossy().to_string();
-        let importers = graph.direct_importers(info.id);
-        let fan_in = importers.len();
-        fan_in_by_path.insert(full_path, fan_in);
+        if let Ok(rel) = info.path.strip_prefix(project_root) {
+            rel_path_to_id.insert(rel.to_string_lossy().to_string(), info.id);
+        }
     }
-
-    // Build a suffix-match lookup: for each commit history path (relative),
-    // find the matching file graph entry (absolute) by checking if any
-    // absolute path ends with the relative path.
-    let fan_in_suffix_lookup = |rel_path: &str| -> usize {
-        // Direct match first
-        if let Some(&val) = fan_in_by_path.get(rel_path) {
-            return val;
-        }
-        // Suffix match: check if any absolute path ends with /rel_path
-        let suffix = format!("/{}", rel_path);
-        for (abs_path, &fan_in) in &fan_in_by_path {
-            if abs_path.ends_with(&suffix) {
-                return fan_in;
-            }
-        }
-        0
-    };
 
     let now_timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -334,14 +390,17 @@ pub fn compute_bus_factor_analysis(
         }
 
         let commits = &by_file[path];
-        let owners = compute_ownership(commits, now_timestamp, half_life_days);
+        let owners = compute_ownership_with_mode(commits, now_timestamp, half_life_days, mode);
 
         if owners.is_empty() {
             continue;
         }
 
         let bus_factor = compute_bus_factor(&owners, threshold);
-        let fan_in = fan_in_suffix_lookup(path);
+        let fan_in = rel_path_to_id
+            .get(path)
+            .map(|id| graph.direct_importers(*id).len())
+            .unwrap_or(0);
         let risk_score = if bus_factor > 0 {
             fan_in as f64 / bus_factor as f64
         } else {
@@ -368,6 +427,170 @@ pub fn compute_bus_factor_analysis(
     Ok(BusFactorResult {
         command: "bus-factor".to_string(),
         files: entries,
+        count,
+    })
+}
+
+/// Sole-owner threshold: 80% ownership.
+const SOLE_OWNER_THRESHOLD: f64 = 80.0;
+
+/// Compute per-person bus factor view.
+///
+/// For each author, counts:
+/// - Files they solely own (primary owner with > 80% ownership)
+/// - Total files they have touched
+/// - Total blast radius (sum of fan_in for sole-owned files)
+/// - Key areas (top directories by sole-owned file count)
+pub fn compute_bus_factor_by_author(
+    db: &Database,
+    graph: &crate::model::file_graph::FileGraph,
+    project_root: &std::path::Path,
+    glob_pattern: Option<&str>,
+    half_life_days: f64,
+    mode: HalfLifeMode,
+) -> anyhow::Result<AuthorBusFactorResult> {
+    let all_file_commits = db
+        .get_all_file_commits()
+        .context("Failed to load commit history")?;
+
+    if all_file_commits.is_empty() {
+        let count = db.commit_count()?;
+        if count == 0 {
+            anyhow::bail!(
+                "No commit history found. Run `statik index --with-history` first."
+            );
+        }
+    }
+
+    // Group commits by file path
+    let mut by_file: std::collections::HashMap<String, Vec<CommitRecord>> =
+        std::collections::HashMap::new();
+    for (path, commit) in all_file_commits {
+        by_file.entry(path).or_default().push(commit);
+    }
+
+    // Apply glob filter
+    let glob_matcher = match glob_pattern {
+        Some(pattern) => Some(
+            globset::Glob::new(pattern)
+                .with_context(|| format!("Invalid glob pattern: {}", pattern))?
+                .compile_matcher(),
+        ),
+        None => None,
+    };
+
+    // Build relative-path-to-FileId lookup
+    let mut rel_path_to_id: std::collections::HashMap<String, crate::model::FileId> =
+        std::collections::HashMap::new();
+    for (_, info) in graph.all_files() {
+        if let Ok(rel) = info.path.strip_prefix(project_root) {
+            rel_path_to_id.insert(rel.to_string_lossy().to_string(), info.id);
+        }
+    }
+
+    let now_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Track per-author data
+    // Key: author_email
+    struct AuthorData {
+        name: String,
+        sole_owned: Vec<(String, usize)>, // (path, fan_in)
+        total_files: usize,
+    }
+    let mut authors: std::collections::HashMap<String, AuthorData> =
+        std::collections::HashMap::new();
+
+    for (path, commits) in &by_file {
+        if let Some(ref matcher) = glob_matcher {
+            if !matcher.is_match(path) {
+                continue;
+            }
+        }
+
+        let owners = compute_ownership_with_mode(commits, now_timestamp, half_life_days, mode);
+        if owners.is_empty() {
+            continue;
+        }
+
+        // Track total_files for all authors who touched this file
+        for owner in &owners {
+            let entry = authors
+                .entry(owner.author_email.clone())
+                .or_insert_with(|| AuthorData {
+                    name: owner.author_name.clone(),
+                    sole_owned: Vec::new(),
+                    total_files: 0,
+                });
+            entry.total_files += 1;
+        }
+
+        // Check if primary owner is a sole owner (> 80% ownership)
+        if owners[0].score > SOLE_OWNER_THRESHOLD {
+            let fan_in = rel_path_to_id
+                .get(path)
+                .map(|id| graph.direct_importers(*id).len())
+                .unwrap_or(0);
+
+            let entry = authors
+                .entry(owners[0].author_email.clone())
+                .or_insert_with(|| AuthorData {
+                    name: owners[0].author_name.clone(),
+                    sole_owned: Vec::new(),
+                    total_files: 0,
+                });
+            entry.sole_owned.push((path.clone(), fan_in));
+        }
+    }
+
+    // Build result entries
+    let mut result_authors: Vec<AuthorBusFactorEntry> = authors
+        .into_iter()
+        .filter(|(_, data)| !data.sole_owned.is_empty())
+        .map(|(email, data)| {
+            let sole_owned_files = data.sole_owned.len();
+            let total_blast_radius: usize = data.sole_owned.iter().map(|(_, fi)| fi).sum();
+
+            // Extract key areas: parent directory of each sole-owned file, top 5 by count
+            let mut dir_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (path, _) in &data.sole_owned {
+                let dir = std::path::Path::new(path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !dir.is_empty() {
+                    *dir_counts.entry(dir).or_default() += 1;
+                }
+            }
+            let mut sorted_dirs: Vec<(String, usize)> = dir_counts.into_iter().collect();
+            sorted_dirs.sort_by(|a, b| b.1.cmp(&a.1));
+            let key_areas: Vec<String> = sorted_dirs
+                .into_iter()
+                .take(5)
+                .map(|(dir, _)| dir)
+                .collect();
+
+            AuthorBusFactorEntry {
+                author_name: data.name,
+                author_email: email,
+                sole_owned_files,
+                total_files: data.total_files,
+                total_blast_radius,
+                key_areas,
+            }
+        })
+        .collect();
+
+    // Sort by sole_owned_files descending
+    result_authors.sort_by(|a, b| b.sole_owned_files.cmp(&a.sole_owned_files));
+
+    let count = result_authors.len();
+    Ok(AuthorBusFactorResult {
+        command: "bus-factor".to_string(),
+        authors: result_authors,
         count,
     })
 }
@@ -619,5 +842,294 @@ mod tests {
     #[test]
     fn test_bus_factor_empty() {
         assert_eq!(compute_bus_factor(&[], 0.1), 0);
+    }
+
+    #[test]
+    fn test_bus_factor_analysis_fan_in_with_path_mismatch() {
+        use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
+        use crate::model::{FileId, Language};
+        use std::path::PathBuf;
+
+        let db = Database::in_memory().unwrap();
+        let now = 1700000000;
+
+        // Project root simulating a multi-module project
+        let project_root = PathBuf::from("/project");
+
+        // Commit history uses relative paths (as git log returns)
+        db.insert_commit("sha1", "Alice", "alice@example.com", now)
+            .unwrap();
+        db.insert_file_commit("module/src/main/java/com/example/Foo.java", "sha1", 100, 0)
+            .unwrap();
+        db.insert_file_commit("module/src/main/java/com/example/Bar.java", "sha1", 50, 0)
+            .unwrap();
+
+        // File graph uses absolute paths
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/module/src/main/java/com/example/Foo.java"),
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("/project/module/src/main/java/com/example/Bar.java"),
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // Bar imports Foo -> Foo has fan_in = 1
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(1),
+            imported_names: vec!["Foo".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        let result = compute_bus_factor_analysis(
+            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+        )
+        .unwrap();
+
+        // Find Foo.java in results — it should have fan_in = 1
+        let foo_entry = result
+            .files
+            .iter()
+            .find(|e| e.path.contains("Foo.java"))
+            .expect("Foo.java should be in results");
+        assert_eq!(
+            foo_entry.fan_in, 1,
+            "Foo.java should have fan_in=1 (imported by Bar.java), got {}",
+            foo_entry.fan_in
+        );
+        assert!(
+            foo_entry.risk_score > 0.0,
+            "risk_score should be > 0 when fan_in > 0, got {}",
+            foo_entry.risk_score
+        );
+    }
+
+    #[test]
+    fn test_adaptive_half_life_old_file_creator_retains_ownership() {
+        let now = 1700000000;
+        let eight_years_ago = now - 8 * 365 * 86400;
+        let one_year_ago = now - 365 * 86400;
+
+        // Alice created the file 8 years ago with substantial work
+        // Bob made a trivial edit 1 year ago
+        let commits = vec![
+            make_commit("sha1", "Alice", "alice@example.com", eight_years_ago, 90, 0),
+            make_commit("sha2", "Bob", "bob@example.com", one_year_ago, 3, 2),
+        ];
+
+        // With fixed half-life (180 days), Alice's contribution decays to near-zero
+        let fixed_scores = compute_ownership(&commits, now, 180.0);
+        let alice_fixed = fixed_scores.iter().find(|s| s.author_name == "Alice").unwrap();
+        assert!(
+            alice_fixed.score < 1.0,
+            "With fixed 180d half-life, Alice should be < 1%, got {:.2}%",
+            alice_fixed.score
+        );
+
+        // With adaptive half-life, Alice retains meaningful ownership
+        let adaptive_scores = compute_ownership_adaptive(&commits, now, 180.0);
+        let alice_adaptive = adaptive_scores.iter().find(|s| s.author_name == "Alice").unwrap();
+        assert!(
+            alice_adaptive.score > 10.0,
+            "With adaptive half-life, Alice should retain > 10% ownership, got {:.2}%",
+            alice_adaptive.score
+        );
+    }
+
+    #[test]
+    fn test_adaptive_young_file_same_as_fixed() {
+        let now = 1700000000;
+        let thirty_days_ago = now - 30 * 86400;
+
+        // File younger than 4 * 180 days -> adaptive = fixed
+        let commits = vec![
+            make_commit("sha1", "Alice", "alice@example.com", thirty_days_ago, 50, 0),
+            make_commit("sha2", "Bob", "bob@example.com", now, 10, 0),
+        ];
+
+        let fixed_scores = compute_ownership(&commits, now, 180.0);
+        let adaptive_scores = compute_ownership_adaptive(&commits, now, 180.0);
+
+        // File age = 30 days, adaptive half-life = max(180, 30*0.25) = 180
+        // So they should be identical
+        assert_eq!(fixed_scores.len(), adaptive_scores.len());
+        for (f, a) in fixed_scores.iter().zip(adaptive_scores.iter()) {
+            assert!(
+                (f.score - a.score).abs() < 0.01,
+                "Young file: fixed ({:.2}%) and adaptive ({:.2}%) should match",
+                f.score,
+                a.score
+            );
+        }
+    }
+
+    #[test]
+    fn test_adaptive_vs_fixed_difference() {
+        let now = 1700000000;
+        let four_years_ago = now - 4 * 365 * 86400;
+        let six_months_ago = now - 180 * 86400;
+
+        // File created 4 years ago, recent edit
+        let commits = vec![
+            make_commit("sha1", "Creator", "creator@example.com", four_years_ago, 80, 0),
+            make_commit("sha2", "Tweaker", "tweaker@example.com", six_months_ago, 5, 0),
+        ];
+
+        let fixed_scores = compute_ownership(&commits, now, 180.0);
+        let adaptive_scores = compute_ownership_adaptive(&commits, now, 180.0);
+
+        let creator_fixed = fixed_scores.iter().find(|s| s.author_name == "Creator").unwrap();
+        let creator_adaptive = adaptive_scores.iter().find(|s| s.author_name == "Creator").unwrap();
+
+        // Adaptive should give creator significantly more than fixed
+        assert!(
+            creator_adaptive.score > creator_fixed.score,
+            "Adaptive should give creator more ownership: adaptive={:.2}% vs fixed={:.2}%",
+            creator_adaptive.score,
+            creator_fixed.score
+        );
+    }
+
+    #[test]
+    fn test_bus_factor_by_author() {
+        use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
+        use crate::model::{FileId, Language};
+        use std::path::PathBuf;
+
+        let db = Database::in_memory().unwrap();
+        let now = 1700000000;
+        let project_root = PathBuf::from("/project");
+
+        // Alice is sole owner of 2 files, Bob is sole owner of 1 file
+        // Charlie shared ownership with Alice on one file
+        db.insert_commit("sha1", "Alice", "alice@example.com", now)
+            .unwrap();
+        db.insert_commit("sha2", "Bob", "bob@example.com", now)
+            .unwrap();
+        db.insert_commit("sha3", "Charlie", "charlie@example.com", now)
+            .unwrap();
+
+        // File 1: Alice sole owner (100% ownership)
+        db.insert_file_commit("src/core/auth.rs", "sha1", 100, 0)
+            .unwrap();
+        // File 2: Alice sole owner (100% ownership)
+        db.insert_file_commit("src/core/db.rs", "sha1", 80, 0)
+            .unwrap();
+        // File 3: Bob sole owner (100% ownership)
+        db.insert_file_commit("src/api/handler.rs", "sha2", 60, 0)
+            .unwrap();
+        // File 4: Alice + Charlie shared (equal ownership)
+        db.insert_file_commit("src/models/user.rs", "sha1", 50, 0)
+            .unwrap();
+        db.insert_file_commit("src/models/user.rs", "sha3", 50, 0)
+            .unwrap();
+
+        // Build file graph with import edges
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/core/auth.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("/project/src/core/db.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(3),
+            path: PathBuf::from("/project/src/api/handler.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(4),
+            path: PathBuf::from("/project/src/models/user.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+
+        // handler imports auth (auth has fan_in = 1)
+        graph.add_import(FileImport {
+            from: FileId(3),
+            to: FileId(1),
+            imported_names: vec!["auth".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+        // handler imports db (db has fan_in = 1)
+        graph.add_import(FileImport {
+            from: FileId(3),
+            to: FileId(2),
+            imported_names: vec!["db".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 2,
+        });
+
+        let result = compute_bus_factor_by_author(
+            &db, &graph, &project_root, None, 180.0, HalfLifeMode::Fixed,
+        )
+        .unwrap();
+
+        // Alice should have 2 sole-owned files, Bob should have 1
+        let alice = result
+            .authors
+            .iter()
+            .find(|a| a.author_email == "alice@example.com")
+            .expect("Alice should be in results");
+        assert_eq!(
+            alice.sole_owned_files, 2,
+            "Alice should solely own 2 files, got {}",
+            alice.sole_owned_files
+        );
+        assert_eq!(
+            alice.total_blast_radius, 2,
+            "Alice's blast radius should be 2 (auth fan_in=1 + db fan_in=1), got {}",
+            alice.total_blast_radius
+        );
+        assert!(
+            alice.key_areas.contains(&"src/core".to_string()),
+            "Alice's key areas should include src/core, got {:?}",
+            alice.key_areas
+        );
+
+        let bob = result
+            .authors
+            .iter()
+            .find(|a| a.author_email == "bob@example.com")
+            .expect("Bob should be in results");
+        assert_eq!(bob.sole_owned_files, 1);
+
+        // Charlie should NOT appear (no sole-owned files, shared user.rs with Alice)
+        let charlie = result
+            .authors
+            .iter()
+            .find(|a| a.author_email == "charlie@example.com");
+        assert!(
+            charlie.is_none(),
+            "Charlie should not appear (no sole-owned files)"
+        );
+
+        // Result should be sorted by sole_owned_files descending
+        assert_eq!(result.authors[0].author_email, "alice@example.com");
+        assert_eq!(result.authors[1].author_email, "bob@example.com");
     }
 }

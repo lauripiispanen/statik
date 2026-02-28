@@ -1435,6 +1435,7 @@ pub fn run_bus_factor(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    half_life_mode: crate::analysis::ownership::HalfLifeMode,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
@@ -1447,6 +1448,8 @@ pub fn run_bus_factor(
         glob_pattern,
         threshold,
         half_life_days,
+        project_path,
+        half_life_mode,
     )?;
 
     // Apply display_path to file paths
@@ -1484,6 +1487,68 @@ fn format_bus_factor_text(result: &crate::analysis::ownership::BusFactorResult) 
     out
 }
 
+/// Run the `bus-factor --by-author` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_bus_factor_by_author(
+    project_path: &Path,
+    glob_pattern: Option<&str>,
+    half_life_days: f64,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+    half_life_mode: crate::analysis::ownership::HalfLifeMode,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    let result = crate::analysis::ownership::compute_bus_factor_by_author(
+        &db,
+        &graph,
+        project_path,
+        glob_pattern,
+        half_life_days,
+        half_life_mode,
+    )?;
+
+    Ok(match format {
+        OutputFormat::Text => format_bus_factor_by_author_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Format per-author bus factor result as human-readable text.
+fn format_bus_factor_by_author_text(
+    result: &crate::analysis::ownership::AuthorBusFactorResult,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Bus Factor: Per-Person View ({} people)\n\n",
+        result.count
+    ));
+    out.push_str(&format!(
+        "  {:<12} {:<6} {:<14} {:<30} {}\n",
+        "Sole-owned", "Total", "Blast radius", "Author", "Key areas"
+    ));
+    out.push_str(&format!("  {}\n", "-".repeat(100)));
+
+    for entry in &result.authors {
+        let areas = entry.key_areas.join(", ");
+        out.push_str(&format!(
+            "  {:<12} {:<6} {:<14} {:<30} {}\n",
+            entry.sole_owned_files,
+            entry.total_files,
+            entry.total_blast_radius,
+            entry.author_email,
+            areas,
+        ));
+    }
+
+    out
+}
+
 /// Run the `owners` command.
 pub fn run_owners(
     project_path: &Path,
@@ -1492,6 +1557,7 @@ pub fn run_owners(
     half_life_days: f64,
     format: &OutputFormat,
     no_index: bool,
+    half_life_mode: crate::analysis::ownership::HalfLifeMode,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
 
@@ -1500,6 +1566,7 @@ pub fn run_owners(
         Some(glob_pattern),
         top,
         half_life_days,
+        half_life_mode,
     )?;
 
     // Apply display_path to file paths for relative display

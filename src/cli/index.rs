@@ -91,10 +91,16 @@ pub fn run_index(
         .map(|(_, f)| f.id)
         .collect();
 
-    // Parse files in parallel
+    // Parse files in parallel, skipping languages without parsers
     let registry = ParserRegistry::with_defaults();
 
-    let parse_results: Vec<(FileId, Language, String, Result<ParseResult>)> = files_to_parse
+    // Partition files into parseable and skipped (no parser for language)
+    let (parseable, skipped): (Vec<_>, Vec<_>) = files_to_parse
+        .iter()
+        .partition(|(_, df)| registry.parser_for(df.language).is_some());
+    let files_skipped_no_parser = skipped.len();
+
+    let parse_results: Vec<(FileId, Language, String, Result<ParseResult>)> = parseable
         .par_iter()
         .map(|(file_id, df)| {
             let source = std::fs::read_to_string(&df.path)
@@ -197,6 +203,7 @@ pub fn run_index(
         symbols_extracted: total_symbols,
         references_found: total_references,
         parse_errors,
+        files_skipped_no_parser,
         duration_ms: duration.as_millis(),
     })
 }
@@ -289,5 +296,6 @@ pub struct IndexResult {
     pub symbols_extracted: usize,
     pub references_found: usize,
     pub parse_errors: Vec<String>,
+    pub files_skipped_no_parser: usize,
     pub duration_ms: u128,
 }

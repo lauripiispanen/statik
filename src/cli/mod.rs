@@ -219,6 +219,12 @@ pub enum Commands {
         /// Recency half-life in days (default: 180)
         #[arg(long, default_value = "180")]
         half_life: f64,
+        /// Half-life mode: fixed or adaptive (default: adaptive)
+        #[arg(long, default_value = "adaptive")]
+        half_life_mode: HalfLifeModeCli,
+        /// Show per-person ownership concentration instead of per-file
+        #[arg(long)]
+        by_author: bool,
     },
 
     /// Show file ownership based on git history
@@ -231,6 +237,9 @@ pub enum Commands {
         /// Recency half-life in days (default: 180)
         #[arg(long, default_value = "180")]
         half_life: f64,
+        /// Half-life mode: fixed or adaptive (default: adaptive)
+        #[arg(long, default_value = "adaptive")]
+        half_life_mode: HalfLifeModeCli,
     },
 
     /// Analyze file change frequency and co-change patterns
@@ -271,4 +280,23 @@ pub enum OutputFormat {
     Json,
     Compact,
     Csv,
+}
+
+/// CLI enum for half-life mode selection.
+#[derive(Clone, ValueEnum)]
+pub enum HalfLifeModeCli {
+    /// Fixed half-life (original behavior)
+    Fixed,
+    /// Adaptive half-life that scales with file age
+    Adaptive,
+}
+
+impl HalfLifeModeCli {
+    /// Convert to the analysis-layer enum.
+    pub fn to_analysis_mode(&self) -> crate::analysis::ownership::HalfLifeMode {
+        match self {
+            HalfLifeModeCli::Fixed => crate::analysis::ownership::HalfLifeMode::Fixed,
+            HalfLifeModeCli::Adaptive => crate::analysis::ownership::HalfLifeMode::Adaptive,
+        }
+    }
 }

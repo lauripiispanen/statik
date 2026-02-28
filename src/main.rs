@@ -67,6 +67,13 @@ fn main() -> Result<()> {
             );
             emit_output(&output, command_name, &post_opts);
 
+            if result.files_skipped_no_parser > 0 {
+                eprintln!(
+                    "Skipped {} files (no parser for language)",
+                    result.files_skipped_no_parser
+                );
+            }
+
             if !result.parse_errors.is_empty() {
                 eprintln!("\nParse errors:");
                 for err in &result.parse_errors {
@@ -304,17 +311,33 @@ fn main() -> Result<()> {
             ref glob,
             threshold,
             half_life,
+            ref half_life_mode,
+            by_author,
         } => {
-            let output = commands::run_bus_factor(
-                &project_path,
-                glob.as_deref(),
-                threshold,
-                half_life,
-                format,
-                cli.no_index,
-                cli.runtime_only,
-                path_glob,
-            )?;
+            let output = if by_author {
+                commands::run_bus_factor_by_author(
+                    &project_path,
+                    glob.as_deref(),
+                    half_life,
+                    format,
+                    cli.no_index,
+                    cli.runtime_only,
+                    path_glob,
+                    half_life_mode.to_analysis_mode(),
+                )?
+            } else {
+                commands::run_bus_factor(
+                    &project_path,
+                    glob.as_deref(),
+                    threshold,
+                    half_life,
+                    format,
+                    cli.no_index,
+                    cli.runtime_only,
+                    path_glob,
+                    half_life_mode.to_analysis_mode(),
+                )?
+            };
             emit_output(&output, command_name, &post_opts);
         }
 
@@ -322,6 +345,7 @@ fn main() -> Result<()> {
             ref glob,
             top,
             half_life,
+            ref half_life_mode,
         } => {
             let output = commands::run_owners(
                 &project_path,
@@ -330,6 +354,7 @@ fn main() -> Result<()> {
                 half_life,
                 format,
                 cli.no_index,
+                half_life_mode.to_analysis_mode(),
             )?;
             emit_output(&output, command_name, &post_opts);
         }

@@ -155,7 +155,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                     java_resolver.resolve_type_ref(type_name, &file.path)
                 } else if import.is_namespace && lang == Language::Java {
                     // Wildcard import: resolve to all files in the package
-                    let files = java_resolver.resolve_wildcard(&import.source_path);
+                    let files = java_resolver.resolve_wildcard_scoped(&import.source_path, &file.path);
                     if files.is_empty() {
                         if JavaResolver::is_likely_external(&import.source_path) {
                             let pkg = import
