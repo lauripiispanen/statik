@@ -53,10 +53,8 @@ pub fn resolve_intra_file_refs(
         .collect();
 
     // Build source -> parent lookup
-    let sym_parent: HashMap<SymbolId, Option<SymbolId>> = symbols
-        .iter()
-        .map(|s| (s.id, s.parent))
-        .collect();
+    let sym_parent: HashMap<SymbolId, Option<SymbolId>> =
+        symbols.iter().map(|s| (s.id, s.parent)).collect();
 
     // Resolve references with placeholder targets
     for (i, reference) in references.iter_mut().enumerate() {
@@ -66,10 +64,13 @@ pub fn resolve_intra_file_refs(
                 let qualifier = ref_qualifiers.get(i).and_then(|q| q.as_deref());
                 if let Some(qualifier_name) = qualifier {
                     // Find the qualifier symbol (e.g. the struct/class named "Foo")
-                    let qualifier_id = unique_name_to_id.get(qualifier_name).copied()
-                        .or_else(|| {
+                    let qualifier_id =
+                        unique_name_to_id.get(qualifier_name).copied().or_else(|| {
                             // Qualifier might itself be ambiguous — find any symbol with that name
-                            symbols.iter().find(|s| s.name == qualifier_name).map(|s| s.id)
+                            symbols
+                                .iter()
+                                .find(|s| s.name == qualifier_name)
+                                .map(|s| s.id)
                         });
                     if let Some(qid) = qualifier_id {
                         // Look for (target_name, qualifier_as_parent)
@@ -96,12 +97,8 @@ pub fn resolve_intra_file_refs(
                     }
                     Some(None) => {
                         // Ambiguous: try scoped resolution via source parent
-                        let source_parent = sym_parent
-                            .get(&reference.source)
-                            .copied()
-                            .flatten();
-                        if let Some(candidates) =
-                            scoped.get(&(target_name.as_str(), source_parent))
+                        let source_parent = sym_parent.get(&reference.source).copied().flatten();
+                        if let Some(candidates) = scoped.get(&(target_name.as_str(), source_parent))
                         {
                             if candidates.len() == 1 {
                                 // Scoped resolution succeeds: exactly one candidate in same parent

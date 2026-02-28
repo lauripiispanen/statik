@@ -420,11 +420,7 @@ pub fn evaluate_rules(
                         let file_names: Vec<String> = cycle
                             .files
                             .iter()
-                            .map(|f| {
-                                to_relative(&f.path, project_root)
-                                    .display()
-                                    .to_string()
-                            })
+                            .map(|f| to_relative(&f.path, project_root).display().to_string())
                             .collect();
 
                         all_violations.push(LintViolation {
@@ -465,9 +461,7 @@ pub fn evaluate_rules(
                         .unwrap_or(0);
                     let fan_in = graph
                         .imported_by_edges(*file_id)
-                        .map(|edges| {
-                            edges.iter().map(|e| e.from).collect::<HashSet<_>>().len()
-                        })
+                        .map(|edges| edges.iter().map(|e| e.from).collect::<HashSet<_>>().len())
                         .unwrap_or(0);
 
                     let total = fan_in + fan_out;
@@ -483,9 +477,7 @@ pub fn evaluate_rules(
                             severity: rule_def.severity,
                             description: format!(
                                 "{} (instability {:.2} exceeds limit {:.2})",
-                                rule_def.description,
-                                instability,
-                                stability_config.max_instability,
+                                rule_def.description, instability, stability_config.max_instability,
                             ),
                             rationale: rule_def.rationale.clone(),
                             source_file: file_rel.to_path_buf(),
@@ -683,8 +675,7 @@ pub fn evaluate_rules(
                         continue;
                     }
 
-                    let external_ratio =
-                        (total_edges - internal_edges) as f64 / total_edges as f64;
+                    let external_ratio = (total_edges - internal_edges) as f64 / total_edges as f64;
 
                     if external_ratio > cohesion_config.max_external_ratio {
                         all_violations.push(LintViolation {
@@ -760,9 +751,7 @@ pub fn evaluate_rules(
                                     severity: rule_def.severity,
                                     description: format!(
                                         "{} (tag '{}' must not depend on tag '{}')",
-                                        rule_def.description,
-                                        tag_config.from_tag,
-                                        deny_tag,
+                                        rule_def.description, tag_config.from_tag, deny_tag,
                                     ),
                                     rationale: rule_def.rationale.clone(),
                                     source_file: source_rel.to_path_buf(),
@@ -826,9 +815,8 @@ fn severity_order(s: Severity) -> u8 {
 mod tests {
     use super::*;
     use crate::linting::config::{
-        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig,
-        ImportRestrictionRuleConfig, LayerDefinition, LayerRuleConfig, RuleDefinition,
-        TagBoundaryRuleConfig,
+        BoundaryRuleConfig, ContainmentRuleConfig, FanLimitRuleConfig, ImportRestrictionRuleConfig,
+        LayerDefinition, LayerRuleConfig, RuleDefinition, TagBoundaryRuleConfig,
     };
     use crate::model::file_graph::{FileImport, FileInfo};
     use crate::model::{FileId, Language};
@@ -996,7 +984,10 @@ mod tests {
         graph.add_file(make_file(2, "src/db/connection.ts"));
         graph.add_import(make_edge(1, 2, &["x"], 1));
 
-        let config = LintConfig { rules: vec![], ..Default::default() };
+        let config = LintConfig {
+            rules: vec![],
+            ..Default::default()
+        };
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
         assert!(result.violations.is_empty());
         assert_eq!(result.rules_evaluated, 0);

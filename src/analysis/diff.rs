@@ -345,8 +345,7 @@ fn compare_snapshots_inner(
                         // File no longer exists in new graph (was removed) ->
                         // check old graph to see if the file had importers
                         // that still exist in new graph
-                        if let (Some(g_before), Some(ref ptib)) =
-                            (graph_before, &path_to_id_before)
+                        if let (Some(g_before), Some(ref ptib)) = (graph_before, &path_to_id_before)
                         {
                             if let Some(&old_file_id) = ptib.get(&change.file_path) {
                                 let mut importers = Vec::new();
@@ -391,12 +390,11 @@ fn compare_snapshots_inner(
     });
 
     // Import edge comparison (only when graphs are provided)
-    let import_edge_changes =
-        if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
-            compute_import_edge_changes(g_before, g_after)
-        } else {
-            Vec::new()
-        };
+    let import_edge_changes = if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
+        compute_import_edge_changes(g_before, g_after)
+    } else {
+        Vec::new()
+    };
 
     let breaking_changes = changes
         .iter()
@@ -420,12 +418,11 @@ fn compare_snapshots_inner(
         .count();
 
     // Cycle comparison (only when graphs are provided)
-    let cycle_changes =
-        if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
-            compute_cycle_changes(g_before, g_after)
-        } else {
-            Vec::new()
-        };
+    let cycle_changes = if let (Some(g_before), Some(g_after)) = (graph_before, graph_after) {
+        compute_cycle_changes(g_before, g_after)
+    } else {
+        Vec::new()
+    };
     let cycles_introduced = cycle_changes
         .iter()
         .filter(|c| c.change == CycleChangeKind::Introduced)
@@ -556,16 +553,10 @@ fn compute_cycle_changes(graph_before: &FileGraph, graph_after: &FileGraph) -> V
     let cycles_before = detect_cycles(&before_for_cycles);
     let cycles_after = detect_cycles(&after_for_cycles);
 
-    let normalized_before: HashSet<BTreeSet<PathBuf>> = cycles_before
-        .cycles
-        .iter()
-        .map(normalize_cycle)
-        .collect();
-    let normalized_after: HashSet<BTreeSet<PathBuf>> = cycles_after
-        .cycles
-        .iter()
-        .map(normalize_cycle)
-        .collect();
+    let normalized_before: HashSet<BTreeSet<PathBuf>> =
+        cycles_before.cycles.iter().map(normalize_cycle).collect();
+    let normalized_after: HashSet<BTreeSet<PathBuf>> =
+        cycles_after.cycles.iter().map(normalize_cycle).collect();
 
     let mut changes = Vec::new();
 
@@ -597,9 +588,7 @@ fn compute_cycle_changes(graph_before: &FileGraph, graph_after: &FileGraph) -> V
     changes.sort_by(|a, b| {
         let kind_ord = match (&a.change, &b.change) {
             (CycleChangeKind::Introduced, CycleChangeKind::Resolved) => std::cmp::Ordering::Less,
-            (CycleChangeKind::Resolved, CycleChangeKind::Introduced) => {
-                std::cmp::Ordering::Greater
-            }
+            (CycleChangeKind::Resolved, CycleChangeKind::Introduced) => std::cmp::Ordering::Greater,
             _ => std::cmp::Ordering::Equal,
         };
         kind_ord.then_with(|| a.files.cmp(&b.files))
@@ -1037,8 +1026,7 @@ mod tests {
         graph_after.add_import(make_edge(1, 3, &["x"]));
         graph_after.add_import(make_edge(2, 3, &["y"]));
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert_eq!(result.import_edge_changes.len(), 2);
         // Should be sorted by from_path: a.ts before z.ts
@@ -1078,7 +1066,10 @@ mod tests {
             span: Span { start: 0, end: 10 },
             line_span: LineSpan {
                 start: Position { line: 1, column: 0 },
-                end: Position { line: 1, column: 10 },
+                end: Position {
+                    line: 1,
+                    column: 10,
+                },
             },
             parent: None,
             visibility: Visibility::Public,
@@ -1321,17 +1312,17 @@ mod tests {
         graph_after.add_import(make_edge(1, 2, &["x"]));
         graph_after.add_import(make_edge(2, 1, &["y"])); // introduces cycle
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert_eq!(result.cycle_changes.len(), 1);
-        assert_eq!(
-            result.cycle_changes[0].change,
-            CycleChangeKind::Introduced
-        );
+        assert_eq!(result.cycle_changes[0].change, CycleChangeKind::Introduced);
         assert_eq!(result.cycle_changes[0].length, 2);
-        assert!(result.cycle_changes[0].files.contains(&PathBuf::from("a.ts")));
-        assert!(result.cycle_changes[0].files.contains(&PathBuf::from("b.ts")));
+        assert!(result.cycle_changes[0]
+            .files
+            .contains(&PathBuf::from("a.ts")));
+        assert!(result.cycle_changes[0]
+            .files
+            .contains(&PathBuf::from("b.ts")));
         assert_eq!(result.summary.cycles_introduced, 1);
         assert_eq!(result.summary.cycles_resolved, 0);
     }
@@ -1353,8 +1344,7 @@ mod tests {
         graph_after.add_file(make_file_info(2, "b.ts"));
         graph_after.add_import(make_edge(1, 2, &["x"]));
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert_eq!(result.cycle_changes.len(), 1);
         assert_eq!(result.cycle_changes[0].change, CycleChangeKind::Resolved);
@@ -1380,8 +1370,7 @@ mod tests {
         graph_after.add_import(make_edge(1, 2, &["x"]));
         graph_after.add_import(make_edge(2, 1, &["y"]));
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert!(result.cycle_changes.is_empty());
         assert_eq!(result.summary.cycles_introduced, 0);
@@ -1411,8 +1400,7 @@ mod tests {
         graph_after.add_import(make_edge(3, 4, &["z"]));
         graph_after.add_import(make_edge(4, 3, &["w"])); // new cycle c<->d
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert_eq!(result.cycle_changes.len(), 2);
         assert_eq!(result.summary.cycles_introduced, 1);
@@ -1460,8 +1448,7 @@ mod tests {
         graph_after.add_import(make_edge(1, 2, &["x"]));
         graph_after.add_import(make_edge(2, 1, &["y"]));
 
-        let result =
-            compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
+        let result = compare_snapshots_with_graphs(&db, &db, &graph_before, &graph_after).unwrap();
 
         assert_eq!(result.cycle_changes.len(), 1);
         // Files should be sorted: a.ts before z.ts

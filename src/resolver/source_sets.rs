@@ -58,12 +58,7 @@ impl SourceSetIndex {
         // Build adjacency list for dep graph
         let dep_graph: HashMap<&str, Vec<&str>> = configs
             .iter()
-            .map(|c| {
-                (
-                    c.name.as_str(),
-                    c.deps.iter().map(|d| d.as_str()).collect(),
-                )
-            })
+            .map(|c| (c.name.as_str(), c.deps.iter().map(|d| d.as_str()).collect()))
             .collect();
 
         // Detect cycles using DFS
@@ -242,7 +237,10 @@ deps = ["framework"]
         let wrapper: Wrapper = toml::from_str(toml).unwrap();
         assert_eq!(wrapper.source_sets.len(), 2);
         assert_eq!(wrapper.source_sets[0].name, "framework");
-        assert_eq!(wrapper.source_sets[0].roots, vec!["framework/src/main/java"]);
+        assert_eq!(
+            wrapper.source_sets[0].roots,
+            vec!["framework/src/main/java"]
+        );
         assert!(wrapper.source_sets[0].deps.is_empty());
         assert_eq!(wrapper.source_sets[1].name, "app");
         assert_eq!(wrapper.source_sets[1].deps, vec!["framework"]);
@@ -347,7 +345,11 @@ deps = ["other"]
 
         let configs = vec![
             make_config("framework", &["framework/src"], &[]),
-            make_config("framework-test", &["framework/src/test/java"], &["framework"]),
+            make_config(
+                "framework-test",
+                &["framework/src/test/java"],
+                &["framework"],
+            ),
         ];
 
         let index = SourceSetIndex::build(&configs, root).unwrap();
@@ -510,12 +512,12 @@ deps = ["other"]
                 &["framework/src/test/java"],
                 &["framework"],
             ),
-            make_config("app", &["app/src/main/java", "app/src/java"], &["framework"]),
             make_config(
-                "app-test",
-                &["app/src/test/java"],
-                &["app", "framework"],
+                "app",
+                &["app/src/main/java", "app/src/java"],
+                &["framework"],
             ),
+            make_config("app-test", &["app/src/test/java"], &["app", "framework"]),
         ];
 
         let index = SourceSetIndex::build(&configs, root).unwrap();
@@ -633,7 +635,13 @@ deps = ["other"]
         let (_dir, mut graph, index) = make_graph_with_source_sets();
 
         // Add a second framework file
-        let root = graph.get_file(FileId(1)).unwrap().path.parent().unwrap().to_path_buf();
+        let root = graph
+            .get_file(FileId(1))
+            .unwrap()
+            .path
+            .parent()
+            .unwrap()
+            .to_path_buf();
         graph.add_file(FileInfo {
             id: FileId(4),
             path: root.join("Other.java"),

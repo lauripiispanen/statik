@@ -266,7 +266,10 @@ impl Database {
         self.conn
             .execute(
                 "UPDATE files SET path = SUBSTR(path, ?1) WHERE path LIKE ?2",
-                params![prefix_with_slash.len() as i64 + 1, format!("{}%", prefix_with_slash)],
+                params![
+                    prefix_with_slash.len() as i64 + 1,
+                    format!("{}%", prefix_with_slash)
+                ],
             )
             .context("failed to relativize file paths")?;
         Ok(())
@@ -693,17 +696,19 @@ impl Database {
 
         let commits = records
             .into_iter()
-            .map(|(sha, name, email, ts, added, removed)| crate::git::CommitRecord {
-                sha,
-                author_name: name,
-                author_email: email,
-                timestamp: ts,
-                files: vec![crate::git::FileChange {
-                    path: file_path.to_string(),
-                    lines_added: added as u64,
-                    lines_removed: removed as u64,
-                }],
-            })
+            .map(
+                |(sha, name, email, ts, added, removed)| crate::git::CommitRecord {
+                    sha,
+                    author_name: name,
+                    author_email: email,
+                    timestamp: ts,
+                    files: vec![crate::git::FileChange {
+                        path: file_path.to_string(),
+                        lines_added: added as u64,
+                        lines_removed: removed as u64,
+                    }],
+                },
+            )
             .collect();
 
         Ok(commits)
@@ -736,24 +741,22 @@ impl Database {
 
         let pairs = records
             .into_iter()
-            .map(
-                |(path, sha, name, email, ts, added, removed)| {
-                    (
-                        path.clone(),
-                        crate::git::CommitRecord {
-                            sha,
-                            author_name: name,
-                            author_email: email,
-                            timestamp: ts,
-                            files: vec![crate::git::FileChange {
-                                path,
-                                lines_added: added as u64,
-                                lines_removed: removed as u64,
-                            }],
-                        },
-                    )
-                },
-            )
+            .map(|(path, sha, name, email, ts, added, removed)| {
+                (
+                    path.clone(),
+                    crate::git::CommitRecord {
+                        sha,
+                        author_name: name,
+                        author_email: email,
+                        timestamp: ts,
+                        files: vec![crate::git::FileChange {
+                            path,
+                            lines_added: added as u64,
+                            lines_removed: removed as u64,
+                        }],
+                    },
+                )
+            })
             .collect();
 
         Ok(pairs)
@@ -1457,8 +1460,7 @@ mod tests {
             .unwrap();
         db.insert_file_commit("src/main.rs", "abc123", 10, 2)
             .unwrap();
-        db.insert_file_commit("src/lib.rs", "abc123", 5, 0)
-            .unwrap();
+        db.insert_file_commit("src/lib.rs", "abc123", 5, 0).unwrap();
 
         let commits = db.get_commits_for_file("src/main.rs").unwrap();
         assert_eq!(commits.len(), 1);
@@ -1531,10 +1533,8 @@ mod tests {
         db.insert_commit("sha2", "Bob", "bob@example.com", 1700001000)
             .unwrap();
 
-        db.insert_file_commit("src/main.rs", "sha1", 10, 2)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha2", 3, 1)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 10, 2).unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 3, 1).unwrap();
 
         let commits = db.get_commits_for_file("src/main.rs").unwrap();
         assert_eq!(commits.len(), 2);

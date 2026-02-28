@@ -196,7 +196,9 @@ impl JavaResolver {
         self.file_wildcards = imports
             .iter()
             .filter(|i| i.is_namespace && !i.source_path.starts_with('@'))
-            .filter(|i| Self::is_likely_external(&i.source_path) || i.source_path.starts_with("java."))
+            .filter(|i| {
+                Self::is_likely_external(&i.source_path) || i.source_path.starts_with("java.")
+            })
             .map(|i| i.source_path.clone())
             .collect();
     }
@@ -879,7 +881,10 @@ mod tests {
         resolver.set_file_wildcards(&imports);
 
         // Only java.util should be in file_wildcards
-        let result = resolver.resolve_type_ref("SomeUnknownType", &dir.path().join("src/main/java/com/example/App.java"));
+        let result = resolver.resolve_type_ref(
+            "SomeUnknownType",
+            &dir.path().join("src/main/java/com/example/App.java"),
+        );
         match result {
             Resolution::External(pkg) => {
                 assert_eq!(pkg, "java.util", "Should resolve via java.util wildcard");
@@ -1061,7 +1066,9 @@ mod tests {
         let fw_file = fw_src.join("FwClass.java");
         let fw_results = resolver.resolve_wildcard_scoped("com.example", &fw_file);
         assert!(
-            fw_results.iter().all(|p| p.starts_with(root.join("framework"))),
+            fw_results
+                .iter()
+                .all(|p| p.starts_with(root.join("framework"))),
             "Framework wildcard should not include app files, got {:?}",
             fw_results
         );
@@ -1070,7 +1077,9 @@ mod tests {
         let app_file = app_src.join("AppClass.java");
         let app_results = resolver.resolve_wildcard_scoped("com.example", &app_file);
         assert!(
-            app_results.iter().any(|p| p.starts_with(root.join("framework"))),
+            app_results
+                .iter()
+                .any(|p| p.starts_with(root.join("framework"))),
             "App wildcard should include framework files"
         );
         assert!(
@@ -1094,7 +1103,11 @@ mod tests {
 
         // Without source sets, scoped behaves like unscoped
         let results = resolver.resolve_wildcard_scoped("com.example", &src.join("A.java"));
-        assert_eq!(results.len(), 2, "Should return all files without source set filtering");
+        assert_eq!(
+            results.len(),
+            2,
+            "Should return all files without source set filtering"
+        );
     }
 
     #[test]

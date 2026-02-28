@@ -44,8 +44,10 @@ pub fn resolve_git_ref(project_root: &Path, ref_str: &str) -> Result<String> {
 /// Uses `git archive <ref> | tar -x -C <target>` to extract the full tree
 /// without checking out (avoids modifying the working tree).
 pub fn export_tree_at_ref(project_root: &Path, git_ref: &str, target_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(target_dir)
-        .context(format!("Failed to create target dir: {}", target_dir.display()))?;
+    std::fs::create_dir_all(target_dir).context(format!(
+        "Failed to create target dir: {}",
+        target_dir.display()
+    ))?;
 
     let mut git_archive = Command::new("git")
         .args(["archive", "--format=tar", git_ref])
@@ -62,7 +64,9 @@ pub fn export_tree_at_ref(project_root: &Path, git_ref: &str, target_dir: &Path)
         .context("Failed to run tar")?;
 
     // Reap the git archive child process to avoid zombies
-    git_archive.wait().context("Failed to wait for git archive")?;
+    git_archive
+        .wait()
+        .context("Failed to wait for git archive")?;
 
     if !tar_output.status.success() {
         let stderr = String::from_utf8_lossy(&tar_output.stderr);
@@ -77,11 +81,7 @@ pub fn export_tree_at_ref(project_root: &Path, git_ref: &str, target_dir: &Path)
 }
 
 /// Get the list of files changed between two git refs.
-pub fn changed_files_between(
-    project_root: &Path,
-    ref1: &str,
-    ref2: &str,
-) -> Result<Vec<String>> {
+pub fn changed_files_between(project_root: &Path, ref1: &str, ref2: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["diff", "--name-only", ref1, ref2])
         .current_dir(project_root)
@@ -209,7 +209,10 @@ fn parse_git_log_numstat(output: &str) -> Result<Vec<CommitRecord>> {
 
         // Try to parse as a commit header line (SHA|name|email|timestamp)
         let parts: Vec<&str> = line.splitn(4, '|').collect();
-        if parts.len() == 4 && parts[0].len() == 40 && parts[0].chars().all(|c| c.is_ascii_hexdigit()) {
+        if parts.len() == 4
+            && parts[0].len() == 40
+            && parts[0].chars().all(|c| c.is_ascii_hexdigit())
+        {
             // Save previous commit if any
             if let Some(commit) = current_commit.take() {
                 commits.push(commit);

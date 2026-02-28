@@ -213,10 +213,7 @@ impl FileGraph {
 
         // Copy only matching files
         for info in self.files.values() {
-            let rel = info
-                .path
-                .strip_prefix(project_root)
-                .unwrap_or(&info.path);
+            let rel = info.path.strip_prefix(project_root).unwrap_or(&info.path);
             if matcher.is_match(rel) {
                 new_graph.add_file(info.clone());
             }
@@ -275,9 +272,9 @@ impl FileGraph {
 
     /// Check if a file has unresolved imports.
     pub fn has_unresolved_imports(&self, file: FileId) -> bool {
-        self.unresolved.iter().any(|u| {
-            u.file == file && !matches!(u.reason, UnresolvedReason::External(_))
-        })
+        self.unresolved
+            .iter()
+            .any(|u| u.file == file && !matches!(u.reason, UnresolvedReason::External(_)))
     }
 
     /// Count unresolved imports for a file (excludes External).

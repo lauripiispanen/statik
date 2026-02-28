@@ -84,7 +84,10 @@ fn test_index_skips_unsupported_languages_silently() {
         ("vendored/lib.py", "def hello(): pass"),
         ("vendored/main.go", "package main\nfunc main() {}"),
         ("vendored/util.c", "#include <stdio.h>"),
-        ("vendored/CMakeLists.txt", "cmake_minimum_required(VERSION 3.10)"),
+        (
+            "vendored/CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.10)",
+        ),
     ];
     for (rel_path, content) in &unsupported_files {
         let full_path = tmp.path().join(rel_path);
@@ -196,8 +199,16 @@ fn test_dead_code_detects_orphan() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Json, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "both",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -219,8 +230,16 @@ fn test_dead_code_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "both", &OutputFormat::Text, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "both",
+        &OutputFormat::Text,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     assert!(
         output.contains("orphan.ts"),
@@ -401,8 +420,17 @@ fn test_lint_detects_boundary_violation() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Json, true, None, false).unwrap();
+    let (output, has_errors) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Json,
+        true,
+        None,
+        false,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -432,8 +460,17 @@ fn test_lint_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, _) =
-        commands::run_lint(tmp.path(), None, None, "info", &OutputFormat::Text, true, None, false).unwrap();
+    let (output, _) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "info",
+        &OutputFormat::Text,
+        true,
+        None,
+        false,
+    )
+    .unwrap();
 
     assert!(
         output.contains("error[no-ui-to-db]"),
@@ -451,8 +488,17 @@ fn test_lint_severity_threshold_filters() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let (output, has_errors) =
-        commands::run_lint(tmp.path(), None, None, "warning", &OutputFormat::Json, true, None, false).unwrap();
+    let (output, has_errors) = commands::run_lint(
+        tmp.path(),
+        None,
+        None,
+        "warning",
+        &OutputFormat::Json,
+        true,
+        None,
+        false,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let violations = json["violations"].as_array().unwrap();
@@ -505,8 +551,16 @@ fn test_barrel_file_dead_code_through_reexports() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "exports", &OutputFormat::Json, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "exports",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_exports = json["dead_exports"].as_array().unwrap();
     let dead_names: Vec<(&str, &str)> = dead_exports
@@ -603,9 +657,16 @@ fn test_dead_code_symbols_cross_file_linking() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "symbols", &OutputFormat::Json, true, false, None, None)
-            .unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "symbols",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total = json["summary"]["total_symbols"].as_u64().unwrap();
@@ -617,11 +678,7 @@ fn test_dead_code_symbols_cross_file_linking() {
         "Should have symbols in the project, got {}",
         total
     );
-    assert!(
-        entry > 0,
-        "Should have entry point symbols, got {}",
-        entry
-    );
+    assert!(entry > 0, "Should have entry point symbols, got {}", entry);
 
     // The dead symbol count should be less than total (some should be alive)
     assert!(

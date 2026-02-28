@@ -955,7 +955,10 @@ pattern = ["src/**"]
         match &config.rules[0].rule {
             RuleKind::CyclePolicy(c) => {
                 assert_eq!(c.max_cycle_length, 0);
-                assert_eq!(c.pattern.as_deref(), Some(vec!["src/**".to_string()].as_slice()));
+                assert_eq!(
+                    c.pattern.as_deref(),
+                    Some(vec!["src/**".to_string()].as_slice())
+                );
             }
             other => panic!("Expected CyclePolicy rule, got {:?}", other),
         }

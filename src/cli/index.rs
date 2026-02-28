@@ -232,11 +232,7 @@ pub fn run_history_index(
         db.get_last_indexed_commit_sha()?
     };
 
-    let commits = crate::git::git_log_numstat(
-        project_path,
-        since_sha.as_deref(),
-        max_commits,
-    )?;
+    let commits = crate::git::git_log_numstat(project_path, since_sha.as_deref(), max_commits)?;
 
     if commits.is_empty() {
         return Ok(HistoryResult {

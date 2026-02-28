@@ -263,8 +263,7 @@ fn test_monorepo_summary_low_unresolved() {
     let tmp = setup_monorepo();
     index_monorepo(tmp.path());
 
-    let output =
-        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();

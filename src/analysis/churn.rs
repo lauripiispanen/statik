@@ -77,9 +77,7 @@ pub fn compute_churn(
     if all_file_commits.is_empty() {
         let count = db.commit_count()?;
         if count == 0 {
-            anyhow::bail!(
-                "No commit history found. Run `statik index --with-history` first."
-            );
+            anyhow::bail!("No commit history found. Run `statik index --with-history` first.");
         }
     }
 
@@ -193,9 +191,7 @@ pub fn compute_co_changes(
     if all_file_commits.is_empty() {
         let count = db.commit_count()?;
         if count == 0 {
-            anyhow::bail!(
-                "No commit history found. Run `statik index --with-history` first."
-            );
+            anyhow::bail!("No commit history found. Run `statik index --with-history` first.");
         }
     }
 
@@ -416,14 +412,10 @@ mod tests {
         db.insert_commit("sha3", "Alice", "alice@example.com", now - 86400 * 2)
             .unwrap();
 
-        db.insert_file_commit("src/main.rs", "sha1", 10, 2)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha2", 5, 1)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha3", 3, 0)
-            .unwrap();
-        db.insert_file_commit("src/lib.rs", "sha1", 20, 0)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 10, 2).unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 5, 1).unwrap();
+        db.insert_file_commit("src/main.rs", "sha3", 3, 0).unwrap();
+        db.insert_file_commit("src/lib.rs", "sha1", 20, 0).unwrap();
 
         let result = compute_churn(&db, None, None, None).unwrap();
         assert_eq!(result.count, 2);
@@ -444,8 +436,7 @@ mod tests {
 
         db.insert_commit("sha1", "Alice", "alice@example.com", now)
             .unwrap();
-        db.insert_file_commit("src/main.rs", "sha1", 10, 0)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 10, 0).unwrap();
         db.insert_file_commit("tests/test.rs", "sha1", 5, 0)
             .unwrap();
 
@@ -464,10 +455,8 @@ mod tests {
             .unwrap();
         db.insert_commit("sha2", "Bob", "bob@example.com", old)
             .unwrap();
-        db.insert_file_commit("src/main.rs", "sha1", 10, 0)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha2", 5, 0)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 10, 0).unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 5, 0).unwrap();
 
         // Only recent commits (since 30 days ago)
         let since = now - 86400 * 30;
@@ -519,13 +508,10 @@ mod tests {
             .unwrap();
         db.insert_commit("sha3", "Alice", "alice@example.com", now - 86400 * 2)
             .unwrap();
-        db.insert_file_commit("src/main.rs", "sha1", 10, 0)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 10, 0).unwrap();
         db.insert_file_commit("src/lib.rs", "sha1", 5, 0).unwrap();
-        db.insert_file_commit("src/main.rs", "sha2", 3, 0)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha3", 2, 0)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 3, 0).unwrap();
+        db.insert_file_commit("src/main.rs", "sha3", 2, 0).unwrap();
         db.insert_file_commit("src/lib.rs", "sha3", 1, 0).unwrap();
 
         // Build a minimal graph with no import edges

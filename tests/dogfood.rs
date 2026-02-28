@@ -20,8 +20,16 @@ fn test_dogfood_dead_symbols_cross_file_linking() {
     statik::cli::index::run_index(&root, &config, false).unwrap();
 
     // Run symbol-level dead code analysis
-    let output =
-        commands::run_dead_code(&root, "symbols", &OutputFormat::Json, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        &root,
+        "symbols",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total = json["summary"]["total_symbols"].as_u64().unwrap();
@@ -44,11 +52,7 @@ fn test_dogfood_dead_symbols_cross_file_linking() {
         "Should have a substantial number of symbols, got {}",
         total
     );
-    assert!(
-        entry > 0,
-        "Should have entry point symbols, got {}",
-        entry
-    );
+    assert!(entry > 0, "Should have entry point symbols, got {}", entry);
     assert!(
         resolved > 100,
         "Should have many resolved references (including cross-file), got {}",

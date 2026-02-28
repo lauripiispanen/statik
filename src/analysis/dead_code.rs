@@ -193,8 +193,7 @@ pub fn detect_dead_code(
                         for name in &edge.imported_names {
                             if name == file_stem {
                                 for export in &target_info.exports {
-                                    imported_names
-                                        .insert((edge.to, export.exported_name.clone()));
+                                    imported_names.insert((edge.to, export.exported_name.clone()));
                                 }
                             }
                         }
@@ -477,7 +476,6 @@ pub fn detect_dead_symbols(
     }
 
     let cross_file_edges = linker_targets.len();
-
 
     // BFS from entry points through intra-file references to find all reachable symbols
     let mut reachable = symbol_graph.reachable_from(&entry_symbols);
@@ -1403,7 +1401,8 @@ mod tests {
         });
         sym_graph.add_parse_result(result);
 
-        let dead_result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
+        let dead_result =
+            detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
 
         // dead_fn should be dead (private, never referenced)
         let dead_names: Vec<&str> = dead_result
@@ -1750,7 +1749,12 @@ mod tests {
             unresolved: 3,
             references: vec![],
         };
-        let result2 = detect_dead_symbols(&sym_graph, &file_graph, &linker_with_unresolved, &HashSet::new());
+        let result2 = detect_dead_symbols(
+            &sym_graph,
+            &file_graph,
+            &linker_with_unresolved,
+            &HashSet::new(),
+        );
         assert_eq!(result2.confidence, Confidence::Medium);
         assert_eq!(result2.summary.unresolved_references, 3);
         assert!(!result2.limitations.is_empty());
@@ -1816,9 +1820,21 @@ mod tests {
         sym_graph.add_file(make_file_record(1, "src/index.ts"));
 
         // Trait with two methods: one default impl, one signature-only
-        let mut method1 = make_sym(2, "default_method", SymbolKind::Method, 1, Visibility::Public);
+        let mut method1 = make_sym(
+            2,
+            "default_method",
+            SymbolKind::Method,
+            1,
+            Visibility::Public,
+        );
         method1.parent = Some(SymbolId(1));
-        let mut method2 = make_sym(3, "required_method", SymbolKind::Method, 1, Visibility::Public);
+        let mut method2 = make_sym(
+            3,
+            "required_method",
+            SymbolKind::Method,
+            1,
+            Visibility::Public,
+        );
         method2.parent = Some(SymbolId(1));
 
         sym_graph.add_parse_result(ParseResult {
@@ -1837,12 +1853,22 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
         // Trait is alive (public in entry file), so both methods should be alive
         assert!(!dead_names.contains(&"MyTrait"), "MyTrait should be alive");
-        assert!(!dead_names.contains(&"default_method"), "default_method should be alive when trait is alive");
-        assert!(!dead_names.contains(&"required_method"), "required_method should be alive when trait is alive");
+        assert!(
+            !dead_names.contains(&"default_method"),
+            "default_method should be alive when trait is alive"
+        );
+        assert!(
+            !dead_names.contains(&"required_method"),
+            "required_method should be alive when trait is alive"
+        );
     }
 
     #[test]
@@ -1861,9 +1887,13 @@ mod tests {
 
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(1),
-            symbols: vec![
-                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-            ],
+            symbols: vec![make_sym(
+                1,
+                "main",
+                SymbolKind::Function,
+                1,
+                Visibility::Public,
+            )],
             references: vec![],
             imports: vec![],
             exports: vec![],
@@ -1872,13 +1902,25 @@ mod tests {
         });
 
         // Unreachable trait in non-entry file — no linker reference targets it
-        let mut method = make_sym(12, "trait_method", SymbolKind::Method, 2, Visibility::Public);
+        let mut method = make_sym(
+            12,
+            "trait_method",
+            SymbolKind::Method,
+            2,
+            Visibility::Public,
+        );
         method.parent = Some(SymbolId(11));
 
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(2),
             symbols: vec![
-                make_sym(11, "DeadTrait", SymbolKind::Interface, 2, Visibility::Public),
+                make_sym(
+                    11,
+                    "DeadTrait",
+                    SymbolKind::Interface,
+                    2,
+                    Visibility::Public,
+                ),
                 method,
             ],
             references: vec![],
@@ -1889,10 +1931,20 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(dead_names.contains(&"DeadTrait"), "DeadTrait should be dead");
-        assert!(dead_names.contains(&"trait_method"), "trait_method should be dead when trait is dead");
+        assert!(
+            dead_names.contains(&"DeadTrait"),
+            "DeadTrait should be dead"
+        );
+        assert!(
+            dead_names.contains(&"trait_method"),
+            "trait_method should be dead when trait is dead"
+        );
     }
 
     #[test]
@@ -1928,10 +1980,20 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(!dead_names.contains(&"do_thing"), "do_thing should be alive (called by main)");
-        assert!(!dead_names.contains(&"MyStruct"), "MyStruct should be alive (child is alive)");
+        assert!(
+            !dead_names.contains(&"do_thing"),
+            "do_thing should be alive (called by main)"
+        );
+        assert!(
+            !dead_names.contains(&"MyStruct"),
+            "MyStruct should be alive (child is alive)"
+        );
     }
 
     #[test]
@@ -1969,11 +2031,24 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(!dead_names.contains(&"do_thing"), "do_thing should be alive");
-        assert!(!dead_names.contains(&"MyStruct"), "MyStruct should be alive (child is alive)");
-        assert!(!dead_names.contains(&"my_mod"), "my_mod should be alive (grandchild is alive)");
+        assert!(
+            !dead_names.contains(&"do_thing"),
+            "do_thing should be alive"
+        );
+        assert!(
+            !dead_names.contains(&"MyStruct"),
+            "MyStruct should be alive (child is alive)"
+        );
+        assert!(
+            !dead_names.contains(&"my_mod"),
+            "my_mod should be alive (grandchild is alive)"
+        );
     }
 
     #[test]
@@ -1991,9 +2066,13 @@ mod tests {
 
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(1),
-            symbols: vec![
-                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-            ],
+            symbols: vec![make_sym(
+                1,
+                "main",
+                SymbolKind::Function,
+                1,
+                Visibility::Public,
+            )],
             references: vec![],
             imports: vec![],
             exports: vec![],
@@ -2008,7 +2087,13 @@ mod tests {
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(2),
             symbols: vec![
-                make_sym(11, "UnusedStruct", SymbolKind::Struct, 2, Visibility::Public),
+                make_sym(
+                    11,
+                    "UnusedStruct",
+                    SymbolKind::Struct,
+                    2,
+                    Visibility::Public,
+                ),
                 method,
             ],
             references: vec![],
@@ -2019,10 +2104,20 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(dead_names.contains(&"UnusedStruct"), "UnusedStruct should be dead");
-        assert!(dead_names.contains(&"dead_method"), "dead_method should be dead");
+        assert!(
+            dead_names.contains(&"UnusedStruct"),
+            "UnusedStruct should be dead"
+        );
+        assert!(
+            dead_names.contains(&"dead_method"),
+            "dead_method should be dead"
+        );
     }
 
     #[test]
@@ -2050,10 +2145,17 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
         // Module symbols should never appear in dead_symbols results
-        assert!(!dead_names.contains(&"my_mod"), "Module symbols should be excluded from dead reporting");
+        assert!(
+            !dead_names.contains(&"my_mod"),
+            "Module symbols should be excluded from dead reporting"
+        );
     }
 
     #[test]
@@ -2137,7 +2239,11 @@ mod tests {
         assert!(
             result.dead_files.is_empty(),
             "seed_all files should not be reported dead, got: {:?}",
-            result.dead_files.iter().map(|f| &f.path).collect::<Vec<_>>()
+            result
+                .dead_files
+                .iter()
+                .map(|f| &f.path)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2179,7 +2285,11 @@ mod tests {
         assert!(
             result.dead_files.is_empty(),
             "files imported by seed_all files should be reachable, got dead: {:?}",
-            result.dead_files.iter().map(|f| &f.path).collect::<Vec<_>>()
+            result
+                .dead_files
+                .iter()
+                .map(|f| &f.path)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2211,9 +2321,16 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(!dead_names.contains(&"MY_CONST"), "MY_CONST should be alive (referenced by main)");
+        assert!(
+            !dead_names.contains(&"MY_CONST"),
+            "MY_CONST should be alive (referenced by main)"
+        );
     }
 
     #[test]
@@ -2231,7 +2348,13 @@ mod tests {
             file_id: FileId(1),
             symbols: vec![
                 make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                make_sym(2, "UNUSED_CONST", SymbolKind::Constant, 1, Visibility::Private),
+                make_sym(
+                    2,
+                    "UNUSED_CONST",
+                    SymbolKind::Constant,
+                    1,
+                    Visibility::Private,
+                ),
             ],
             references: vec![], // no references to UNUSED_CONST
             imports: vec![],
@@ -2241,9 +2364,16 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(dead_names.contains(&"UNUSED_CONST"), "UNUSED_CONST should be dead (no references)");
+        assert!(
+            dead_names.contains(&"UNUSED_CONST"),
+            "UNUSED_CONST should be dead (no references)"
+        );
     }
 
     #[test]
@@ -2404,11 +2534,7 @@ mod tests {
         let result = detect_dead_symbols(&sym_graph, &file_graph, &linker_result, &HashSet::new());
 
         let skip_kinds = [SymbolKind::Import, SymbolKind::Export, SymbolKind::Package];
-        let dead_names: Vec<String> = result
-            .dead_symbols
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
+        let dead_names: Vec<String> = result.dead_symbols.iter().map(|s| s.name.clone()).collect();
         let alive_names: Vec<String> = sym_graph
             .symbols
             .values()
@@ -2442,9 +2568,13 @@ mod tests {
                 // File A: main (public, entry)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "main",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![],
@@ -2456,7 +2586,13 @@ mod tests {
                     file_id: FileId(2),
                     symbols: vec![
                         make_sym(10, "process", SymbolKind::Function, 2, Visibility::Public),
-                        make_sym(11, "internal_b", SymbolKind::Function, 2, Visibility::Private),
+                        make_sym(
+                            11,
+                            "internal_b",
+                            SymbolKind::Function,
+                            2,
+                            Visibility::Private,
+                        ),
                     ],
                     references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
                     imports: vec![],
@@ -2476,9 +2612,13 @@ mod tests {
                 // File C: compute (exported)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(3),
-                    symbols: vec![
-                        make_sym(20, "compute", SymbolKind::Function, 3, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        20,
+                        "compute",
+                        SymbolKind::Function,
+                        3,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![ExportRecord {
@@ -2518,9 +2658,18 @@ mod tests {
         );
 
         assert!(alive.contains(&"main".to_string()), "main should be alive");
-        assert!(alive.contains(&"process".to_string()), "process should be alive (linker target)");
-        assert!(alive.contains(&"internal_b".to_string()), "internal_b should be alive (called by process)");
-        assert!(alive.contains(&"compute".to_string()), "compute should be alive (linker target)");
+        assert!(
+            alive.contains(&"process".to_string()),
+            "process should be alive (linker target)"
+        );
+        assert!(
+            alive.contains(&"internal_b".to_string()),
+            "internal_b should be alive (called by process)"
+        );
+        assert!(
+            alive.contains(&"compute".to_string()),
+            "compute should be alive (linker target)"
+        );
         assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
     }
 
@@ -2549,81 +2698,127 @@ mod tests {
                 // A: main only
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "main",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
-                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // B: b_fn (exported)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(2),
-                    symbols: vec![
-                        make_sym(10, "b_fn", SymbolKind::Function, 2, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        10,
+                        "b_fn",
+                        SymbolKind::Function,
+                        2,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(2), symbol: SymbolId(10),
+                        file: FileId(2),
+                        symbol: SymbolId(10),
                         exported_name: "b_fn".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // C: c_fn (exported)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(3),
-                    symbols: vec![
-                        make_sym(20, "c_fn", SymbolKind::Function, 3, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        20,
+                        "c_fn",
+                        SymbolKind::Function,
+                        3,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(3), symbol: SymbolId(20),
+                        file: FileId(3),
+                        symbol: SymbolId(20),
                         exported_name: "c_fn".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // D: d_fn (the diamond bottom)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(4),
-                    symbols: vec![
-                        make_sym(30, "d_fn", SymbolKind::Function, 4, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        30,
+                        "d_fn",
+                        SymbolKind::Function,
+                        4,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(4), symbol: SymbolId(30),
+                        file: FileId(4),
+                        symbol: SymbolId(30),
                         exported_name: "d_fn".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
             },
             vec![
                 CrossFileRef {
-                    source_file: FileId(1), target_file: FileId(2),
-                    target_symbol: SymbolId(10), imported_name: "b_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(1),
+                    target_file: FileId(2),
+                    target_symbol: SymbolId(10),
+                    imported_name: "b_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
                 CrossFileRef {
-                    source_file: FileId(1), target_file: FileId(3),
-                    target_symbol: SymbolId(20), imported_name: "c_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(1),
+                    target_file: FileId(3),
+                    target_symbol: SymbolId(20),
+                    imported_name: "c_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
                 CrossFileRef {
-                    source_file: FileId(2), target_file: FileId(4),
-                    target_symbol: SymbolId(30), imported_name: "d_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(2),
+                    target_file: FileId(4),
+                    target_symbol: SymbolId(30),
+                    imported_name: "d_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
                 CrossFileRef {
-                    source_file: FileId(3), target_file: FileId(4),
-                    target_symbol: SymbolId(30), imported_name: "d_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(3),
+                    target_file: FileId(4),
+                    target_symbol: SymbolId(30),
+                    imported_name: "d_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
             ],
         );
@@ -2631,7 +2826,10 @@ mod tests {
         assert!(alive.contains(&"main".to_string()), "main alive");
         assert!(alive.contains(&"b_fn".to_string()), "b_fn alive (A -> B)");
         assert!(alive.contains(&"c_fn".to_string()), "c_fn alive (A -> C)");
-        assert!(alive.contains(&"d_fn".to_string()), "d_fn alive (diamond bottom)");
+        assert!(
+            alive.contains(&"d_fn".to_string()),
+            "d_fn alive (diamond bottom)"
+        );
         assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
     }
 
@@ -2654,11 +2852,18 @@ mod tests {
                 // A: main only
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "main",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
-                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // B: process (exported) calls helper (private), dead_fn (private, never called)
                 sg.add_parse_result(ParseResult {
@@ -2671,12 +2876,17 @@ mod tests {
                     references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(2), symbol: SymbolId(10),
+                        file: FileId(2),
+                        symbol: SymbolId(10),
                         exported_name: "process".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
             },
             vec![], // No linker refs -- B is never imported
@@ -2684,10 +2894,22 @@ mod tests {
 
         // Precise seeding: nobody imports process, so it's not an entry point.
         // All symbols in B are unreachable.
-        assert!(dead.contains(&"process".to_string()), "process dead (exported but never imported)");
-        assert!(dead.contains(&"helper".to_string()), "helper dead (caller process is also dead)");
-        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn dead (private, never called)");
-        assert!(alive.contains(&"main".to_string()), "main alive (entry point)");
+        assert!(
+            dead.contains(&"process".to_string()),
+            "process dead (exported but never imported)"
+        );
+        assert!(
+            dead.contains(&"helper".to_string()),
+            "helper dead (caller process is also dead)"
+        );
+        assert!(
+            dead.contains(&"dead_fn".to_string()),
+            "dead_fn dead (private, never called)"
+        );
+        assert!(
+            alive.contains(&"main".to_string()),
+            "main alive (entry point)"
+        );
     }
 
     #[test]
@@ -2708,11 +2930,18 @@ mod tests {
                 sg.add_file(make_file_record(2, "src/b.ts"));
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "main",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
-                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(2),
@@ -2724,25 +2953,42 @@ mod tests {
                     references: vec![make_ref(1, 10, 11, RefKind::Call, 2)],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(2), symbol: SymbolId(10),
+                        file: FileId(2),
+                        symbol: SymbolId(10),
                         exported_name: "process".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
             },
             vec![CrossFileRef {
-                source_file: FileId(1), target_file: FileId(2),
-                target_symbol: SymbolId(10), imported_name: "process".to_string(),
-                line: 1, confidence: crate::analysis::Confidence::High,
+                source_file: FileId(1),
+                target_file: FileId(2),
+                target_symbol: SymbolId(10),
+                imported_name: "process".to_string(),
+                line: 1,
+                confidence: crate::analysis::Confidence::High,
             }],
         );
 
         assert!(alive.contains(&"main".to_string()), "main alive");
-        assert!(alive.contains(&"process".to_string()), "process alive (imported via linker)");
-        assert!(alive.contains(&"helper".to_string()), "helper alive (called by process)");
-        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn dead (never called)");
+        assert!(
+            alive.contains(&"process".to_string()),
+            "process alive (imported via linker)"
+        );
+        assert!(
+            alive.contains(&"helper".to_string()),
+            "helper alive (called by process)"
+        );
+        assert!(
+            dead.contains(&"dead_fn".to_string()),
+            "dead_fn dead (never called)"
+        );
     }
 
     #[test]
@@ -2763,45 +3009,75 @@ mod tests {
                 // A: main only
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "main",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
-                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // B: exported_fn calls helper, dead_fn is isolated
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(2),
                     symbols: vec![
-                        make_sym(10, "exported_fn", SymbolKind::Function, 2, Visibility::Public),
+                        make_sym(
+                            10,
+                            "exported_fn",
+                            SymbolKind::Function,
+                            2,
+                            Visibility::Public,
+                        ),
                         make_sym(11, "helper", SymbolKind::Function, 2, Visibility::Private),
                         make_sym(12, "dead_fn", SymbolKind::Function, 2, Visibility::Private),
                     ],
                     references: vec![make_ref(2, 10, 11, RefKind::Call, 2)],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(2), symbol: SymbolId(10),
+                        file: FileId(2),
+                        symbol: SymbolId(10),
                         exported_name: "exported_fn".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
             },
             vec![
                 // Linker: A imports exported_fn from B
                 CrossFileRef {
-                    source_file: FileId(1), target_file: FileId(2),
-                    target_symbol: SymbolId(10), imported_name: "exported_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(1),
+                    target_file: FileId(2),
+                    target_symbol: SymbolId(10),
+                    imported_name: "exported_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
             ],
         );
 
         assert!(alive.contains(&"main".to_string()), "main alive");
-        assert!(alive.contains(&"exported_fn".to_string()), "exported_fn alive (linker target)");
-        assert!(alive.contains(&"helper".to_string()), "helper alive (called by exported_fn)");
-        assert!(dead.contains(&"dead_fn".to_string()), "dead_fn should be dead (never called)");
+        assert!(
+            alive.contains(&"exported_fn".to_string()),
+            "exported_fn alive (linker target)"
+        );
+        assert!(
+            alive.contains(&"helper".to_string()),
+            "helper alive (called by exported_fn)"
+        );
+        assert!(
+            dead.contains(&"dead_fn".to_string()),
+            "dead_fn should be dead (never called)"
+        );
     }
 
     #[test]
@@ -2823,45 +3099,73 @@ mod tests {
                 // A: a_fn (public, entry)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(1),
-                    symbols: vec![
-                        make_sym(1, "a_fn", SymbolKind::Function, 1, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        1,
+                        "a_fn",
+                        SymbolKind::Function,
+                        1,
+                        Visibility::Public,
+                    )],
                     references: vec![],
-                    imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+                    imports: vec![],
+                    exports: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
                 // B: b_fn (exported)
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(2),
-                    symbols: vec![
-                        make_sym(10, "b_fn", SymbolKind::Function, 2, Visibility::Public),
-                    ],
+                    symbols: vec![make_sym(
+                        10,
+                        "b_fn",
+                        SymbolKind::Function,
+                        2,
+                        Visibility::Public,
+                    )],
                     references: vec![],
                     imports: vec![],
                     exports: vec![ExportRecord {
-                        file: FileId(2), symbol: SymbolId(10),
+                        file: FileId(2),
+                        symbol: SymbolId(10),
                         exported_name: "b_fn".to_string(),
-                        is_default: false, is_reexport: false, is_type_only: false,
-                        source_path: None, line: 1,
+                        is_default: false,
+                        is_reexport: false,
+                        is_type_only: false,
+                        source_path: None,
+                        line: 1,
                     }],
-                    type_references: vec![], annotations: vec![],
+                    type_references: vec![],
+                    annotations: vec![],
                 });
             },
             vec![
                 CrossFileRef {
-                    source_file: FileId(1), target_file: FileId(2),
-                    target_symbol: SymbolId(10), imported_name: "b_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(1),
+                    target_file: FileId(2),
+                    target_symbol: SymbolId(10),
+                    imported_name: "b_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
                 CrossFileRef {
-                    source_file: FileId(2), target_file: FileId(1),
-                    target_symbol: SymbolId(1), imported_name: "a_fn".to_string(),
-                    line: 1, confidence: crate::analysis::Confidence::High,
+                    source_file: FileId(2),
+                    target_file: FileId(1),
+                    target_symbol: SymbolId(1),
+                    imported_name: "a_fn".to_string(),
+                    line: 1,
+                    confidence: crate::analysis::Confidence::High,
                 },
             ],
         );
 
-        assert!(alive.contains(&"a_fn".to_string()), "a_fn alive (entry + circular)");
-        assert!(alive.contains(&"b_fn".to_string()), "b_fn alive (linker target from entry)");
+        assert!(
+            alive.contains(&"a_fn".to_string()),
+            "a_fn alive (entry + circular)"
+        );
+        assert!(
+            alive.contains(&"b_fn".to_string()),
+            "b_fn alive (linker target from entry)"
+        );
         assert!(dead.is_empty(), "no non-synthetic symbols should be dead");
     }
 
@@ -2878,11 +3182,18 @@ mod tests {
         sym_graph.add_file(make_file_record(1, "src/a.ts"));
         sym_graph.add_parse_result(ParseResult {
             file_id: FileId(1),
-            symbols: vec![
-                make_sym(1, "main", SymbolKind::Function, 1, Visibility::Public),
-            ],
+            symbols: vec![make_sym(
+                1,
+                "main",
+                SymbolKind::Function,
+                1,
+                Visibility::Public,
+            )],
             references: vec![],
-            imports: vec![], exports: vec![], type_references: vec![], annotations: vec![],
+            imports: vec![],
+            exports: vec![],
+            type_references: vec![],
+            annotations: vec![],
         });
 
         // All resolved, no unresolved -> High
@@ -3120,11 +3431,24 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
-        assert!(!dead_names.contains(&"Foo"), "Foo should be alive (public in entry file)");
-        assert!(!dead_names.contains(&"fmt"), "fmt should be alive when parent Foo is alive");
-        assert!(!dead_names.contains(&"as_str"), "as_str should be alive when parent Foo is alive");
+        assert!(
+            !dead_names.contains(&"Foo"),
+            "Foo should be alive (public in entry file)"
+        );
+        assert!(
+            !dead_names.contains(&"fmt"),
+            "fmt should be alive when parent Foo is alive"
+        );
+        assert!(
+            !dead_names.contains(&"as_str"),
+            "as_str should be alive when parent Foo is alive"
+        );
     }
 
     #[test]
@@ -3142,7 +3466,13 @@ mod tests {
         sym_graph.add_file(make_file_record(1, "src/index.ts"));
 
         // Alive struct Registry with method with_defaults() that references Parser trait
-        let mut with_defaults = make_sym(2, "with_defaults", SymbolKind::Method, 1, Visibility::Public);
+        let mut with_defaults = make_sym(
+            2,
+            "with_defaults",
+            SymbolKind::Method,
+            1,
+            Visibility::Public,
+        );
         with_defaults.parent = Some(SymbolId(1));
 
         // Parser trait with method parse()
@@ -3168,9 +3498,9 @@ mod tests {
                 make_sym(7, "main", SymbolKind::Function, 1, Visibility::Public),
             ],
             references: vec![
-                make_ref(1, 7, 1, RefKind::Call, 1),    // main -> Registry
-                make_ref(2, 2, 5, RefKind::Call, 1),     // with_defaults -> RustParser
-                inherit_ref,                              // RustParser implements Parser
+                make_ref(1, 7, 1, RefKind::Call, 1), // main -> Registry
+                make_ref(2, 2, 5, RefKind::Call, 1), // with_defaults -> RustParser
+                inherit_ref,                         // RustParser implements Parser
             ],
             imports: vec![],
             exports: vec![],
@@ -3179,21 +3509,40 @@ mod tests {
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
-        let dead_names: Vec<&str> = result.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+        let dead_names: Vec<&str> = result
+            .dead_symbols
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
 
         // Registry is alive (public in entry file)
-        assert!(!dead_names.contains(&"Registry"), "Registry should be alive");
+        assert!(
+            !dead_names.contains(&"Registry"),
+            "Registry should be alive"
+        );
         // with_defaults is alive (child of alive Registry, seeded by convergence loop)
-        assert!(!dead_names.contains(&"with_defaults"), "with_defaults should be alive (child of alive Registry)");
+        assert!(
+            !dead_names.contains(&"with_defaults"),
+            "with_defaults should be alive (child of alive Registry)"
+        );
         // RustParser is alive (referenced by with_defaults via BFS)
-        assert!(!dead_names.contains(&"RustParser"),
-            "RustParser should be alive (referenced by with_defaults), dead: {:?}", dead_names);
+        assert!(
+            !dead_names.contains(&"RustParser"),
+            "RustParser should be alive (referenced by with_defaults), dead: {:?}",
+            dead_names
+        );
         // do_parse is alive (child of alive RustParser, seeded by next convergence iteration)
-        assert!(!dead_names.contains(&"do_parse"),
-            "do_parse should be alive (child of alive RustParser), dead: {:?}", dead_names);
+        assert!(
+            !dead_names.contains(&"do_parse"),
+            "do_parse should be alive (child of alive RustParser), dead: {:?}",
+            dead_names
+        );
         // Parser is alive (public in entry file), parse is its child
-        assert!(!dead_names.contains(&"parse"),
-            "parse should be alive (child of alive Parser), dead: {:?}", dead_names);
+        assert!(
+            !dead_names.contains(&"parse"),
+            "parse should be alive (child of alive Parser), dead: {:?}",
+            dead_names
+        );
     }
 
     #[test]

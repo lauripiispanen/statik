@@ -88,7 +88,11 @@ pub fn compute_ownership(
         .collect();
 
     // Sort descending by score
-    scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     scores
 }
@@ -120,7 +124,11 @@ pub fn compute_ownership_adaptive(
     }
 
     // File age = time since earliest commit
-    let earliest_timestamp = commits.iter().map(|c| c.timestamp).min().unwrap_or(now_timestamp);
+    let earliest_timestamp = commits
+        .iter()
+        .map(|c| c.timestamp)
+        .min()
+        .unwrap_or(now_timestamp);
     let file_age_days = ((now_timestamp - earliest_timestamp) as f64) / 86400.0;
 
     // Adaptive half-life: scale with file age, minimum = base_half_life_days
@@ -138,7 +146,9 @@ fn compute_ownership_with_mode(
 ) -> Vec<OwnershipScore> {
     match mode {
         HalfLifeMode::Fixed => compute_ownership(commits, now_timestamp, half_life_days),
-        HalfLifeMode::Adaptive => compute_ownership_adaptive(commits, now_timestamp, half_life_days),
+        HalfLifeMode::Adaptive => {
+            compute_ownership_adaptive(commits, now_timestamp, half_life_days)
+        }
     }
 }
 
@@ -167,7 +177,11 @@ pub fn compute_directory_ownership(
         let commits = db.get_commits_for_file(path)?;
         all_commits.extend(commits);
     }
-    Ok(compute_ownership(&all_commits, now_timestamp, half_life_days))
+    Ok(compute_ownership(
+        &all_commits,
+        now_timestamp,
+        half_life_days,
+    ))
 }
 
 /// Default half-life for ownership scoring (in days).
@@ -190,15 +204,14 @@ pub fn compute_owners(
     half_life_days: f64,
     mode: HalfLifeMode,
 ) -> anyhow::Result<OwnersResult> {
-    let all_file_commits = db.get_all_file_commits()
+    let all_file_commits = db
+        .get_all_file_commits()
         .context("Failed to load commit history")?;
 
     if all_file_commits.is_empty() {
         let count = db.commit_count()?;
         if count == 0 {
-            anyhow::bail!(
-                "No commit history found. Run `statik index --with-history` first."
-            );
+            anyhow::bail!("No commit history found. Run `statik index --with-history` first.");
         }
     }
 
@@ -338,9 +351,7 @@ pub fn compute_bus_factor_analysis(
     if all_file_commits.is_empty() {
         let count = db.commit_count()?;
         if count == 0 {
-            anyhow::bail!(
-                "No commit history found. Run `statik index --with-history` first."
-            );
+            anyhow::bail!("No commit history found. Run `statik index --with-history` first.");
         }
     }
 
@@ -456,9 +467,7 @@ pub fn compute_bus_factor_by_author(
     if all_file_commits.is_empty() {
         let count = db.commit_count()?;
         if count == 0 {
-            anyhow::bail!(
-                "No commit history found. Run `statik index --with-history` first."
-            );
+            anyhow::bail!("No commit history found. Run `statik index --with-history` first.");
         }
     }
 
@@ -629,7 +638,14 @@ mod tests {
 
     #[test]
     fn test_single_author() {
-        let commits = vec![make_commit("sha1", "Alice", "alice@example.com", 1700000000, 10, 5)];
+        let commits = vec![make_commit(
+            "sha1",
+            "Alice",
+            "alice@example.com",
+            1700000000,
+            10,
+            5,
+        )];
         let scores = compute_ownership(&commits, 1700000000, 180.0);
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].author_name, "Alice");
@@ -665,8 +681,14 @@ mod tests {
         // Alice should score much higher than Bob
         let alice = scores.iter().find(|s| s.author_name == "Alice").unwrap();
         let bob = scores.iter().find(|s| s.author_name == "Bob").unwrap();
-        assert!(alice.score > bob.score, "Recent commits should score higher");
-        assert!(alice.score > 70.0, "Alice should dominate with recent commit");
+        assert!(
+            alice.score > bob.score,
+            "Recent commits should score higher"
+        );
+        assert!(
+            alice.score > 70.0,
+            "Alice should dominate with recent commit"
+        );
     }
 
     #[test]
@@ -691,7 +713,14 @@ mod tests {
         let commits = vec![
             make_commit("sha1", "Alice", "alice@example.com", now, 10, 5),
             make_commit("sha2", "Bob", "bob@example.com", now - 86400, 20, 3),
-            make_commit("sha3", "Charlie", "charlie@example.com", now - 86400 * 30, 8, 2),
+            make_commit(
+                "sha3",
+                "Charlie",
+                "charlie@example.com",
+                now - 86400 * 30,
+                8,
+                2,
+            ),
         ];
         let scores = compute_ownership(&commits, now, 180.0);
 
@@ -774,10 +803,8 @@ mod tests {
             .unwrap();
         db.insert_commit("sha2", "Bob", "bob@example.com", now - 86400)
             .unwrap();
-        db.insert_file_commit("src/main.rs", "sha1", 20, 5)
-            .unwrap();
-        db.insert_file_commit("src/main.rs", "sha2", 10, 2)
-            .unwrap();
+        db.insert_file_commit("src/main.rs", "sha1", 20, 5).unwrap();
+        db.insert_file_commit("src/main.rs", "sha2", 10, 2).unwrap();
 
         let scores = compute_file_ownership(&db, "src/main.rs", 180.0, now).unwrap();
         assert_eq!(scores.len(), 2);
@@ -866,15 +893,24 @@ mod tests {
         // The core utility file (the one that had 200+ importers but fan_in=0)
         let core_util = "core/src/main/java/com/mycompany/platform/core/util/StringUtils.java";
         // Files across different modules that import the utility
-        let api_controller = "api-gateway/src/main/java/com/mycompany/platform/api/UserController.java";
-        let auth_service = "auth-service/src/main/java/com/mycompany/platform/auth/AuthService.java";
+        let api_controller =
+            "api-gateway/src/main/java/com/mycompany/platform/api/UserController.java";
+        let auth_service =
+            "auth-service/src/main/java/com/mycompany/platform/auth/AuthService.java";
         let data_repo = "data-layer/src/main/java/com/mycompany/platform/data/UserRepository.java";
-        let web_handler = "web-frontend/src/main/java/com/mycompany/platform/web/RequestHandler.java";
+        let web_handler =
+            "web-frontend/src/main/java/com/mycompany/platform/web/RequestHandler.java";
 
         // Commit history uses relative paths (as git log returns)
         db.insert_commit("sha1", "Alice", "alice@example.com", now)
             .unwrap();
-        for rel_path in &[core_util, api_controller, auth_service, data_repo, web_handler] {
+        for rel_path in &[
+            core_util,
+            api_controller,
+            auth_service,
+            data_repo,
+            web_handler,
+        ] {
             db.insert_file_commit(rel_path, "sha1", 50, 0).unwrap();
         }
 
@@ -910,7 +946,13 @@ mod tests {
         }
 
         let result = compute_bus_factor_analysis(
-            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+            &db,
+            &graph,
+            None,
+            0.1,
+            180.0,
+            &project_root,
+            HalfLifeMode::Fixed,
         )
         .unwrap();
 
@@ -937,14 +979,12 @@ mod tests {
             .iter()
             .find(|e| e.path.contains("UserController.java"))
             .expect("UserController.java should be in results");
-        assert_eq!(
-            controller_entry.fan_in, 0,
-            "Leaf file should have fan_in=0"
-        );
+        assert_eq!(controller_entry.fan_in, 0, "Leaf file should have fan_in=0");
 
         // Verify ALL files have results (none lost due to path matching)
         assert_eq!(
-            result.files.len(), 5,
+            result.files.len(),
+            5,
             "All 5 files should appear in results"
         );
     }
@@ -1009,7 +1049,13 @@ mod tests {
         });
 
         let result = compute_bus_factor_analysis(
-            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+            &db,
+            &graph,
+            None,
+            0.1,
+            180.0,
+            &project_root,
+            HalfLifeMode::Fixed,
         )
         .unwrap();
 
@@ -1030,10 +1076,7 @@ mod tests {
             .iter()
             .find(|e| e.path.contains("web") && e.path.contains("Config.java"))
             .expect("web/Config.java should be in results");
-        assert_eq!(
-            web_entry.fan_in, 1,
-            "web/Config should have fan_in=1"
-        );
+        assert_eq!(web_entry.fan_in, 1, "web/Config should have fan_in=1");
     }
 
     #[test]
@@ -1051,7 +1094,10 @@ mod tests {
 
         // With fixed half-life (180 days), Alice's contribution decays to near-zero
         let fixed_scores = compute_ownership(&commits, now, 180.0);
-        let alice_fixed = fixed_scores.iter().find(|s| s.author_name == "Alice").unwrap();
+        let alice_fixed = fixed_scores
+            .iter()
+            .find(|s| s.author_name == "Alice")
+            .unwrap();
         assert!(
             alice_fixed.score < 1.0,
             "With fixed 180d half-life, Alice should be < 1%, got {:.2}%",
@@ -1060,7 +1106,10 @@ mod tests {
 
         // With adaptive half-life, Alice retains meaningful ownership
         let adaptive_scores = compute_ownership_adaptive(&commits, now, 180.0);
-        let alice_adaptive = adaptive_scores.iter().find(|s| s.author_name == "Alice").unwrap();
+        let alice_adaptive = adaptive_scores
+            .iter()
+            .find(|s| s.author_name == "Alice")
+            .unwrap();
         assert!(
             alice_adaptive.score > 10.0,
             "With adaptive half-life, Alice should retain > 10% ownership, got {:.2}%",
@@ -1103,15 +1152,35 @@ mod tests {
 
         // File created 4 years ago, recent edit
         let commits = vec![
-            make_commit("sha1", "Creator", "creator@example.com", four_years_ago, 80, 0),
-            make_commit("sha2", "Tweaker", "tweaker@example.com", six_months_ago, 5, 0),
+            make_commit(
+                "sha1",
+                "Creator",
+                "creator@example.com",
+                four_years_ago,
+                80,
+                0,
+            ),
+            make_commit(
+                "sha2",
+                "Tweaker",
+                "tweaker@example.com",
+                six_months_ago,
+                5,
+                0,
+            ),
         ];
 
         let fixed_scores = compute_ownership(&commits, now, 180.0);
         let adaptive_scores = compute_ownership_adaptive(&commits, now, 180.0);
 
-        let creator_fixed = fixed_scores.iter().find(|s| s.author_name == "Creator").unwrap();
-        let creator_adaptive = adaptive_scores.iter().find(|s| s.author_name == "Creator").unwrap();
+        let creator_fixed = fixed_scores
+            .iter()
+            .find(|s| s.author_name == "Creator")
+            .unwrap();
+        let creator_adaptive = adaptive_scores
+            .iter()
+            .find(|s| s.author_name == "Creator")
+            .unwrap();
 
         // Adaptive should give creator significantly more than fixed
         assert!(
@@ -1162,7 +1231,8 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
         });
-        db.insert_file_commit("src/consumer.rs", "sha2", 20, 0).unwrap();
+        db.insert_file_commit("src/consumer.rs", "sha2", 20, 0)
+            .unwrap();
         graph.add_import(FileImport {
             from: FileId(2),
             to: FileId(1),
@@ -1173,16 +1243,36 @@ mod tests {
         });
 
         let fixed_result = compute_bus_factor_analysis(
-            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+            &db,
+            &graph,
+            None,
+            0.1,
+            180.0,
+            &project_root,
+            HalfLifeMode::Fixed,
         )
         .unwrap();
         let adaptive_result = compute_bus_factor_analysis(
-            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Adaptive,
+            &db,
+            &graph,
+            None,
+            0.1,
+            180.0,
+            &project_root,
+            HalfLifeMode::Adaptive,
         )
         .unwrap();
 
-        let fixed_entry = fixed_result.files.iter().find(|e| e.path.contains("old_util")).unwrap();
-        let adaptive_entry = adaptive_result.files.iter().find(|e| e.path.contains("old_util")).unwrap();
+        let fixed_entry = fixed_result
+            .files
+            .iter()
+            .find(|e| e.path.contains("old_util"))
+            .unwrap();
+        let adaptive_entry = adaptive_result
+            .files
+            .iter()
+            .find(|e| e.path.contains("old_util"))
+            .unwrap();
 
         // With fixed mode on an 8-year-old file, Tweaker should be primary owner
         assert_eq!(
@@ -1216,13 +1306,22 @@ mod tests {
             .unwrap();
 
         let fixed_result = compute_owners(&db, Some("**"), 10, 180.0, HalfLifeMode::Fixed).unwrap();
-        let adaptive_result = compute_owners(&db, Some("**"), 10, 180.0, HalfLifeMode::Adaptive).unwrap();
+        let adaptive_result =
+            compute_owners(&db, Some("**"), 10, 180.0, HalfLifeMode::Adaptive).unwrap();
 
         let fixed_file = &fixed_result.files[0];
         let adaptive_file = &adaptive_result.files[0];
 
-        let orig_fixed = fixed_file.owners.iter().find(|o| o.author_name == "Original").unwrap();
-        let orig_adaptive = adaptive_file.owners.iter().find(|o| o.author_name == "Original").unwrap();
+        let orig_fixed = fixed_file
+            .owners
+            .iter()
+            .find(|o| o.author_name == "Original")
+            .unwrap();
+        let orig_adaptive = adaptive_file
+            .owners
+            .iter()
+            .find(|o| o.author_name == "Original")
+            .unwrap();
 
         assert!(
             orig_adaptive.score > orig_fixed.score,
@@ -1317,7 +1416,12 @@ mod tests {
         });
 
         let result = compute_bus_factor_by_author(
-            &db, &graph, &project_root, None, 180.0, HalfLifeMode::Fixed,
+            &db,
+            &graph,
+            &project_root,
+            None,
+            180.0,
+            HalfLifeMode::Fixed,
         )
         .unwrap();
 
@@ -1387,6 +1491,9 @@ mod tests {
         assert_eq!(result.authors[1].author_email, "bob@example.com");
 
         // Verify count
-        assert_eq!(result.count, 2, "Only Alice and Bob should appear (not Charlie)");
+        assert_eq!(
+            result.count, 2,
+            "Only Alice and Bob should appear (not Charlie)"
+        );
     }
 }

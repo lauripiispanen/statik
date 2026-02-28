@@ -247,7 +247,10 @@ impl<'a> Extractor<'a> {
     fn enclosing_class_name(&self) -> Option<String> {
         for &parent_id in self.parent_stack.iter().rev() {
             if let Some(sym) = self.symbols.iter().find(|s| s.id == parent_id) {
-                if matches!(sym.kind, SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum) {
+                if matches!(
+                    sym.kind,
+                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::Enum
+                ) {
                     return Some(sym.name.clone());
                 }
             }
@@ -1199,21 +1202,24 @@ impl<'a> Extractor<'a> {
         let target_name = self.node_text(name_node.unwrap()).to_string();
 
         // Check for this.method() or implicit this (no object = same-class call)
-        let qualifier = node.child_by_field_name("object").and_then(|obj| {
-            let text = self.node_text(obj);
-            if text == "this" {
-                self.enclosing_class_name()
-            } else {
-                None
-            }
-        }).or_else(|| {
-            // No explicit object means implicit this in Java
-            if node.child_by_field_name("object").is_none() {
-                self.enclosing_class_name()
-            } else {
-                None
-            }
-        });
+        let qualifier = node
+            .child_by_field_name("object")
+            .and_then(|obj| {
+                let text = self.node_text(obj);
+                if text == "this" {
+                    self.enclosing_class_name()
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                // No explicit object means implicit this in Java
+                if node.child_by_field_name("object").is_none() {
+                    self.enclosing_class_name()
+                } else {
+                    None
+                }
+            });
 
         if let Some(source_id) = self.current_parent() {
             let ref_id = self.alloc_ref_id();
@@ -1304,14 +1310,37 @@ impl<'a> Extractor<'a> {
         // Skip Java keywords and common globals
         if matches!(
             name.as_str(),
-            "this" | "super" | "null" | "true" | "false"
-                | "System" | "String" | "Integer" | "Long" | "Double" | "Float"
-                | "Boolean" | "Byte" | "Short" | "Character" | "Void"
-                | "Object" | "Class" | "Enum" | "Comparable" | "Iterable"
-                | "Override" | "Deprecated" | "SuppressWarnings"
-                | "Exception" | "RuntimeException" | "Throwable"
-                | "Thread" | "Runnable"
-                | "var" | "args"
+            "this"
+                | "super"
+                | "null"
+                | "true"
+                | "false"
+                | "System"
+                | "String"
+                | "Integer"
+                | "Long"
+                | "Double"
+                | "Float"
+                | "Boolean"
+                | "Byte"
+                | "Short"
+                | "Character"
+                | "Void"
+                | "Object"
+                | "Class"
+                | "Enum"
+                | "Comparable"
+                | "Iterable"
+                | "Override"
+                | "Deprecated"
+                | "SuppressWarnings"
+                | "Exception"
+                | "RuntimeException"
+                | "Throwable"
+                | "Thread"
+                | "Runnable"
+                | "var"
+                | "args"
         ) {
             return;
         }
@@ -1334,8 +1363,11 @@ impl<'a> Extractor<'a> {
 
     fn is_java_declaration_name(parent: Node, node: Node) -> bool {
         match parent.kind() {
-            "class_declaration" | "interface_declaration" | "enum_declaration"
-            | "annotation_type_declaration" | "record_declaration" => {
+            "class_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "annotation_type_declaration"
+            | "record_declaration" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
             "method_declaration" | "constructor_declaration" => {
@@ -1348,8 +1380,11 @@ impl<'a> Extractor<'a> {
             "variable_declarator" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
-            "formal_parameter" | "spread_parameter" | "catch_formal_parameter"
-            | "inferred_parameters" | "lambda_expression" => {
+            "formal_parameter"
+            | "spread_parameter"
+            | "catch_formal_parameter"
+            | "inferred_parameters"
+            | "lambda_expression" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
             "import_declaration" => true,
@@ -2863,7 +2898,8 @@ public class Beta {
             .find(|r| r.source == alpha_run.id && r.kind == RefKind::Call);
         assert!(alpha_call.is_some(), "Alpha.run() should have a call ref");
         assert_eq!(
-            alpha_call.unwrap().target, alpha_process.id,
+            alpha_call.unwrap().target,
+            alpha_process.id,
             "Alpha.run() should resolve to Alpha.process()"
         );
 
@@ -2874,7 +2910,8 @@ public class Beta {
             .find(|r| r.source == beta_run.id && r.kind == RefKind::Call);
         assert!(beta_call.is_some(), "Beta.run() should have a call ref");
         assert_eq!(
-            beta_call.unwrap().target, beta_process.id,
+            beta_call.unwrap().target,
+            beta_process.id,
             "Beta.run() should resolve to Beta.process()"
         );
     }

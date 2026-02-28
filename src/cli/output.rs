@@ -634,10 +634,7 @@ pub fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
                     c.detail,
                 ));
                 for importer in &c.affected_importers {
-                    out.push_str(&format!(
-                        "      imported by: {}\n",
-                        display_path(importer),
-                    ));
+                    out.push_str(&format!("      imported by: {}\n", display_path(importer),));
                 }
             }
             out.push('\n');
@@ -748,7 +745,11 @@ pub fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
             ));
             for c in &introduced {
                 let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
-                out.push_str(&format!("  ! {} (length {})\n", paths.join(" -> "), c.length));
+                out.push_str(&format!(
+                    "  ! {} (length {})\n",
+                    paths.join(" -> "),
+                    c.length
+                ));
             }
         }
 
@@ -756,7 +757,11 @@ pub fn format_diff_text(result: &crate::analysis::diff::DiffResult) -> String {
             out.push_str(&format!("\nCycles resolved ({}):\n", resolved.len()));
             for c in &resolved {
                 let paths: Vec<String> = c.files.iter().map(|p| display_path(p)).collect();
-                out.push_str(&format!("  * {} (length {})\n", paths.join(" -> "), c.length));
+                out.push_str(&format!(
+                    "  * {} (length {})\n",
+                    paths.join(" -> "),
+                    c.length
+                ));
             }
         }
 

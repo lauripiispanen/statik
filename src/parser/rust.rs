@@ -57,7 +57,6 @@ impl LanguageSemantics for RustParser {
     fn seed_all_symbols_dirs(&self) -> &[&str] {
         &["tests", "examples", "benches"]
     }
-
 }
 
 impl LanguageParser for RustParser {
@@ -469,12 +468,7 @@ impl<'a> Extractor<'a> {
         });
     }
 
-    fn add_reexport(
-        &mut self,
-        source_path: &str,
-        exported_name: &str,
-        decl_line_span: LineSpan,
-    ) {
+    fn add_reexport(&mut self, source_path: &str, exported_name: &str, decl_line_span: LineSpan) {
         let id = self.alloc_symbol_id();
         let span = Span { start: 0, end: 0 };
         // Create a synthetic symbol so the export FK constraint is satisfied
@@ -1084,9 +1078,9 @@ impl<'a> Extractor<'a> {
                 let text = self.node_text(func);
                 let target = text.rsplit("::").next().unwrap_or(text).to_string();
                 // Qualifier is the segment before the last ::
-                let qual = text.rsplit_once("::").map(|(prefix, _)| {
-                    prefix.rsplit("::").next().unwrap_or(prefix).to_string()
-                });
+                let qual = text
+                    .rsplit_once("::")
+                    .map(|(prefix, _)| prefix.rsplit("::").next().unwrap_or(prefix).to_string());
                 (target, qual)
             }
             _ => return,
@@ -1118,9 +1112,9 @@ impl<'a> Extractor<'a> {
 
         let text = self.node_text(name_node);
         let target_name = text.rsplit("::").next().unwrap_or(text).to_string();
-        let qualifier = text.rsplit_once("::").map(|(prefix, _)| {
-            prefix.rsplit("::").next().unwrap_or(prefix).to_string()
-        });
+        let qualifier = text
+            .rsplit_once("::")
+            .map(|(prefix, _)| prefix.rsplit("::").next().unwrap_or(prefix).to_string());
 
         if let Some(source_id) = self.find_enclosing_symbol() {
             let ref_id = self.alloc_ref_id();
@@ -1212,9 +1206,16 @@ impl<'a> Extractor<'a> {
         // Skip keywords, primitives, and common enum variants that are always in scope
         if matches!(
             name.as_str(),
-            "self" | "Self" | "super" | "crate"
-                | "true" | "false"
-                | "None" | "Some" | "Ok" | "Err"
+            "self"
+                | "Self"
+                | "super"
+                | "crate"
+                | "true"
+                | "false"
+                | "None"
+                | "Some"
+                | "Ok"
+                | "Err"
                 | "_"
         ) {
             return;
@@ -1285,10 +1286,7 @@ impl<'a> Extractor<'a> {
         };
 
         // Skip keywords that aren't symbol references
-        if matches!(
-            imported_name.as_str(),
-            "self" | "Self" | "super" | "crate"
-        ) {
+        if matches!(imported_name.as_str(), "self" | "Self" | "super" | "crate") {
             return;
         }
 
@@ -1301,10 +1299,15 @@ impl<'a> Extractor<'a> {
     /// declaration-kind parent node.
     fn is_rust_declaration_name(parent: Node, node: Node) -> bool {
         match parent.kind() {
-            "function_item" | "function_signature_item" | "struct_item" | "enum_item"
-            | "trait_item" | "const_item" | "static_item" | "type_item" | "mod_item" => {
-                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
-            }
+            "function_item"
+            | "function_signature_item"
+            | "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "const_item"
+            | "static_item"
+            | "type_item"
+            | "mod_item" => parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()),
             "field_declaration" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
@@ -1314,9 +1317,7 @@ impl<'a> Extractor<'a> {
             }
             "parameter" | "closure_parameters" => true,
             "use_declaration" | "use_as_clause" | "use_list" | "use_wildcard" | "self" => true,
-            "enum_variant" => {
-                parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
-            }
+            "enum_variant" => parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()),
             // Tuple struct pattern: `Foo(x, y)` — x,y are bindings
             "tuple_struct_pattern" => {
                 // The first child (the name) is a reference, subsequent are bindings
@@ -1354,9 +1355,7 @@ impl<'a> Extractor<'a> {
         while let Some(sib) = sibling {
             if sib.kind() == "attribute_item" {
                 let text = self.node_text(sib);
-                let inner = text
-                    .trim_start_matches("#[")
-                    .trim_end_matches(']');
+                let inner = text.trim_start_matches("#[").trim_end_matches(']');
                 if inner == "test" {
                     self.annotations.push("test".to_string());
                 } else if inner.ends_with("::test") || inner.ends_with("::test()") {
@@ -1377,7 +1376,10 @@ impl<'a> Extractor<'a> {
     fn enclosing_type_name(&self) -> Option<String> {
         for &parent_id in self.parent_stack.iter().rev() {
             if let Some(sym) = self.symbols.iter().find(|s| s.id == parent_id) {
-                if matches!(sym.kind, SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Interface) {
+                if matches!(
+                    sym.kind,
+                    SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Interface
+                ) {
                     return Some(sym.name.clone());
                 }
             }
@@ -2264,7 +2266,8 @@ pub type Result<T> = std::result::Result<T, Error>;
             assert!(
                 export.line > 0,
                 "export '{}' should have line > 0, got: {}",
-                export.exported_name, export.line
+                export.exported_name,
+                export.line
             );
         }
     }
@@ -2292,8 +2295,16 @@ impl Beta {
 "#,
         );
 
-        let alpha = result.symbols.iter().find(|s| s.name == "Alpha" && s.kind == SymbolKind::Struct).unwrap();
-        let beta = result.symbols.iter().find(|s| s.name == "Beta" && s.kind == SymbolKind::Struct).unwrap();
+        let alpha = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Alpha" && s.kind == SymbolKind::Struct)
+            .unwrap();
+        let beta = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Beta" && s.kind == SymbolKind::Struct)
+            .unwrap();
 
         // Find process methods by parent
         let alpha_process = result
@@ -2325,7 +2336,8 @@ impl Beta {
             .find(|r| r.source == alpha_run.id && r.kind == RefKind::Call);
         assert!(alpha_call.is_some(), "Alpha.run() should have a call ref");
         assert_eq!(
-            alpha_call.unwrap().target, alpha_process.id,
+            alpha_call.unwrap().target,
+            alpha_process.id,
             "Alpha.run() should resolve to Alpha.process()"
         );
 
@@ -2336,7 +2348,8 @@ impl Beta {
             .find(|r| r.source == beta_run.id && r.kind == RefKind::Call);
         assert!(beta_call.is_some(), "Beta.run() should have a call ref");
         assert_eq!(
-            beta_call.unwrap().target, beta_process.id,
+            beta_call.unwrap().target,
+            beta_process.id,
             "Beta.run() should resolve to Beta.process()"
         );
     }
@@ -2361,11 +2374,23 @@ fn create() {
 "#,
         );
 
-        let foo = result.symbols.iter().find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct).unwrap();
-        let foo_new = result.symbols.iter().find(|s| s.name == "new" && s.parent == Some(foo.id)).unwrap();
+        let foo = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct)
+            .unwrap();
+        let foo_new = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "new" && s.parent == Some(foo.id))
+            .unwrap();
         let create = result.symbols.iter().find(|s| s.name == "create").unwrap();
 
-        let call = result.references.iter().find(|r| r.source == create.id && r.kind == RefKind::Call).unwrap();
+        let call = result
+            .references
+            .iter()
+            .find(|r| r.source == create.id && r.kind == RefKind::Call)
+            .unwrap();
         assert_eq!(
             call.target, foo_new.id,
             "Foo::new() in a free function should resolve to Foo's new, not Bar's"
@@ -2391,11 +2416,27 @@ mod nested {
 "#,
         );
 
-        let foo = result.symbols.iter().find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct).unwrap();
-        let foo_helper = result.symbols.iter().find(|s| s.name == "helper" && s.parent == Some(foo.id)).unwrap();
-        let foo_run = result.symbols.iter().find(|s| s.name == "run" && s.parent == Some(foo.id)).unwrap();
+        let foo = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct)
+            .unwrap();
+        let foo_helper = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "helper" && s.parent == Some(foo.id))
+            .unwrap();
+        let foo_run = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "run" && s.parent == Some(foo.id))
+            .unwrap();
 
-        let call = result.references.iter().find(|r| r.source == foo_run.id && r.kind == RefKind::Call).unwrap();
+        let call = result
+            .references
+            .iter()
+            .find(|r| r.source == foo_run.id && r.kind == RefKind::Call)
+            .unwrap();
         assert_eq!(
             call.target, foo_helper.id,
             "self.helper() should resolve to Foo::helper, not nested::helper"
@@ -2420,15 +2461,30 @@ fn pick() {
 "#,
         );
 
-        let color = result.symbols.iter().find(|s| s.name == "Color" && s.kind == SymbolKind::Enum).unwrap();
-        let color_red = result.symbols.iter().find(|s| s.name == "Red" && s.parent == Some(color.id)).unwrap();
+        let color = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Color" && s.kind == SymbolKind::Enum)
+            .unwrap();
+        let color_red = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "Red" && s.parent == Some(color.id))
+            .unwrap();
         let pick = result.symbols.iter().find(|s| s.name == "pick").unwrap();
 
         // Color::Red(255) is a call expression — should resolve to Color's Red, not Shape's
-        let call = result.references.iter().find(|r| r.source == pick.id && r.kind == RefKind::Call);
-        assert!(call.is_some(), "Color::Red(255) should produce a call reference");
+        let call = result
+            .references
+            .iter()
+            .find(|r| r.source == pick.id && r.kind == RefKind::Call);
+        assert!(
+            call.is_some(),
+            "Color::Red(255) should produce a call reference"
+        );
         assert_eq!(
-            call.unwrap().target, color_red.id,
+            call.unwrap().target,
+            color_red.id,
             "Color::Red(255) should resolve to Color::Red, not Shape::Red"
         );
     }
@@ -2566,10 +2622,7 @@ fn caller() {
         let imp = super_import.unwrap();
         assert_eq!(imp.source_path, "super::helper_fn");
 
-        let crate_import = result
-            .imports
-            .iter()
-            .find(|i| i.imported_name == "check");
+        let crate_import = result.imports.iter().find(|i| i.imported_name == "check");
         assert!(
             crate_import.is_some(),
             "should create import for crate::utils::check(), imports: {:?}",

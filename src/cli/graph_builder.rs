@@ -46,10 +46,8 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Load source set config for visibility filtering
     let source_set_configs = crate::linting::config::load_source_set_config(project_root);
     let source_set_index = if !source_set_configs.is_empty() {
-        let index = crate::resolver::source_sets::SourceSetIndex::build(
-            &source_set_configs,
-            project_root,
-        )?;
+        let index =
+            crate::resolver::source_sets::SourceSetIndex::build(&source_set_configs, project_root)?;
         // Pass a clone to the Java resolver for scoped same-package resolution
         java_resolver.set_source_set_index(index.clone());
         Some(index)
@@ -90,7 +88,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 .unwrap_or(&[]);
             for import in imports {
                 if let Some(ann) = import.source_path.strip_prefix("@annotation:") {
-                    if lang_annotations.iter().any(|a| *a == ann)
+                    if lang_annotations.contains(&ann)
                         || ep_config.annotations.iter().any(|a| a == ann)
                     {
                         annotation_entry_files.insert(file.id);
@@ -150,46 +148,47 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 .get(&file.id)
                 .copied()
                 .unwrap_or(Language::TypeScript);
-            let resolution: Resolution =
-                if let Some(type_name) = import.source_path.strip_prefix("@type-ref:") {
-                    java_resolver.resolve_type_ref(type_name, &file.path)
-                } else if import.is_namespace && lang == Language::Java {
-                    // Wildcard import: resolve to all files in the package
-                    let files = java_resolver.resolve_wildcard_scoped(&import.source_path, &file.path);
-                    if files.is_empty() {
-                        if JavaResolver::is_likely_external(&import.source_path) {
-                            let pkg = import
-                                .source_path
-                                .split('.')
-                                .take(3)
-                                .collect::<Vec<_>>()
-                                .join(".");
-                            Resolution::External(pkg)
-                        } else {
-                            Resolution::External(import.source_path.clone())
-                        }
+            let resolution: Resolution = if let Some(type_name) =
+                import.source_path.strip_prefix("@type-ref:")
+            {
+                java_resolver.resolve_type_ref(type_name, &file.path)
+            } else if import.is_namespace && lang == Language::Java {
+                // Wildcard import: resolve to all files in the package
+                let files = java_resolver.resolve_wildcard_scoped(&import.source_path, &file.path);
+                if files.is_empty() {
+                    if JavaResolver::is_likely_external(&import.source_path) {
+                        let pkg = import
+                            .source_path
+                            .split('.')
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        Resolution::External(pkg)
                     } else {
-                        for resolved_path in &files {
-                            if let Some(&target_id) = path_to_id.get(resolved_path) {
-                                if target_id != file.id {
-                                    edges_by_target.entry(target_id).or_default().push((
-                                        "*".to_string(),
-                                        import.is_type_only,
-                                        import.line_span.start.line,
-                                        false,
-                                    ));
-                                }
-                            }
-                        }
-                        continue;
+                        Resolution::External(import.source_path.clone())
                     }
                 } else {
-                    match lang {
-                        Language::Java => java_resolver.resolve(&import.source_path, &file.path),
-                        Language::Rust => rust_resolver.resolve(&import.source_path, &file.path),
-                        _ => ts_resolver.resolve(&import.source_path, &file.path),
+                    for resolved_path in &files {
+                        if let Some(&target_id) = path_to_id.get(resolved_path) {
+                            if target_id != file.id {
+                                edges_by_target.entry(target_id).or_default().push((
+                                    "*".to_string(),
+                                    import.is_type_only,
+                                    import.line_span.start.line,
+                                    false,
+                                ));
+                            }
+                        }
                     }
-                };
+                    continue;
+                }
+            } else {
+                match lang {
+                    Language::Java => java_resolver.resolve(&import.source_path, &file.path),
+                    Language::Rust => rust_resolver.resolve(&import.source_path, &file.path),
+                    _ => ts_resolver.resolve(&import.source_path, &file.path),
+                }
+            };
 
             match resolution {
                 Resolution::Resolved(resolved_path)
@@ -244,7 +243,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             // Edge is mod-declaration if ANY grouped import is a mod declaration
             let is_mod_declaration = imports_meta.iter().any(|(_, _, _, m)| *m);
             // Use the earliest line number
-            let line = imports_meta.iter().map(|(_, _, l, _)| *l).min().unwrap_or(0);
+            let line = imports_meta
+                .iter()
+                .map(|(_, _, l, _)| *l)
+                .min()
+                .unwrap_or(0);
             graph.add_import(FileImport {
                 from: file.id,
                 to: target_id,
@@ -325,10 +328,7 @@ pub fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
 ///
 /// Universal patterns (index, main, app, server, cli) are checked first.
 /// Language-specific patterns are delegated to `LanguageSemantics`.
-fn is_entry_point(
-    path: &Path,
-    semantics: Option<&dyn crate::model::LanguageSemantics>,
-) -> bool {
+fn is_entry_point(path: &Path, semantics: Option<&dyn crate::model::LanguageSemantics>) -> bool {
     let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     // Universal entry point patterns

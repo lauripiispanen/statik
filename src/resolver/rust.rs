@@ -711,11 +711,7 @@ serde = "1"
             "pub enum Caveat { A, B } pub mod rust;",
         )
         .unwrap();
-        fs::write(
-            src.join("resolver/rust.rs"),
-            "use super::Caveat;",
-        )
-        .unwrap();
+        fs::write(src.join("resolver/rust.rs"), "use super::Caveat;").unwrap();
 
         let known = vec![
             src.join("lib.rs"),
@@ -734,10 +730,7 @@ serde = "1"
                     path
                 );
             }
-            other => panic!(
-                "expected Resolved for super::Symbol, got {:?}",
-                other
-            ),
+            other => panic!("expected Resolved for super::Symbol, got {:?}", other),
         }
     }
 
@@ -967,10 +960,7 @@ version = "0.1.0"
         let result = resolver.resolve("serde::Serialize", &from);
         match result {
             Resolution::External(name) => assert_eq!(name, "serde"),
-            other => panic!(
-                "expected External for dependency, got {:?}",
-                other
-            ),
+            other => panic!("expected External for dependency, got {:?}", other),
         }
     }
 }

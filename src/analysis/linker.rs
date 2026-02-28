@@ -193,9 +193,7 @@ fn path_segments_end_with(haystack: &str, needle: &str) -> bool {
 /// Re-export chains are followed with cycle detection.
 ///
 /// This is an in-memory-only operation; results are not persisted to the database.
-pub fn link_cross_file_symbols(
-    file_graph: &FileGraph,
-) -> LinkingResult {
+pub fn link_cross_file_symbols(file_graph: &FileGraph) -> LinkingResult {
     let mut references = Vec::new();
     let mut resolved = 0usize;
     let mut unresolved = 0usize;
@@ -378,12 +376,7 @@ mod tests {
         }
     }
 
-    fn make_edge(
-        from: FileId,
-        to: FileId,
-        names: Vec<&str>,
-        line: usize,
-    ) -> FileImport {
+    fn make_edge(from: FileId, to: FileId, names: Vec<&str>, line: usize) -> FileImport {
         FileImport {
             from,
             to,
@@ -395,10 +388,7 @@ mod tests {
     }
 
     /// Helper: build a simple graph and run the linker, returning the result.
-    fn build_and_link(
-        files: Vec<FileInfo>,
-        edges: Vec<FileImport>,
-    ) -> LinkingResult {
+    fn build_and_link(files: Vec<FileInfo>, edges: Vec<FileImport>) -> LinkingResult {
         let mut graph = FileGraph::new();
         for f in files {
             graph.add_file(f);
@@ -419,7 +409,14 @@ mod tests {
                 make_file_info(
                     FileId(2),
                     "src/b.ts",
-                    vec![make_export(FileId(2), SymbolId(100), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(2),
+                        SymbolId(100),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
             ],
@@ -461,7 +458,14 @@ mod tests {
                 make_file_info(
                     FileId(3),
                     "src/c.ts",
-                    vec![make_export(FileId(3), SymbolId(300), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(3),
+                        SymbolId(300),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
             ],
@@ -506,7 +510,14 @@ mod tests {
                 make_file_info(
                     FileId(3),
                     "src/c.ts",
-                    vec![make_export(FileId(3), SymbolId(300), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(3),
+                        SymbolId(300),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
             ],
@@ -611,7 +622,14 @@ mod tests {
                 make_file_info(
                     FileId(2),
                     "src/b.ts",
-                    vec![make_export(FileId(2), SymbolId(100), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(2),
+                        SymbolId(100),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
             ],
@@ -632,7 +650,14 @@ mod tests {
                 make_file_info(
                     FileId(2),
                     "src/b.ts",
-                    vec![make_export(FileId(2), SymbolId(100), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(2),
+                        SymbolId(100),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
                 make_file_info(FileId(3), "src/c.ts", vec![], false),
@@ -706,7 +731,14 @@ mod tests {
         graph.add_file(make_file_info(
             FileId(2),
             "src/foo.rs",
-            vec![make_export(FileId(2), SymbolId(100), "bar", false, false, None)],
+            vec![make_export(
+                FileId(2),
+                SymbolId(100),
+                "bar",
+                false,
+                false,
+                None,
+            )],
             false,
         ));
         graph.add_import(FileImport {
@@ -848,12 +880,7 @@ mod tests {
             &graph
         ));
         // "utils" should also match
-        assert!(edge_matches_source_path(
-            &edge,
-            FileId(1),
-            "utils",
-            &graph
-        ));
+        assert!(edge_matches_source_path(&edge, FileId(1), "utils", &graph));
     }
 
     #[test]
@@ -878,7 +905,14 @@ mod tests {
                 make_file_info(
                     FileId(3),
                     "src/c.ts",
-                    vec![make_export(FileId(3), SymbolId(300), "foo", false, false, None)],
+                    vec![make_export(
+                        FileId(3),
+                        SymbolId(300),
+                        "foo",
+                        false,
+                        false,
+                        None,
+                    )],
                     false,
                 ),
             ],
@@ -917,7 +951,14 @@ mod tests {
         graph.add_file(make_file_info(
             FileId(2),
             "src/b.rs",
-            vec![make_export(FileId(2), SymbolId(100), "Foo", false, false, None)],
+            vec![make_export(
+                FileId(2),
+                SymbolId(100),
+                "Foo",
+                false,
+                false,
+                None,
+            )],
             false,
         ));
 

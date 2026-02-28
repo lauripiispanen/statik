@@ -17,8 +17,8 @@ use super::graph_builder::{
 use super::output::{
     display_path, format_cycles_text, format_dead_code_text, format_dead_symbols_text,
     format_deps_text, format_diff_text, format_dir_summary_text, format_exports_text,
-    format_impact_text, format_json, format_lint_text, format_references_text,
-    format_summary_text, format_symbols_text,
+    format_impact_text, format_json, format_lint_text, format_references_text, format_summary_text,
+    format_symbols_text,
 };
 use super::OutputFormat;
 
@@ -57,11 +57,7 @@ pub fn ensure_index(project_path: &Path, no_index: bool) -> Result<Database> {
 /// Resolve a user-provided file path to a FileId in the graph.
 ///
 /// Tries exact path match first, then falls back to suffix matching.
-fn resolve_file_id(
-    graph: &FileGraph,
-    project_path: &Path,
-    file_path: &str,
-) -> Result<FileId> {
+fn resolve_file_id(graph: &FileGraph, project_path: &Path, file_path: &str) -> Result<FileId> {
     let abs_path = project_path.join(file_path);
     graph
         .file_by_path(&abs_path)
@@ -709,13 +705,11 @@ pub fn run_lint(
     if config.rules.is_empty() {
         let msg = "No lint rules configured";
         let output = match format {
-            OutputFormat::Json => {
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "message": msg,
-                    "violations": [],
-                    "summary": { "total": 0, "errors": 0, "warnings": 0 }
-                }))?
-            }
+            OutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+                "message": msg,
+                "violations": [],
+                "summary": { "total": 0, "errors": 0, "warnings": 0 }
+            }))?,
             _ => msg.to_string(),
         };
         return Ok((output, false));
@@ -809,8 +803,7 @@ pub fn run_diff_from_dbs(
     let graph_before = build_file_graph(db_before, project_root_before)?;
     let graph_after = build_file_graph(db_after, project_root_after)?;
 
-    let result =
-        compare_snapshots_with_graphs(db_before, db_after, &graph_before, &graph_after)?;
+    let result = compare_snapshots_with_graphs(db_before, db_after, &graph_before, &graph_after)?;
 
     Ok(match format {
         OutputFormat::Text => format_diff_text(&result),
@@ -857,13 +850,7 @@ pub fn run_diff_git(
         ensure_index(project_path, false)?
     };
 
-    run_diff_from_dbs(
-        &db_before,
-        &db_after,
-        project_path,
-        project_path,
-        format,
-    )
+    run_diff_from_dbs(&db_before, &db_after, project_path, project_path, format)
 }
 
 /// Index a git ref, using cache if available.
@@ -873,8 +860,10 @@ fn index_git_ref(project_path: &Path, sha: &str) -> Result<Database> {
     let cache_path = git::snapshot_cache_path(project_path, sha);
 
     if cache_path.exists() {
-        return Database::open(&cache_path)
-            .context(format!("Failed to open cached snapshot: {}", cache_path.display()));
+        return Database::open(&cache_path).context(format!(
+            "Failed to open cached snapshot: {}",
+            cache_path.display()
+        ));
     }
 
     // Export tree to temp dir and index it
@@ -911,8 +900,7 @@ fn index_git_ref(project_path: &Path, sha: &str) -> Result<Database> {
         );
     }
 
-    Database::open(&cache_path)
-        .context(format!("Failed to open indexed snapshot for {}", sha))
+    Database::open(&cache_path).context(format!("Failed to open indexed snapshot for {}", sha))
 }
 
 /// Run the `symbols` command.
@@ -1103,8 +1091,7 @@ pub fn run_references(
 
     // Cross-file linking: match imports to exports across file boundaries
     let file_graph = build_file_graph(&db, project_path)?;
-    let link_result =
-        crate::analysis::linker::link_cross_file_symbols(&file_graph);
+    let link_result = crate::analysis::linker::link_cross_file_symbols(&file_graph);
     for xref in &link_result.references {
         // Only include cross-file refs where target symbol matches our search
         if !matching_symbols.contains(&xref.target_symbol) {
@@ -1247,8 +1234,7 @@ pub fn run_callers(
 
     // Cross-file linking: find importers of the target symbol across files
     let file_graph = build_file_graph(&db, project_path)?;
-    let link_result =
-        crate::analysis::linker::link_cross_file_symbols(&file_graph);
+    let link_result = crate::analysis::linker::link_cross_file_symbols(&file_graph);
     for xref in &link_result.references {
         if !target_symbols.contains(&xref.target_symbol) {
             continue;
@@ -1342,7 +1328,12 @@ pub fn run_churn(
         let graph = maybe_filter_paths(graph, path_glob, project_path)?;
 
         let mut result = crate::analysis::churn::compute_co_changes(
-            &db, &graph, glob_pattern, min_co_changes, since_ts, until_ts,
+            &db,
+            &graph,
+            glob_pattern,
+            min_co_changes,
+            since_ts,
+            until_ts,
         )?;
 
         // Apply display_path
@@ -1466,7 +1457,10 @@ pub fn run_bus_factor(
 /// Format bus-factor result as human-readable text.
 fn format_bus_factor_text(result: &crate::analysis::ownership::BusFactorResult) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Bus Factor Analysis ({} files):\n\n", result.count));
+    out.push_str(&format!(
+        "Bus Factor Analysis ({} files):\n\n",
+        result.count
+    ));
     out.push_str(&format!(
         "  {:<6} {:<50} {:<5} {:<30} {:<6}\n",
         "Risk", "File", "BF", "Primary Owner", "Fan-in"
@@ -1479,7 +1473,10 @@ fn format_bus_factor_text(result: &crate::analysis::ownership::BusFactorResult) 
             entry.risk_score,
             entry.path,
             entry.bus_factor,
-            format!("{} ({:.0}%)", entry.primary_owner.author_name, entry.primary_owner.score),
+            format!(
+                "{} ({:.0}%)",
+                entry.primary_owner.author_name, entry.primary_owner.score
+            ),
             entry.fan_in,
         ));
     }
@@ -1706,10 +1703,7 @@ fn generate_dot(graph: &FileGraph, focus_id: Option<FileId>) -> String {
         } else {
             "#e8e8e8"
         };
-        out.push_str(&format!(
-            "  \"{}\" [fillcolor=\"{}\"];\n",
-            rel_path, color
-        ));
+        out.push_str(&format!("  \"{}\" [fillcolor=\"{}\"];\n", rel_path, color));
     }
     out.push('\n');
 
@@ -1773,10 +1767,7 @@ fn generate_svg(graph: &FileGraph, focus_id: Option<FileId>) -> Result<String> {
 }
 
 /// Build the JSON representation for the graph.
-fn build_graph_json(
-    graph: &FileGraph,
-    focus_id: Option<FileId>,
-) -> serde_json::Value {
+fn build_graph_json(graph: &FileGraph, focus_id: Option<FileId>) -> serde_json::Value {
     let mut nodes = Vec::new();
     let mut edges_out = Vec::new();
     let mut files: Vec<_> = graph.all_files().collect();
@@ -1841,7 +1832,10 @@ fn build_graph_json(
 fn generate_html(graph: &FileGraph, focus_id: Option<FileId>) -> String {
     let graph_json = build_graph_json(graph, focus_id);
     let json_str = serde_json::to_string(&graph_json).unwrap_or_default();
-    HTML_TEMPLATE.replace("/*GRAPH_DATA*/", &format!("const graphData = {};", json_str))
+    HTML_TEMPLATE.replace(
+        "/*GRAPH_DATA*/",
+        &format!("const graphData = {};", json_str),
+    )
 }
 
 const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
@@ -2487,8 +2481,7 @@ mod tests {
             "summary and cycles commands must report the same cycle count"
         );
         assert_eq!(
-            cycles_result.summary.files_in_cycles,
-            summary_cycles.summary.files_in_cycles,
+            cycles_result.summary.files_in_cycles, summary_cycles.summary.files_in_cycles,
             "summary and cycles commands must report the same files_in_cycles count"
         );
         // The real cycle is a <-> b (1 cycle, 2 files)

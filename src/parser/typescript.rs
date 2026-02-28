@@ -1452,15 +1452,53 @@ impl<'a> Extractor<'a> {
         // Skip common JS/TS globals and keywords
         if matches!(
             name.as_str(),
-            "undefined" | "null" | "true" | "false" | "this" | "super"
-                | "console" | "window" | "document" | "global" | "globalThis"
-                | "require" | "module" | "exports" | "process" | "__dirname" | "__filename"
-                | "Promise" | "Array" | "Object" | "String" | "Number" | "Boolean"
-                | "Map" | "Set" | "Error" | "Date" | "JSON" | "Math" | "RegExp"
-                | "Symbol" | "BigInt" | "Buffer" | "URL" | "URLSearchParams"
-                | "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval"
-                | "parseInt" | "parseFloat" | "isNaN" | "isFinite"
-                | "arguments" | "NaN" | "Infinity" | "void"
+            "undefined"
+                | "null"
+                | "true"
+                | "false"
+                | "this"
+                | "super"
+                | "console"
+                | "window"
+                | "document"
+                | "global"
+                | "globalThis"
+                | "require"
+                | "module"
+                | "exports"
+                | "process"
+                | "__dirname"
+                | "__filename"
+                | "Promise"
+                | "Array"
+                | "Object"
+                | "String"
+                | "Number"
+                | "Boolean"
+                | "Map"
+                | "Set"
+                | "Error"
+                | "Date"
+                | "JSON"
+                | "Math"
+                | "RegExp"
+                | "Symbol"
+                | "BigInt"
+                | "Buffer"
+                | "URL"
+                | "URLSearchParams"
+                | "setTimeout"
+                | "setInterval"
+                | "clearTimeout"
+                | "clearInterval"
+                | "parseInt"
+                | "parseFloat"
+                | "isNaN"
+                | "isFinite"
+                | "arguments"
+                | "NaN"
+                | "Infinity"
+                | "void"
         ) {
             return;
         }
@@ -1483,16 +1521,20 @@ impl<'a> Extractor<'a> {
 
     fn is_ts_declaration_name(parent: Node, node: Node) -> bool {
         match parent.kind() {
-            "function_declaration" | "generator_function_declaration"
-            | "class_declaration" | "interface_declaration"
-            | "type_alias_declaration" | "enum_declaration" => {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "class_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
             "variable_declarator" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
             }
-            "formal_parameters" | "required_parameter" | "optional_parameter"
-            | "rest_pattern" => true,
+            "formal_parameters" | "required_parameter" | "optional_parameter" | "rest_pattern" => {
+                true
+            }
             "import_specifier" | "export_specifier" | "namespace_import" => true,
             "property_signature" | "method_definition" | "public_field_definition" => {
                 parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id())
@@ -2528,7 +2570,8 @@ class Beta {
             .find(|r| r.source == alpha_run.id && r.kind == RefKind::Call);
         assert!(alpha_call.is_some(), "Alpha.run() should have a call ref");
         assert_eq!(
-            alpha_call.unwrap().target, alpha_process.id,
+            alpha_call.unwrap().target,
+            alpha_process.id,
             "Alpha.run() should resolve to Alpha.process()"
         );
 
@@ -2539,7 +2582,8 @@ class Beta {
             .find(|r| r.source == beta_run.id && r.kind == RefKind::Call);
         assert!(beta_call.is_some(), "Beta.run() should have a call ref");
         assert_eq!(
-            beta_call.unwrap().target, beta_process.id,
+            beta_call.unwrap().target,
+            beta_process.id,
             "Beta.run() should resolve to Beta.process()"
         );
     }

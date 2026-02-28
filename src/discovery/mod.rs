@@ -28,11 +28,16 @@ pub struct DiscoveryConfig {
 /// Default exclude patterns for common build output and IDE directories.
 const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
     // Java / JVM / Gradle
-    "target/", "build/", ".gradle/", ".idea/", "*.class",
+    "target/",
+    "build/",
+    ".gradle/",
+    ".idea/",
+    "*.class",
     // JavaScript / Node.js
     "node_modules/",
     // Vendored / third-party
-    "vendor/", "third_party/",
+    "vendor/",
+    "third_party/",
 ];
 
 /// Discover source files in a project directory, respecting .gitignore.

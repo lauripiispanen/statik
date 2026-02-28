@@ -79,9 +79,7 @@ fn test_source_set_visibility_filtering() {
     let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     assert!(
-        import_paths
-            .iter()
-            .any(|p| p.contains("FrameService.java")),
+        import_paths.iter().any(|p| p.contains("FrameService.java")),
         "AppController should resolve import to FrameService.java, got {:?}",
         import_paths
     );
@@ -251,7 +249,9 @@ fn test_wildcard_import_respects_source_set_boundaries() {
 
     // Must NOT resolve to app code
     assert!(
-        !import_paths.iter().any(|p| p.contains("AppController.java")),
+        !import_paths
+            .iter()
+            .any(|p| p.contains("AppController.java")),
         "Wildcard must NOT resolve to AppController.java (app source set), got {:?}",
         import_paths
     );
@@ -266,11 +266,7 @@ fn test_no_source_sets_backwards_compat() {
     let tmp = setup();
 
     // Remove the source_sets config, keep only rules = []
-    std::fs::write(
-        tmp.path().join(".statik/rules.toml"),
-        "rules = []\n",
-    )
-    .unwrap();
+    std::fs::write(tmp.path().join(".statik/rules.toml"), "rules = []\n").unwrap();
 
     index_project(tmp.path());
 
@@ -293,9 +289,7 @@ fn test_no_source_sets_backwards_compat() {
     let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
 
     assert!(
-        import_paths
-            .iter()
-            .any(|p| p.contains("FrameService.java")),
+        import_paths.iter().any(|p| p.contains("FrameService.java")),
         "Without source sets, AppController should still import FrameService, got {:?}",
         import_paths
     );

@@ -261,7 +261,13 @@ fn test_relative_paths_default_output() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    let output = proj.run(&["--no-index", "--format", "json", "deps", "src/services/userService.ts"]);
+    let output = proj.run(&[
+        "--no-index",
+        "--format",
+        "json",
+        "deps",
+        "src/services/userService.ts",
+    ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Paths should be project-relative (not absolute) by default
@@ -273,7 +279,8 @@ fn test_relative_paths_default_output() {
 
     // Should still contain the relative file path
     assert!(
-        stdout.contains("src/services/userService.ts") || stdout.contains("services/userService.ts"),
+        stdout.contains("src/services/userService.ts")
+            || stdout.contains("services/userService.ts"),
         "Output should contain relative file path: {}",
         stdout
     );
@@ -285,8 +292,12 @@ fn test_absolute_paths_flag() {
     proj.run(&["index", "."]);
 
     let output = proj.run(&[
-        "--no-index", "--format", "json", "--absolute-paths",
-        "deps", "src/services/userService.ts",
+        "--no-index",
+        "--format",
+        "json",
+        "--absolute-paths",
+        "deps",
+        "src/services/userService.ts",
     ]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -662,17 +673,20 @@ fn test_summary_by_directory_json() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    let stdout = proj.stdout(&["--format", "json", "--no-index", "summary", "--by-directory"]);
+    let stdout = proj.stdout(&[
+        "--format",
+        "json",
+        "--no-index",
+        "summary",
+        "--by-directory",
+    ]);
 
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let dirs = json["directories"]
         .as_array()
         .expect("should have directories array");
 
-    assert!(
-        !dirs.is_empty(),
-        "should have at least one directory entry"
-    );
+    assert!(!dirs.is_empty(), "should have at least one directory entry");
 
     // Check that known directories are present
     let dir_names: Vec<&str> = dirs
@@ -1168,8 +1182,8 @@ patterns = ["**/index.ts"]
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect("should produce valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("should produce valid JSON");
     assert_eq!(json["message"], "No lint rules configured");
     assert_eq!(json["violations"], serde_json::json!([]));
     assert_eq!(json["summary"]["total"], 0);
@@ -1536,9 +1550,10 @@ fn test_count_dead_code() {
 
     let stdout = proj.stdout(&["--no-index", "--count", "dead-code"]);
     // Should output just a number
-    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
-        panic!("--count should output a number, got: {}", stdout)
-    });
+    let count: u64 = stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("--count should output a number, got: {}", stdout));
     // Our basic project has at least orphan.ts + some unused exports
     assert!(count > 0, "should find dead code, count was: {}", count);
 }
@@ -1550,9 +1565,10 @@ fn test_count_no_cycles_exits_0() {
 
     let output = proj.run(&["--no-index", "--count", "cycles"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
-        panic!("--count should output a number, got: {}", stdout)
-    });
+    let count: u64 = stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("--count should output a number, got: {}", stdout));
     assert_eq!(count, 0, "acyclic project should have 0 cycles");
     assert!(output.status.success(), "--count 0 should exit 0");
 }
@@ -1564,9 +1580,10 @@ fn test_count_cycles_exits_0() {
 
     let output = proj.run(&["--no-index", "--count", "cycles"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
-        panic!("--count should output a number, got: {}", stdout)
-    });
+    let count: u64 = stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("--count should output a number, got: {}", stdout));
     assert!(count > 0, "cyclic project should have cycles");
     assert_eq!(
         output.status.code(),
@@ -1580,9 +1597,16 @@ fn test_limit_dead_code() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    let stdout = proj.stdout(&["--no-index", "--format", "json", "--limit", "1", "dead-code"]);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "json",
+        "--limit",
+        "1",
+        "dead-code",
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     // dead_files array should have at most 1 entry
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -1608,8 +1632,8 @@ fn test_sort_dead_code_by_path() {
         "--scope",
         "exports",
     ]);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     let dead_exports = json["dead_exports"].as_array().unwrap();
     if dead_exports.len() >= 2 {
@@ -1645,8 +1669,8 @@ fn test_sort_reverse() {
         "--scope",
         "exports",
     ]);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     let dead_exports = json["dead_exports"].as_array().unwrap();
     if dead_exports.len() >= 2 {
@@ -1683,8 +1707,8 @@ fn test_sort_and_limit_combined() {
         "--scope",
         "exports",
     ]);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     let dead_exports = json["dead_exports"].as_array().unwrap();
     assert!(
@@ -1703,7 +1727,14 @@ fn test_csv_dead_code_files() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    let stdout = proj.stdout(&["--no-index", "--format", "csv", "dead-code", "--scope", "files"]);
+    let stdout = proj.stdout(&[
+        "--no-index",
+        "--format",
+        "csv",
+        "dead-code",
+        "--scope",
+        "files",
+    ]);
 
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert!(
@@ -1769,8 +1800,8 @@ fn test_deps_between_finds_edges() {
         "src/utils/**",
     ]);
 
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     let edges = json["edges"].as_array().expect("edges array");
     // userService.ts imports from utils/format.ts
@@ -1798,8 +1829,8 @@ fn test_deps_between_no_matching_edges() {
         "src/ui/**",
     ]);
 
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {}\n{}", e, stdout));
 
     let edges = json["edges"].as_array().expect("edges array");
     assert!(edges.is_empty(), "should find no edges from db to ui");
@@ -1810,13 +1841,7 @@ fn test_deps_between_text_output() {
     let proj = create_basic_project();
     proj.run(&["index", "."]);
 
-    let stdout = proj.stdout(&[
-        "--no-index",
-        "deps",
-        "--between",
-        "src/ui/**",
-        "src/db/**",
-    ]);
+    let stdout = proj.stdout(&["--no-index", "deps", "--between", "src/ui/**", "src/db/**"]);
 
     assert!(
         stdout.contains("Dependencies from"),
@@ -1845,9 +1870,10 @@ fn test_deps_between_count() {
         "src/db/**",
     ]);
 
-    let count: u64 = stdout.trim().parse().unwrap_or_else(|_| {
-        panic!("--count should output a number, got: {}", stdout)
-    });
+    let count: u64 = stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("--count should output a number, got: {}", stdout));
     assert_eq!(count, 1, "should find exactly 1 edge from ui to db");
 }
 

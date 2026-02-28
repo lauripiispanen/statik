@@ -232,16 +232,9 @@ fn main() -> Result<()> {
                 commands::run_diff_git(&project_path, "HEAD", None, effective_format)?
             } else if let Some(r1) = ref1 {
                 // Git ref mode: statik diff <ref1> [ref2]
-                commands::run_diff_git(
-                    &project_path,
-                    r1,
-                    ref2.as_deref(),
-                    effective_format,
-                )?
+                commands::run_diff_git(&project_path, r1, ref2.as_deref(), effective_format)?
             } else {
-                anyhow::bail!(
-                    "diff requires either two git refs, --before <db_path>, or --cached"
-                );
+                anyhow::bail!("diff requires either two git refs, --before <db_path>, or --cached");
             };
 
             if ci {
@@ -507,8 +500,12 @@ fn emit_output(output: &str, command: &str, opts: &PostProcessOpts) {
         opts.original_format,
         OutputFormat::Json | OutputFormat::Compact | OutputFormat::Csv
     );
-    let needs_json = opts.count || opts.sort.is_some() || opts.limit.is_some() || is_csv
-        || is_json_output || has_jq;
+    let needs_json = opts.count
+        || opts.sort.is_some()
+        || opts.limit.is_some()
+        || is_csv
+        || is_json_output
+        || has_jq;
 
     if !needs_json {
         println!("{}", output);
@@ -544,7 +541,10 @@ fn emit_output(output: &str, command: &str, opts: &PostProcessOpts) {
         match apply_jq_filter(&json, jq_expr) {
             Ok(results) => {
                 for result in &results {
-                    println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(result).unwrap_or_default()
+                    );
                 }
             }
             Err(e) => {
@@ -568,7 +568,10 @@ fn emit_output(output: &str, command: &str, opts: &PostProcessOpts) {
             println!("{}", serde_json::to_string(&json).unwrap_or_default());
         }
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json).unwrap_or_default()
+            );
         }
     }
 }
@@ -662,10 +665,7 @@ fn json_to_text(json: &serde_json::Value, command: &str) -> String {
     // Try to print a summary line if present
     if let Some(summary) = json.get("summary") {
         if let Some(obj) = summary.as_object() {
-            let parts: Vec<String> = obj
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect();
+            let parts: Vec<String> = obj.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
             out.push_str(&parts.join(", "));
             out.push('\n');
         }
@@ -939,8 +939,7 @@ fn enrich_path_fields(json: &mut serde_json::Value) {
             .collect();
 
             for key in &path_fields {
-                if let Some(path_str) =
-                    map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+                if let Some(path_str) = map.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
                 {
                     let p = std::path::Path::new(&path_str);
                     let dir_key = format!("{}_directory", key);
@@ -970,10 +969,7 @@ fn enrich_path_fields(json: &mut serde_json::Value) {
                         map.insert(ext_key.clone(), serde_json::Value::String(ext));
                     }
                     if !map.contains_key(&lang_key) {
-                        let ext = map
-                            .get(&ext_key)
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let ext = map.get(&ext_key).and_then(|v| v.as_str()).unwrap_or("");
                         let lang = extension_to_language(ext);
                         if !lang.is_empty() {
                             map.insert(lang_key, serde_json::Value::String(lang.to_string()));
@@ -1080,10 +1076,7 @@ mod tests {
     #[test]
     fn test_compare_none_values() {
         let a = json!(1);
-        assert_eq!(
-            compare_json_values(None, None),
-            std::cmp::Ordering::Equal
-        );
+        assert_eq!(compare_json_values(None, None), std::cmp::Ordering::Equal);
         assert_eq!(
             compare_json_values(Some(&a), None),
             std::cmp::Ordering::Less
@@ -1106,13 +1099,19 @@ mod tests {
         );
         assert_eq!(primary_arrays("cycles"), vec!["cycles"]);
         assert_eq!(primary_arrays("lint"), vec!["violations"]);
-        assert_eq!(primary_arrays("deps"), vec!["imports", "imported_by", "edges"]);
+        assert_eq!(
+            primary_arrays("deps"),
+            vec!["imports", "imported_by", "edges"]
+        );
         assert_eq!(primary_arrays("impact"), vec!["affected"]);
         assert_eq!(primary_arrays("exports"), vec!["exports"]);
         assert_eq!(primary_arrays("symbols"), vec!["symbols"]);
         assert_eq!(primary_arrays("references"), vec!["references"]);
         assert_eq!(primary_arrays("callers"), vec!["callers"]);
-        assert_eq!(primary_arrays("diff"), vec!["changes", "import_edge_changes", "cycle_changes"]);
+        assert_eq!(
+            primary_arrays("diff"),
+            vec!["changes", "import_edge_changes", "cycle_changes"]
+        );
     }
 
     #[test]
@@ -1446,10 +1445,7 @@ mod tests {
     #[test]
     fn test_csv_escape_null() {
         assert_eq!(csv_escape_value(None), "");
-        assert_eq!(
-            csv_escape_value(Some(&serde_json::Value::Null)),
-            ""
-        );
+        assert_eq!(csv_escape_value(Some(&serde_json::Value::Null)), "");
     }
 
     #[test]
@@ -1688,5 +1684,4 @@ mod tests {
         assert!(arrays.contains(&"import_edge_changes"));
         assert!(arrays.contains(&"cycle_changes"));
     }
-
 }

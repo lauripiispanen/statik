@@ -193,8 +193,14 @@ fn test_rust_exports_pub_struct() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output =
-        commands::run_exports(tmp.path(), "src/model/user.rs", &OutputFormat::Json, true, None).unwrap();
+    let output = commands::run_exports(
+        tmp.path(),
+        "src/model/user.rs",
+        &OutputFormat::Json,
+        true,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
@@ -235,8 +241,16 @@ fn test_rust_dead_code_detects_orphan() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "files",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();
@@ -258,8 +272,16 @@ fn test_rust_dead_code_excludes_entry_points() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output =
-        commands::run_dead_code(tmp.path(), "files", &OutputFormat::Json, true, false, None, None).unwrap();
+    let output = commands::run_dead_code(
+        tmp.path(),
+        "files",
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let dead_files = json["dead_files"].as_array().unwrap();

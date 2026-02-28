@@ -313,5 +313,4 @@ pub trait LanguageSemantics: Send + Sync {
     fn seed_all_symbols_dirs(&self) -> &[&str] {
         &[]
     }
-
 }
