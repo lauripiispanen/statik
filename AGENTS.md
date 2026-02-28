@@ -12,6 +12,9 @@
 - The police/reviewer agent should review each task as it completes, not batch-review at the end. This gives the coder tighter feedback loops.
 - When spawning teams, include `cargo clippy` in the definition of done alongside `cargo test`.
 - When parallel agents work on adjacent tasks (e.g., Phase B and Phase D that both touch `file_graph.rs`), explicitly assign file ownership in task descriptions to prevent duplicate code and merge conflicts.
+- Agents must ensure `cargo check` passes after each atomic change, not just at task completion — partial changes break the build for other parallel agents.
+- The `.claude/` directory is gitignored. Use `git add -f` to commit skill or settings files.
+- Every bug fix must include a substantive regression test that would fail if the bug were reintroduced. Police/reviewers should reject fixes without such tests.
 
 ## Code Conventions
 
