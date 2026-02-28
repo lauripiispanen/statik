@@ -73,6 +73,48 @@ fn test_index_discovers_all_files() {
     );
 }
 
+/// Regression test for 10.9: files in unsupported languages should be silently
+/// skipped during indexing, not cause warnings or errors.
+#[test]
+fn test_index_skips_unsupported_languages_silently() {
+    let tmp = setup_project();
+
+    // Add files in languages without parsers (Python, Go, C)
+    let unsupported_files = vec![
+        ("vendored/lib.py", "def hello(): pass"),
+        ("vendored/main.go", "package main\nfunc main() {}"),
+        ("vendored/util.c", "#include <stdio.h>"),
+        ("vendored/CMakeLists.txt", "cmake_minimum_required(VERSION 3.10)"),
+    ];
+    for (rel_path, content) in &unsupported_files {
+        let full_path = tmp.path().join(rel_path);
+        std::fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+        std::fs::write(&full_path, content).unwrap();
+    }
+
+    let config = statik::discovery::DiscoveryConfig::default();
+    let result = statik::cli::index::run_index(tmp.path(), &config, false).unwrap();
+
+    // Supported files should still be indexed
+    assert!(
+        result.files_indexed > 0,
+        "Supported files should still be indexed, got {}",
+        result.files_indexed
+    );
+
+    // No parse errors from unsupported languages
+    assert!(
+        result.parse_errors.is_empty(),
+        "Unsupported languages should not produce parse errors, got {:?}",
+        result.parse_errors
+    );
+
+    // Skipped count should include the unsupported files
+    // (some may not be discovered if their extensions are unknown, but those
+    // that are discovered as Language variants without parsers should be counted)
+    // The key invariant: indexing completes without error
+}
+
 #[test]
 fn test_deps_command_json() {
     let tmp = setup_project();

@@ -844,8 +844,15 @@ mod tests {
         assert_eq!(compute_bus_factor(&[], 0.1), 0);
     }
 
+    /// Regression test for 10.4b: fan_in was always 0 on multi-module projects.
+    ///
+    /// The bug: FileGraph stores absolute paths (e.g. /home/user/project/module/src/Foo.java)
+    /// but git log returns relative paths (e.g. module/src/Foo.java). The old suffix-matching
+    /// approach failed on deeply nested multi-module paths. This test reproduces the exact
+    /// scenario from the external evaluation: a utility class imported by many files across
+    /// multiple Gradle modules, where fan_in was reported as 0 despite having 200+ importers.
     #[test]
-    fn test_bus_factor_analysis_fan_in_with_path_mismatch() {
+    fn test_bus_factor_fan_in_multimodule_deep_paths() {
         use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
         use crate::model::{FileId, Language};
         use std::path::PathBuf;
@@ -853,39 +860,149 @@ mod tests {
         let db = Database::in_memory().unwrap();
         let now = 1700000000;
 
-        // Project root simulating a multi-module project
-        let project_root = PathBuf::from("/project");
+        // Simulate a multi-module Gradle project with a deeply nested project root
+        let project_root = PathBuf::from("/home/user/workspace/mycompany-platform");
+
+        // The core utility file (the one that had 200+ importers but fan_in=0)
+        let core_util = "core/src/main/java/com/mycompany/platform/core/util/StringUtils.java";
+        // Files across different modules that import the utility
+        let api_controller = "api-gateway/src/main/java/com/mycompany/platform/api/UserController.java";
+        let auth_service = "auth-service/src/main/java/com/mycompany/platform/auth/AuthService.java";
+        let data_repo = "data-layer/src/main/java/com/mycompany/platform/data/UserRepository.java";
+        let web_handler = "web-frontend/src/main/java/com/mycompany/platform/web/RequestHandler.java";
 
         // Commit history uses relative paths (as git log returns)
         db.insert_commit("sha1", "Alice", "alice@example.com", now)
             .unwrap();
-        db.insert_file_commit("module/src/main/java/com/example/Foo.java", "sha1", 100, 0)
-            .unwrap();
-        db.insert_file_commit("module/src/main/java/com/example/Bar.java", "sha1", 50, 0)
-            .unwrap();
+        for rel_path in &[core_util, api_controller, auth_service, data_repo, web_handler] {
+            db.insert_file_commit(rel_path, "sha1", 50, 0).unwrap();
+        }
 
         // File graph uses absolute paths
         let mut graph = FileGraph::new();
+        let files = vec![
+            (FileId(1), core_util),
+            (FileId(2), api_controller),
+            (FileId(3), auth_service),
+            (FileId(4), data_repo),
+            (FileId(5), web_handler),
+        ];
+        for (id, rel) in &files {
+            graph.add_file(FileInfo {
+                id: *id,
+                path: project_root.join(rel),
+                language: Language::Java,
+                exports: vec![],
+                is_entry_point: false,
+            });
+        }
+
+        // All 4 module files import the core utility -> fan_in = 4
+        for importer_id in [FileId(2), FileId(3), FileId(4), FileId(5)] {
+            graph.add_import(FileImport {
+                from: importer_id,
+                to: FileId(1),
+                imported_names: vec!["StringUtils".to_string()],
+                is_type_only: false,
+                is_mod_declaration: false,
+                line: 1,
+            });
+        }
+
+        let result = compute_bus_factor_analysis(
+            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+        )
+        .unwrap();
+
+        // The core utility should have fan_in = 4
+        let util_entry = result
+            .files
+            .iter()
+            .find(|e| e.path.contains("StringUtils.java"))
+            .expect("StringUtils.java should be in results");
+        assert_eq!(
+            util_entry.fan_in, 4,
+            "StringUtils.java should have fan_in=4 (imported by 4 modules), got {}",
+            util_entry.fan_in
+        );
+        assert!(
+            util_entry.risk_score > 0.0,
+            "risk_score should be > 0 when fan_in > 0 and bus_factor = 1, got {}",
+            util_entry.risk_score
+        );
+
+        // Files that import but are NOT imported should have fan_in = 0
+        let controller_entry = result
+            .files
+            .iter()
+            .find(|e| e.path.contains("UserController.java"))
+            .expect("UserController.java should be in results");
+        assert_eq!(
+            controller_entry.fan_in, 0,
+            "Leaf file should have fan_in=0"
+        );
+
+        // Verify ALL files have results (none lost due to path matching)
+        assert_eq!(
+            result.files.len(), 5,
+            "All 5 files should appear in results"
+        );
+    }
+
+    /// Regression test: fan_in path matching must handle project roots that are
+    /// themselves deeply nested (e.g. /home/user/work/clients/acme/backend).
+    /// The old suffix-matching would sometimes match the wrong file when paths
+    /// shared common suffixes across different modules.
+    #[test]
+    fn test_bus_factor_fan_in_no_false_matches() {
+        use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
+        use crate::model::{FileId, Language};
+        use std::path::PathBuf;
+
+        let db = Database::in_memory().unwrap();
+        let now = 1700000000;
+        let project_root = PathBuf::from("/project");
+
+        // Two files with the same filename in different modules
+        let foo_core = "core/src/main/java/com/example/Config.java";
+        let foo_web = "web/src/main/java/com/example/Config.java";
+
+        db.insert_commit("sha1", "Alice", "alice@example.com", now)
+            .unwrap();
+        db.insert_file_commit(foo_core, "sha1", 80, 0).unwrap();
+        db.insert_file_commit(foo_web, "sha1", 40, 0).unwrap();
+
+        let mut graph = FileGraph::new();
         graph.add_file(FileInfo {
             id: FileId(1),
-            path: PathBuf::from("/project/module/src/main/java/com/example/Foo.java"),
+            path: project_root.join(foo_core),
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
-            path: PathBuf::from("/project/module/src/main/java/com/example/Bar.java"),
+            path: project_root.join(foo_web),
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
         });
 
-        // Bar imports Foo -> Foo has fan_in = 1
+        // Only web/Config is imported (by a hypothetical consumer)
+        // but core/Config has no importers
+        graph.add_file(FileInfo {
+            id: FileId(3),
+            path: project_root.join("web/src/main/java/com/example/App.java"),
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        db.insert_file_commit("web/src/main/java/com/example/App.java", "sha1", 20, 0)
+            .unwrap();
         graph.add_import(FileImport {
-            from: FileId(2),
-            to: FileId(1),
-            imported_names: vec!["Foo".to_string()],
+            from: FileId(3),
+            to: FileId(2),
+            imported_names: vec!["Config".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
             line: 1,
@@ -896,21 +1013,26 @@ mod tests {
         )
         .unwrap();
 
-        // Find Foo.java in results — it should have fan_in = 1
-        let foo_entry = result
+        // core/Config should have fan_in = 0 (nobody imports it)
+        let core_entry = result
             .files
             .iter()
-            .find(|e| e.path.contains("Foo.java"))
-            .expect("Foo.java should be in results");
+            .find(|e| e.path.contains("core") && e.path.contains("Config.java"))
+            .expect("core/Config.java should be in results");
         assert_eq!(
-            foo_entry.fan_in, 1,
-            "Foo.java should have fan_in=1 (imported by Bar.java), got {}",
-            foo_entry.fan_in
+            core_entry.fan_in, 0,
+            "core/Config should have fan_in=0, not inherit web/Config's fan_in"
         );
-        assert!(
-            foo_entry.risk_score > 0.0,
-            "risk_score should be > 0 when fan_in > 0, got {}",
-            foo_entry.risk_score
+
+        // web/Config should have fan_in = 1
+        let web_entry = result
+            .files
+            .iter()
+            .find(|e| e.path.contains("web") && e.path.contains("Config.java"))
+            .expect("web/Config.java should be in results");
+        assert_eq!(
+            web_entry.fan_in, 1,
+            "web/Config should have fan_in=1"
         );
     }
 
@@ -997,6 +1119,116 @@ mod tests {
             "Adaptive should give creator more ownership: adaptive={:.2}% vs fixed={:.2}%",
             creator_adaptive.score,
             creator_fixed.score
+        );
+    }
+
+    /// Regression test for 10.7: verify that the full bus-factor pipeline actually
+    /// uses adaptive mode when passed, producing different primary_owner scores
+    /// than fixed mode on an old file.
+    #[test]
+    fn test_bus_factor_analysis_uses_adaptive_mode() {
+        use crate::model::file_graph::{FileGraph, FileImport, FileInfo};
+        use crate::model::{FileId, Language};
+        use std::path::PathBuf;
+
+        let db = Database::in_memory().unwrap();
+        let now = 1700000000;
+        let eight_years_ago = now - 8 * 365 * 86400;
+        let one_year_ago = now - 365 * 86400;
+        let project_root = PathBuf::from("/project");
+
+        // Creator made the file 8 years ago, tweaker edited recently
+        db.insert_commit("sha1", "Creator", "creator@example.com", eight_years_ago)
+            .unwrap();
+        db.insert_commit("sha2", "Tweaker", "tweaker@example.com", one_year_ago)
+            .unwrap();
+        db.insert_file_commit("src/old_util.rs", "sha1", 90, 0)
+            .unwrap();
+        db.insert_file_commit("src/old_util.rs", "sha2", 3, 2)
+            .unwrap();
+
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: project_root.join("src/old_util.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: project_root.join("src/consumer.rs"),
+            language: Language::Rust,
+            exports: vec![],
+            is_entry_point: false,
+        });
+        db.insert_file_commit("src/consumer.rs", "sha2", 20, 0).unwrap();
+        graph.add_import(FileImport {
+            from: FileId(2),
+            to: FileId(1),
+            imported_names: vec!["old_util".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            line: 1,
+        });
+
+        let fixed_result = compute_bus_factor_analysis(
+            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Fixed,
+        )
+        .unwrap();
+        let adaptive_result = compute_bus_factor_analysis(
+            &db, &graph, None, 0.1, 180.0, &project_root, HalfLifeMode::Adaptive,
+        )
+        .unwrap();
+
+        let fixed_entry = fixed_result.files.iter().find(|e| e.path.contains("old_util")).unwrap();
+        let adaptive_entry = adaptive_result.files.iter().find(|e| e.path.contains("old_util")).unwrap();
+
+        // With fixed mode on an 8-year-old file, Tweaker should be primary owner
+        assert_eq!(
+            fixed_entry.primary_owner.author_name, "Tweaker",
+            "Fixed mode: Tweaker should be primary owner of old file"
+        );
+
+        // With adaptive mode, Creator should retain enough ownership to be primary
+        assert_eq!(
+            adaptive_entry.primary_owner.author_name, "Creator",
+            "Adaptive mode: Creator should be primary owner of old file, got {}",
+            adaptive_entry.primary_owner.author_name,
+        );
+    }
+
+    /// Regression test for 10.7: verify that compute_owners also respects the mode.
+    #[test]
+    fn test_compute_owners_uses_adaptive_mode() {
+        let db = Database::in_memory().unwrap();
+        let now = 1700000000;
+        let five_years_ago = now - 5 * 365 * 86400;
+        let three_months_ago = now - 90 * 86400;
+
+        db.insert_commit("sha1", "Original", "original@example.com", five_years_ago)
+            .unwrap();
+        db.insert_commit("sha2", "Recent", "recent@example.com", three_months_ago)
+            .unwrap();
+        db.insert_file_commit("src/old_module.rs", "sha1", 100, 0)
+            .unwrap();
+        db.insert_file_commit("src/old_module.rs", "sha2", 5, 0)
+            .unwrap();
+
+        let fixed_result = compute_owners(&db, Some("**"), 10, 180.0, HalfLifeMode::Fixed).unwrap();
+        let adaptive_result = compute_owners(&db, Some("**"), 10, 180.0, HalfLifeMode::Adaptive).unwrap();
+
+        let fixed_file = &fixed_result.files[0];
+        let adaptive_file = &adaptive_result.files[0];
+
+        let orig_fixed = fixed_file.owners.iter().find(|o| o.author_name == "Original").unwrap();
+        let orig_adaptive = adaptive_file.owners.iter().find(|o| o.author_name == "Original").unwrap();
+
+        assert!(
+            orig_adaptive.score > orig_fixed.score,
+            "Adaptive mode should give Original more ownership than fixed: adaptive={:.2}% vs fixed={:.2}%",
+            orig_adaptive.score,
+            orig_fixed.score
         );
     }
 
@@ -1111,12 +1343,34 @@ mod tests {
             alice.key_areas
         );
 
+        // Alice touched 3 files total: auth.rs, db.rs, and user.rs (shared)
+        assert_eq!(
+            alice.total_files, 3,
+            "Alice should have touched 3 files total, got {}",
+            alice.total_files
+        );
+
         let bob = result
             .authors
             .iter()
             .find(|a| a.author_email == "bob@example.com")
             .expect("Bob should be in results");
         assert_eq!(bob.sole_owned_files, 1);
+        assert_eq!(
+            bob.total_files, 1,
+            "Bob should have touched 1 file total, got {}",
+            bob.total_files
+        );
+        assert_eq!(
+            bob.total_blast_radius, 0,
+            "Bob's handler.rs has no importers, blast radius should be 0, got {}",
+            bob.total_blast_radius
+        );
+        assert!(
+            bob.key_areas.contains(&"src/api".to_string()),
+            "Bob's key areas should include src/api, got {:?}",
+            bob.key_areas
+        );
 
         // Charlie should NOT appear (no sole-owned files, shared user.rs with Alice)
         let charlie = result
@@ -1131,5 +1385,8 @@ mod tests {
         // Result should be sorted by sole_owned_files descending
         assert_eq!(result.authors[0].author_email, "alice@example.com");
         assert_eq!(result.authors[1].author_email, "bob@example.com");
+
+        // Verify count
+        assert_eq!(result.count, 2, "Only Alice and Bob should appear (not Charlie)");
     }
 }

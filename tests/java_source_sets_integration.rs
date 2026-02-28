@@ -202,6 +202,62 @@ fn test_source_set_dead_code_scoping() {
 }
 
 // =============================================================================
+// Regression test for 10.8: Wildcard imports must not cross source set boundaries.
+// WildcardImportTest.java is in framework-test and does `import com.example.frame.*`.
+// This should resolve to framework files (FrameService, FrameUtil) but NOT to
+// app-test files (TestHelper) even though they share the same package.
+// =============================================================================
+
+#[test]
+fn test_wildcard_import_respects_source_set_boundaries() {
+    let tmp = setup();
+    index_project(tmp.path());
+
+    let output = commands::run_deps(
+        tmp.path(),
+        "framework/src/test/java/com/example/frame/WildcardImportTest.java",
+        false,
+        "out",
+        None,
+        &OutputFormat::Json,
+        true,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let imports = json["imports"].as_array().unwrap();
+    let import_paths: Vec<&str> = imports.iter().filter_map(|i| i["path"].as_str()).collect();
+
+    // Should resolve to framework source files (framework-test deps include framework)
+    assert!(
+        import_paths.iter().any(|p| p.contains("FrameService.java")),
+        "Wildcard should resolve to FrameService.java (same module), got {:?}",
+        import_paths
+    );
+    assert!(
+        import_paths.iter().any(|p| p.contains("FrameUtil.java")),
+        "Wildcard should resolve to FrameUtil.java (same module), got {:?}",
+        import_paths
+    );
+
+    // Must NOT resolve to app-test files even though they share the package name
+    assert!(
+        !import_paths.iter().any(|p| p.contains("TestHelper.java")),
+        "Wildcard must NOT resolve to TestHelper.java (app-test source set, not visible to framework-test), got {:?}",
+        import_paths
+    );
+
+    // Must NOT resolve to app code
+    assert!(
+        !import_paths.iter().any(|p| p.contains("AppController.java")),
+        "Wildcard must NOT resolve to AppController.java (app source set), got {:?}",
+        import_paths
+    );
+}
+
+// =============================================================================
 // Backwards compatibility: no source sets = all files see all files
 // =============================================================================
 
