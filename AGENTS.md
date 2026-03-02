@@ -15,6 +15,7 @@
 - Agents must ensure `cargo check` passes after each atomic change, not just at task completion — partial changes break the build for other parallel agents.
 - The `.claude/` directory is gitignored. Use `git add -f` to commit skill or settings files.
 - Every bug fix must include a substantive regression test that would fail if the bug were reintroduced. Police/reviewers should reject fixes without such tests.
+- Team lead: complete all wrap-up work (coverage checks, final test runs, doc verification) before sending shutdown requests. Don't bulk-shutdown agents until you're sure no more coordination is needed.
 
 ## Code Conventions
 
