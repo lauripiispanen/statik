@@ -2,9 +2,9 @@
 
 ## Build & Validate
 
-- Always run `cargo test` before committing — all tests must pass
-- Always run `cargo clippy` before committing — no new warnings
+- Always run `cargo fmt`, `cargo clippy`, and `cargo test` before committing — all must pass clean
 - Run `cargo check` as a quick smoke test during development
+- Team agents: run `cargo fmt` and `cargo clippy` before marking tasks complete, not just `cargo test`
 
 ## Team Sessions
 
@@ -16,6 +16,7 @@
 - The `.claude/` directory is gitignored. Use `git add -f` to commit skill or settings files.
 - Every bug fix must include a substantive regression test that would fail if the bug were reintroduced. Police/reviewers should reject fixes without such tests.
 - Team lead: complete all wrap-up work (coverage checks, final test runs, doc verification) before sending shutdown requests. Don't bulk-shutdown agents until you're sure no more coordination is needed.
+- When the architect implements tasks beyond planning, coordinate with the coder to avoid compilation-blocking conflicts (e.g., both touching ParseResult or struct constructors simultaneously).
 
 ## Code Conventions
 
