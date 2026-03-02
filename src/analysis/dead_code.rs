@@ -722,6 +722,7 @@ mod tests {
             exports: vec![],
             is_entry_point: is_entry,
             suppressions: Default::default(),
+            source_set: None,
         }
     }
 
@@ -752,6 +753,7 @@ mod tests {
                 .collect(),
             is_entry_point: is_entry,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         }
     }
 
@@ -945,6 +947,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(barrel);
 
@@ -992,6 +995,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(barrel);
 
@@ -1061,6 +1065,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(barrel);
 
@@ -1120,6 +1125,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(barrel);
 
@@ -1176,6 +1182,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(file_a);
 
@@ -1196,6 +1203,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(file_b);
 
@@ -1242,6 +1250,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         };
         graph.add_file(barrel);
         graph.add_import(make_edge(1, 2, &["helper"]));
@@ -2440,6 +2449,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // commands.rs exports run_deps, build_file_graph
@@ -2471,6 +2481,7 @@ mod tests {
             ],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // main.rs imports "commands" (module name) from commands.rs
@@ -2515,6 +2526,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -2532,6 +2544,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // Importing "utils" (file stem) should NOT mark "helper" as used in TS
@@ -3320,6 +3333,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // File B (non-entry) - exports do_stuff
@@ -3339,6 +3353,7 @@ mod tests {
             }],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // Import edge: A imports "do_stuff" from B

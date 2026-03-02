@@ -133,6 +133,7 @@ fn test_deps_command_json() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -181,6 +182,7 @@ fn test_deps_command_text() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -205,6 +207,7 @@ fn test_dead_code_detects_orphan() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -238,6 +241,7 @@ fn test_dead_code_text_output() {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -256,7 +260,8 @@ fn test_cycles_detects_circular_deps() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -287,7 +292,8 @@ fn test_cycles_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false, None, None).unwrap();
 
     assert!(
         output.contains("Circular dependencies"),
@@ -311,6 +317,7 @@ fn test_impact_analysis() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -336,6 +343,7 @@ fn test_exports_command() {
         "src/services/userService.ts",
         &OutputFormat::Json,
         true,
+        None,
         None,
     )
     .unwrap();
@@ -365,6 +373,7 @@ fn test_exports_text_output() {
         &OutputFormat::Text,
         true,
         None,
+        None,
     )
     .unwrap();
 
@@ -383,7 +392,8 @@ fn test_summary_command() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -403,7 +413,8 @@ fn test_summary_text_output() {
     let tmp = setup_project();
     index_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Text, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Text, true, None, false, None).unwrap();
 
     assert!(
         output.contains("Project Summary"),
@@ -429,6 +440,7 @@ fn test_lint_detects_boundary_violation() {
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -469,6 +481,7 @@ fn test_lint_text_output() {
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -497,6 +510,7 @@ fn test_lint_severity_threshold_filters() {
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -526,6 +540,7 @@ fn test_barrel_file_deps_through_reexports() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -557,6 +572,7 @@ fn test_barrel_file_dead_code_through_reexports() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -602,6 +618,7 @@ fn test_dynamic_import_creates_dependency() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -663,6 +680,7 @@ fn test_dead_code_symbols_cross_file_linking() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )

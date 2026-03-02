@@ -96,6 +96,7 @@ fn test_java_deps_shows_imports() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -142,6 +143,7 @@ fn test_java_deps_shows_importers() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -192,6 +194,7 @@ fn test_java_deps_text_output() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -221,6 +224,7 @@ fn test_java_exports_public_class() {
         &OutputFormat::Json,
         true,
         None,
+        None,
     )
     .unwrap();
 
@@ -247,6 +251,7 @@ fn test_java_exports_public_enum() {
         "src/main/java/com/example/model/Role.java",
         &OutputFormat::Json,
         true,
+        None,
         None,
     )
     .unwrap();
@@ -277,6 +282,7 @@ fn test_java_dead_code_detects_orphan() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -310,6 +316,7 @@ fn test_java_dead_code_text_output() {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -333,7 +340,8 @@ fn test_java_cycles_detected() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -371,7 +379,8 @@ fn test_java_cycles_text_output() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Text, true, false, None, None).unwrap();
 
     assert!(
         output.contains("Circular dependencies") || output.contains("cycle"),
@@ -396,6 +405,7 @@ fn test_java_impact_analysis() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -426,6 +436,7 @@ fn test_java_impact_orphan_file() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -448,7 +459,8 @@ fn test_java_summary_command() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -482,7 +494,8 @@ fn test_java_summary_text_output() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Text, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Text, true, None, false, None).unwrap();
 
     assert!(
         output.contains("Project Summary"),
@@ -529,6 +542,7 @@ deny = ["src/main/java/com/example/db/**"]
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -587,6 +601,7 @@ deny = ["src/main/java/com/example/db/**"]
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -621,6 +636,7 @@ fn test_java_static_import_resolves() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -674,6 +690,7 @@ fn test_java_type_ref_bounded_generics_resolved() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -716,6 +733,7 @@ fn test_java_deps_cross_package_imports() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -761,6 +779,7 @@ fn test_java_exports_public_interface() {
         &OutputFormat::Json,
         true,
         None,
+        None,
     )
     .unwrap();
 
@@ -790,6 +809,7 @@ fn test_java_dead_code_excludes_entry_point() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -826,7 +846,8 @@ fn test_java_summary_language_breakdown() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
@@ -870,6 +891,7 @@ fn test_java_impact_stringutils_transitive() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -923,6 +945,7 @@ fn test_java_deps_notification_service_fan_out() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -988,6 +1011,7 @@ layers = [
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1042,6 +1066,7 @@ max_fan_out = 4
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1103,6 +1128,7 @@ public_api = ["src/main/java/com/example/model/User.java", "src/main/java/com/ex
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1176,6 +1202,7 @@ max_fan_out = 100
         true,
         None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1220,6 +1247,7 @@ fn test_java_same_package_deps() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -1250,6 +1278,7 @@ fn test_java_same_package_dead_code_not_false_positive() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -1297,6 +1326,7 @@ fn test_java_same_package_method_body_deps() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -1327,6 +1357,7 @@ fn test_java_same_package_method_body_not_dead() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -1373,6 +1404,7 @@ fn test_java_wildcard_import_creates_edges() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -1432,6 +1464,7 @@ fn test_java_annotation_entry_point_spring() {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1461,6 +1494,7 @@ fn test_java_annotation_entry_point_test() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -1498,6 +1532,7 @@ fn test_java_inner_class_exported() {
         &OutputFormat::Json,
         true,
         None,
+        None,
     )
     .unwrap();
 
@@ -1526,7 +1561,8 @@ fn test_java_same_package_cycles_still_detected() {
     let tmp = setup_java_project();
     index_java_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -1573,6 +1609,7 @@ fn test_java_custom_entry_point_pattern() {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -1606,6 +1643,7 @@ patterns = ["**/orphan/**"]
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -1655,6 +1693,7 @@ public class BatchJob {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -1691,6 +1730,7 @@ annotations = ["Scheduled"]
         false,
         None,
         None,
+        None,
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -1722,6 +1762,7 @@ fn test_java_default_entry_points_unchanged_without_config() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -1780,7 +1821,8 @@ public class DataService {
     index_java_project(tmp.path());
 
     // Check summary: type-refs from java.util.* should be external, not unresolved
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let unresolved = json["dependencies"]["unresolved_imports"].as_u64().unwrap();
 
@@ -1802,6 +1844,7 @@ public class DataService {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -1847,6 +1890,7 @@ always_alive = ["**/orphan/**"]
         false,
         None,
         None,
+        None,
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -1887,6 +1931,7 @@ seed_all_patterns = ["**/orphan/**"]
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )

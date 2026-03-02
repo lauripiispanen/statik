@@ -93,6 +93,7 @@ fn test_rust_deps_mod_declarations() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -135,6 +136,7 @@ fn test_rust_deps_use_import() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -170,6 +172,7 @@ fn test_rust_deps_crate_name_import() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -199,6 +202,7 @@ fn test_rust_exports_pub_struct() {
         &OutputFormat::Json,
         true,
         None,
+        None,
     )
     .unwrap();
 
@@ -218,8 +222,15 @@ fn test_rust_exports_reexport() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output =
-        commands::run_exports(tmp.path(), "src/lib.rs", &OutputFormat::Json, true, None).unwrap();
+    let output = commands::run_exports(
+        tmp.path(),
+        "src/lib.rs",
+        &OutputFormat::Json,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let exports = json["exports"].as_array().unwrap();
@@ -247,6 +258,7 @@ fn test_rust_dead_code_detects_orphan() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -278,6 +290,7 @@ fn test_rust_dead_code_excludes_entry_points() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -321,7 +334,8 @@ fn test_rust_cycles_detected() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output = commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None).unwrap();
+    let output =
+        commands::run_cycles(tmp.path(), &OutputFormat::Json, true, false, None, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let cycles = json["cycles"].as_array().unwrap();
@@ -367,7 +381,8 @@ fn test_rust_summary_command() {
     let tmp = setup_rust_project();
     index_rust_project(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -409,6 +424,7 @@ fn test_rust_impact_analysis() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();

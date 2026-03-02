@@ -931,6 +931,7 @@ mod tests {
                 exports: vec![],
                 is_entry_point: false,
                 suppressions: std::collections::HashMap::new(),
+                source_set: None,
             });
         }
 
@@ -1021,6 +1022,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1029,6 +1031,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // Only web/Config is imported (by a hypothetical consumer)
@@ -1040,6 +1043,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         db.insert_file_commit("web/src/main/java/com/example/App.java", "sha1", 20, 0)
             .unwrap();
@@ -1228,6 +1232,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1236,6 +1241,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         db.insert_file_commit("src/consumer.rs", "sha2", 20, 0)
             .unwrap();
@@ -1380,6 +1386,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1388,6 +1395,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -1396,6 +1404,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(4),
@@ -1404,6 +1413,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // handler imports auth (auth has fan_in = 1)

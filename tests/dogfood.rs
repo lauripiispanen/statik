@@ -28,6 +28,7 @@ fn test_dogfood_dead_symbols_cross_file_linking() {
         false,
         None,
         None,
+        None,
     )
     .unwrap();
 

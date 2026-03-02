@@ -374,6 +374,7 @@ mod tests {
             exports,
             is_entry_point: is_entry,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         }
     }
 

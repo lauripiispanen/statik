@@ -71,6 +71,7 @@ fn test_source_set_visibility_filtering() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -94,6 +95,7 @@ fn test_source_set_visibility_filtering() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -142,6 +144,7 @@ fn test_source_set_prevents_cross_module_same_package() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -171,6 +174,7 @@ fn test_source_set_dead_code_scoping() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -220,6 +224,7 @@ fn test_wildcard_import_respects_source_set_boundaries() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -280,6 +285,7 @@ fn test_no_source_sets_backwards_compat() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();

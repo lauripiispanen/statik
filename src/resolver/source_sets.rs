@@ -572,6 +572,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -580,6 +581,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -588,6 +590,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         (dir, graph, index)
@@ -612,6 +615,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -620,6 +624,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_import(FileImport {
             from: FileId(1),
@@ -654,6 +659,7 @@ deps = ["other"]
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_import(FileImport {
             from: FileId(1),

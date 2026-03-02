@@ -37,6 +37,9 @@ pub struct FileInfo {
     /// Inline suppression comments: line_number -> list of rule IDs (empty vec = suppress all).
     #[serde(default, skip_serializing)]
     pub suppressions: HashMap<usize, Vec<String>>,
+    /// The scope source set this file belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_set: Option<String>,
 }
 
 /// Reason why an import could not be resolved.
@@ -243,6 +246,52 @@ impl FileGraph {
         new_graph
     }
 
+    /// Return a new FileGraph containing only files belonging to the given source set.
+    /// Edges are kept only between matching files.
+    pub fn filter_to_scope(&self, scope_name: &str) -> Self {
+        let mut new_graph = Self::new();
+
+        // Copy only files in the named source set
+        for info in self.files.values() {
+            if info.source_set.as_deref() == Some(scope_name) {
+                new_graph.add_file(info.clone());
+            }
+        }
+
+        // Copy edges where both endpoints are in the new graph
+        for edges in self.imports.values() {
+            for edge in edges {
+                if new_graph.files.contains_key(&edge.from)
+                    && new_graph.files.contains_key(&edge.to)
+                {
+                    new_graph.add_import(edge.clone());
+                }
+            }
+        }
+
+        // Copy unresolved imports for matching files
+        for u in &self.unresolved {
+            if new_graph.files.contains_key(&u.file) {
+                new_graph.add_unresolved(u.clone());
+            }
+        }
+
+        new_graph
+    }
+
+    /// Get all distinct source set names present in the graph.
+    pub fn available_scopes(&self) -> Vec<String> {
+        let mut scopes: Vec<String> = self
+            .files
+            .values()
+            .filter_map(|f| f.source_set.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        scopes.sort();
+        scopes
+    }
+
     /// Get the unresolved imports list.
     pub fn unresolved_imports(&self) -> &[UnresolvedImport] {
         &self.unresolved
@@ -336,6 +385,7 @@ impl FileGraph {
                 exports: exports.clone(),
                 is_entry_point: is_entry,
                 suppressions: HashMap::new(),
+                source_set: None,
             });
         }
 
@@ -744,6 +794,7 @@ mod tests {
                 exports: vec![],
                 is_entry_point: is_entry,
                 suppressions: std::collections::HashMap::new(),
+                source_set: None,
             });
         }
 
@@ -822,6 +873,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -830,6 +882,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -838,6 +891,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // Type-only edge: index -> types
@@ -883,6 +937,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -891,6 +946,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         graph.add_import(FileImport {
@@ -932,6 +988,7 @@ mod tests {
                 exports: vec![],
                 is_entry_point: false,
                 suppressions: std::collections::HashMap::new(),
+                source_set: None,
             }
         }
 

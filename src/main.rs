@@ -16,6 +16,7 @@ fn main() -> Result<()> {
     // Determine project path (used by most commands)
     let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let path_glob = cli.path_filter.as_deref();
+    let source_set_filter = cli.source_set.as_deref();
 
     // Set up relative path display (default) unless --absolute-paths is used
     if !cli.absolute_paths {
@@ -110,6 +111,7 @@ fn main() -> Result<()> {
                     cli.no_index,
                     cli.runtime_only,
                     path_glob,
+                    source_set_filter,
                 )?;
                 emit_output(&output, command_name, &post_opts);
             } else {
@@ -127,26 +129,36 @@ fn main() -> Result<()> {
                     cli.no_index,
                     cli.runtime_only,
                     path_glob,
+                    source_set_filter,
                 )?;
                 emit_output(&output, command_name, &post_opts);
             }
         }
 
         Commands::Exports { ref path } => {
-            let output =
-                commands::run_exports(&project_path, path, format, cli.no_index, path_glob)?;
+            let output = commands::run_exports(
+                &project_path,
+                path,
+                format,
+                cli.no_index,
+                path_glob,
+                source_set_filter,
+            )?;
             emit_output(&output, command_name, &post_opts);
         }
 
-        Commands::DeadCode { ref scope } => {
+        Commands::DeadCode {
+            scope: ref dead_code_scope,
+        } => {
             let output = commands::run_dead_code(
                 &project_path,
-                scope,
+                dead_code_scope,
                 format,
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
                 cli.lang.as_deref(),
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -158,6 +170,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -171,6 +184,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -182,6 +196,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 path_glob,
                 by_directory,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -202,6 +217,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 path_glob,
                 freeze || update_baseline,
+                source_set_filter,
             )?;
             if needs_json_post {
                 emit_output(&output, command_name, &post_opts);
@@ -317,6 +333,7 @@ fn main() -> Result<()> {
                     cli.runtime_only,
                     path_glob,
                     half_life_mode.to_analysis_mode(),
+                    source_set_filter,
                 )?
             } else {
                 commands::run_bus_factor(
@@ -329,6 +346,7 @@ fn main() -> Result<()> {
                     cli.runtime_only,
                     path_glob,
                     half_life_mode.to_analysis_mode(),
+                    source_set_filter,
                 )?
             };
             emit_output(&output, command_name, &post_opts);
@@ -370,6 +388,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -388,6 +407,7 @@ fn main() -> Result<()> {
                 cli.no_index,
                 cli.runtime_only,
                 path_glob,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }
@@ -409,6 +429,7 @@ fn main() -> Result<()> {
                 path_glob,
                 half_life_mode.to_analysis_mode(),
                 top,
+                source_set_filter,
             )?;
             emit_output(&output, command_name, &post_opts);
         }

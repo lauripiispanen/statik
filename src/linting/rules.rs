@@ -55,6 +55,29 @@ pub fn evaluate_rules(
 ) -> Result<LintResult> {
     let mut all_violations = Vec::new();
 
+    // Build scope index for lint filtering
+    let scope_index = if !config.scope.is_empty() {
+        Some(super::config::ScopeIndex::build(&config.scope)?)
+    } else {
+        None
+    };
+
+    // Pre-compute set of file IDs excluded from linting (source set has lint=false)
+    let lint_excluded: HashSet<crate::model::FileId> = if let Some(ref idx) = scope_index {
+        graph
+            .files
+            .iter()
+            .filter_map(|(file_id, info)| {
+                info.source_set
+                    .as_ref()
+                    .filter(|set| !idx.lint_enabled(set))
+                    .map(|_| *file_id)
+            })
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
     // Pre-compute cycle detection once if any rule needs it (avoids O(V+E) per rule).
     let has_cycle_rule = config
         .rules
@@ -800,6 +823,10 @@ pub fn evaluate_rules(
             Some(info) => info,
             None => return true,
         };
+        // Skip violations from files in source sets with lint=false
+        if lint_excluded.contains(&source_id) {
+            return false;
+        }
         !is_suppressed(&file_info.suppressions, v.line, &v.rule_id)
     });
     let suppressed = total_before - all_violations.len();
@@ -866,6 +893,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         }
     }
 
@@ -1790,6 +1818,7 @@ mod tests {
                 }),
             }],
             tags,
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1823,6 +1852,7 @@ mod tests {
                 }),
             }],
             tags,
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1858,6 +1888,7 @@ mod tests {
                 }),
             }],
             tags,
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1894,6 +1925,7 @@ mod tests {
                 }),
             }],
             tags,
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1925,6 +1957,7 @@ mod tests {
                 }),
             }],
             tags: HashMap::new(),
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -1976,6 +2009,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: file_suppressions,
+            source_set: None,
         });
         graph.add_file(make_file(2, "src/db/connection.ts"));
 
@@ -1989,6 +2023,7 @@ mod tests {
                 &["src/db/**"],
             )],
             tags: HashMap::new(),
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -2013,6 +2048,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: file_suppressions,
+            source_set: None,
         });
         graph.add_file(make_file(2, "src/db/connection.ts"));
 
@@ -2026,6 +2062,7 @@ mod tests {
                 &["src/db/**"],
             )],
             tags: HashMap::new(),
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -2050,6 +2087,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: file_suppressions,
+            source_set: None,
         });
         graph.add_file(make_file(2, "src/db/connection.ts"));
 
@@ -2063,6 +2101,7 @@ mod tests {
                 &["src/db/**"],
             )],
             tags: HashMap::new(),
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -2088,6 +2127,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: file_suppressions,
+            source_set: None,
         });
         graph.add_file(make_file(2, "src/db/connection.ts"));
 
@@ -2101,6 +2141,7 @@ mod tests {
                 &["src/db/**"],
             )],
             tags: HashMap::new(),
+            scope: HashMap::new(),
         };
 
         let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
@@ -2110,5 +2151,139 @@ mod tests {
             "Wrong line suppression should not apply"
         );
         assert_eq!(result.summary.suppressed, 0);
+    }
+
+    #[test]
+    fn test_lint_scope_excludes_violations_from_non_linted_set() {
+        let mut graph = FileGraph::new();
+        // File in "test" source set (lint=false)
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/tests/test_helper.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
+            source_set: Some("test".to_string()),
+        });
+        // File in "production" source set (lint=true, default)
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("/project/src/db/connection.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
+            source_set: Some("production".to_string()),
+        });
+        // File in production importing db
+        graph.add_file(FileInfo {
+            id: FileId(3),
+            path: PathBuf::from("/project/src/ui/Button.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
+            source_set: Some("production".to_string()),
+        });
+
+        // test -> db (would violate boundary)
+        graph.add_import(make_edge(1, 2, &["connect"], 1));
+        // ui -> db (would violate boundary)
+        graph.add_import(make_edge(3, 2, &["connect"], 1));
+
+        let mut scope = HashMap::new();
+        scope.insert(
+            "production".to_string(),
+            crate::linting::config::ScopeSetConfig {
+                include: vec!["src/**".to_string()],
+                exclude: vec![],
+                role: None,
+                lint: true,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "test".to_string(),
+            crate::linting::config::ScopeSetConfig {
+                include: vec!["tests/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: false,
+                analysis: true,
+            },
+        );
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-ui-to-db".to_string(),
+                severity: Severity::Error,
+                description: "No direct DB access".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::Boundary(BoundaryRuleConfig {
+                    from: vec!["src/ui/**".to_string(), "tests/**".to_string()],
+                    deny: vec!["src/db/**".to_string()],
+                    except: None,
+                }),
+            }],
+            tags: HashMap::new(),
+            scope,
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        // Only the production file (ui/Button.ts) should generate a violation.
+        // The test file (tests/test_helper.ts) should be excluded because lint=false.
+        assert_eq!(result.violations.len(), 1);
+        assert_eq!(
+            result.violations[0].source_file,
+            PathBuf::from("src/ui/Button.ts")
+        );
+    }
+
+    #[test]
+    fn test_lint_scope_no_scope_all_violations_reported() {
+        let mut graph = FileGraph::new();
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/tests/test_helper.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
+            source_set: None,
+        });
+        graph.add_file(FileInfo {
+            id: FileId(2),
+            path: PathBuf::from("/project/src/db/connection.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
+            source_set: None,
+        });
+
+        graph.add_import(make_edge(1, 2, &["connect"], 1));
+
+        let config = LintConfig {
+            rules: vec![RuleDefinition {
+                id: "no-test-to-db".to_string(),
+                severity: Severity::Error,
+                description: "No direct DB access".to_string(),
+                rationale: None,
+                fix_direction: None,
+                rule: RuleKind::Boundary(BoundaryRuleConfig {
+                    from: vec!["tests/**".to_string()],
+                    deny: vec!["src/db/**".to_string()],
+                    except: None,
+                }),
+            }],
+            tags: HashMap::new(),
+            scope: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        // No scope config, so all violations should be reported
+        assert_eq!(result.violations.len(), 1);
     }
 }

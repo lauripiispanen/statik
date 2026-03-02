@@ -63,6 +63,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub reverse: bool,
 
+    /// Restrict analysis to a specific source set (defined in [scope] config)
+    #[arg(long = "source-set", global = true)]
+    pub source_set: Option<String>,
+
     /// Apply a jq filter to JSON output (implicitly sets --format json)
     #[arg(long, global = true)]
     pub jq: Option<String>,

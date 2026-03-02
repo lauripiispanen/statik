@@ -191,6 +191,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         }
     }
 
@@ -511,6 +512,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -519,6 +521,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // False edge: framework -> app (same-package leakage)

@@ -12,7 +12,8 @@ use crate::model::file_graph::FileGraph;
 use crate::model::{FileId, Language, RefKind, SymbolKind};
 
 use super::graph_builder::{
-    build_seed_all_file_ids, build_symbol_graph, maybe_filter_paths, maybe_filter_type_only,
+    analysis_excluded_files, build_seed_all_file_ids, build_symbol_graph, maybe_filter_paths,
+    maybe_filter_scope, maybe_filter_type_only,
 };
 use super::output::{
     display_path, format_cycles_text, format_dead_code_text, format_dead_symbols_text,
@@ -83,11 +84,13 @@ pub fn run_deps(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let direction = match direction_str {
         "in" => Direction::ImportedBy,
@@ -117,11 +120,13 @@ pub fn run_deps_between(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let from_matcher = globset::Glob::new(from_glob)
         .with_context(|| format!("Invalid from glob: {}", from_glob))?
@@ -227,6 +232,7 @@ pub fn run_dead_code(
     runtime_only: bool,
     path_glob: Option<&str>,
     lang: Option<&str>,
+    source_set: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
 
@@ -234,6 +240,7 @@ pub fn run_dead_code(
         // Symbol-level dead code analysis
         let file_graph = build_file_graph(&db, project_path)?;
         let file_graph = maybe_filter_paths(file_graph, path_glob, project_path)?;
+        let file_graph = maybe_filter_scope(file_graph, source_set)?;
         let symbol_graph = build_symbol_graph(&db)?;
         let linker_result = crate::analysis::linker::link_cross_file_symbols(&file_graph);
 
@@ -247,6 +254,21 @@ pub fn run_dead_code(
             &linker_result,
             &seed_all_file_ids,
         );
+
+        // Filter out symbols in files from source sets with analysis=false
+        let excluded = analysis_excluded_files(&file_graph, project_path);
+        if !excluded.is_empty() {
+            let excluded_paths: HashSet<String> = excluded
+                .iter()
+                .filter_map(|id| file_graph.files.get(id))
+                .map(|info| info.path.display().to_string())
+                .collect();
+            result
+                .dead_symbols
+                .retain(|s| !excluded_paths.contains(&s.file));
+            result.summary.dead_symbols = result.dead_symbols.len();
+        }
+
         if let Some(lang_filter) = lang.and_then(lang_str_to_language) {
             result.dead_symbols.retain(|s| {
                 Path::new(&s.file)
@@ -266,6 +288,7 @@ pub fn run_dead_code(
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, source_set)?;
 
     let scope = match scope_str {
         "files" => DeadCodeScope::Files,
@@ -275,6 +298,18 @@ pub fn run_dead_code(
 
     let seed_all_file_ids = build_seed_all_file_ids(&graph, project_path);
     let mut result = detect_dead_code(&graph, scope, &seed_all_file_ids);
+
+    // Filter out files in source sets with analysis=false
+    let excluded = analysis_excluded_files(&graph, project_path);
+    if !excluded.is_empty() {
+        result.dead_files.retain(|f| !excluded.contains(&f.file_id));
+        result
+            .dead_exports
+            .retain(|e| !excluded.contains(&e.file_id));
+        result.summary.dead_files = result.dead_files.len();
+        result.summary.dead_exports = result.dead_exports.len();
+    }
+
     if let Some(lang_filter) = lang.and_then(lang_str_to_language) {
         result.dead_files.retain(|f| {
             f.path
@@ -306,11 +341,13 @@ pub fn run_cycles(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
     let graph = graph.without_mod_declaration_edges();
 
     let result = detect_cycles(&graph);
@@ -330,11 +367,13 @@ pub fn run_impact(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
@@ -354,10 +393,12 @@ pub fn run_exports(
     format: &OutputFormat,
     no_index: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
@@ -455,10 +496,12 @@ pub fn run_summary(
     no_index: bool,
     path_glob: Option<&str>,
     by_directory: bool,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     if by_directory {
         return run_summary_by_directory(&graph, project_path, format);
@@ -681,6 +724,7 @@ pub fn run_lint(
     no_index: bool,
     path_glob: Option<&str>,
     freeze: bool,
+    scope: Option<&str>,
 ) -> Result<(String, bool)> {
     use crate::linting::baseline::Baseline;
     use crate::linting::config::{find_config_path, load_config, Severity};
@@ -725,6 +769,7 @@ pub fn run_lint(
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let mut result = evaluate_rules(&config, &graph, project_path)?;
 
@@ -1311,6 +1356,7 @@ pub fn run_churn(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
 
@@ -1326,6 +1372,7 @@ pub fn run_churn(
         let graph = build_file_graph(&db, project_path)?;
         let graph = maybe_filter_type_only(graph, runtime_only);
         let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+        let graph = maybe_filter_scope(graph, scope)?;
 
         let mut result = crate::analysis::churn::compute_co_changes(
             &db,
@@ -1427,11 +1474,13 @@ pub fn run_bus_factor(
     runtime_only: bool,
     path_glob: Option<&str>,
     half_life_mode: crate::analysis::ownership::HalfLifeMode,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let mut result = crate::analysis::ownership::compute_bus_factor_analysis(
         &db,
@@ -1495,11 +1544,13 @@ pub fn run_bus_factor_by_author(
     runtime_only: bool,
     path_glob: Option<&str>,
     half_life_mode: crate::analysis::ownership::HalfLifeMode,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let result = crate::analysis::ownership::compute_bus_factor_by_author(
         &db,
@@ -1609,11 +1660,13 @@ pub fn run_who(
     path_glob: Option<&str>,
     half_life_mode: crate::analysis::ownership::HalfLifeMode,
     top_per_file: usize,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let target_id = resolve_file_id(&graph, project_path, file_path)?;
 
@@ -1820,11 +1873,13 @@ pub fn run_graph(
     no_index: bool,
     runtime_only: bool,
     path_glob: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<String> {
     let db = ensure_index(project_path, no_index)?;
     let graph = build_file_graph(&db, project_path)?;
     let graph = maybe_filter_type_only(graph, runtime_only);
     let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+    let graph = maybe_filter_scope(graph, scope)?;
 
     let (graph, focus_id) = if let Some(focus_path) = focus {
         let fid = resolve_file_id(&graph, project_path, focus_path)?;
@@ -2618,6 +2673,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -2626,6 +2682,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -2634,6 +2691,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(4),
@@ -2642,6 +2700,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // main imports a (normal edge)
@@ -2724,6 +2783,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         // 2 external imports
@@ -2791,6 +2851,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(crate::model::file_graph::FileInfo {
             id: FileId(2),
@@ -2799,6 +2860,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(crate::model::file_graph::FileInfo {
             id: FileId(3),
@@ -2807,6 +2869,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_import(crate::model::file_graph::FileImport {
             from: FileId(1),
@@ -2893,6 +2956,7 @@ mod tests {
                 exports: vec![],
                 is_entry_point: i == 1,
                 suppressions: std::collections::HashMap::new(),
+                source_set: None,
             });
         }
         graph.add_import(crate::model::file_graph::FileImport {
@@ -3006,6 +3070,7 @@ mod tests {
             true, // no_index: skip indexing (early return before DB access)
             None,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(output, "No lint rules configured");
@@ -3021,6 +3086,7 @@ mod tests {
             true,
             None,
             false,
+            None,
         )
         .unwrap();
         assert!(!has_errors);

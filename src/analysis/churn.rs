@@ -523,6 +523,7 @@ mod tests {
             exports: vec![],
             is_entry_point: true,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -531,6 +532,7 @@ mod tests {
             exports: vec![],
             is_entry_point: false,
             suppressions: std::collections::HashMap::new(),
+            source_set: None,
         });
 
         let result = compute_co_changes(&db, &graph, None, 1, None, None).unwrap();

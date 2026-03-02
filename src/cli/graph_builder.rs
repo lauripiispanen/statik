@@ -43,6 +43,14 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         java_config.map(|c| c.source_roots),
     );
 
+    // Load scope config for file classification
+    let scope_config = crate::linting::config::load_scope_config(project_root);
+    let scope_index = if !scope_config.is_empty() {
+        Some(crate::linting::config::ScopeIndex::build(&scope_config)?)
+    } else {
+        None
+    };
+
     // Load source set config for visibility filtering
     let source_set_configs = crate::linting::config::load_source_set_config(project_root);
     let source_set_index = if !source_set_configs.is_empty() {
@@ -105,11 +113,19 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let exports = exports_by_file.remove(&file.id).unwrap_or_default();
         let rel_path = crate::linting::matcher::to_relative(&file.path, project_root);
         let lang_sem = semantics.get(&file.language).copied();
+        let file_source_set = scope_index
+            .as_ref()
+            .and_then(|idx| idx.classify(rel_path).map(|s| s.to_string()));
         let is_entry = is_entry_point(&file.path, lang_sem)
             || annotation_entry_files.contains(&file.id)
             || custom_pattern_matcher
                 .as_ref()
-                .is_some_and(|m| m.matches(rel_path));
+                .is_some_and(|m| m.matches(rel_path))
+            || file_source_set.as_ref().is_some_and(|set| {
+                scope_index
+                    .as_ref()
+                    .is_some_and(|idx| idx.has_role(set, "entry_point"))
+            });
 
         let file_suppressions = all_suppressions.get(&file.id).cloned().unwrap_or_default();
         graph.add_file(FileInfo {
@@ -119,6 +135,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             exports,
             is_entry_point: is_entry,
             suppressions: file_suppressions,
+            source_set: file_source_set,
         });
     }
 
@@ -405,6 +422,61 @@ pub fn maybe_filter_type_only(graph: FileGraph, runtime_only: bool) -> FileGraph
     } else {
         graph
     }
+}
+
+/// Apply --scope filtering if requested.
+///
+/// Restricts the graph to files belonging to the named source set.
+/// Returns an error if the scope name is not found in any file.
+pub fn maybe_filter_scope(graph: FileGraph, scope: Option<&str>) -> Result<FileGraph> {
+    match scope {
+        Some(name) => {
+            let available = graph.available_scopes();
+            if !available.iter().any(|s| s == name) {
+                if available.is_empty() {
+                    anyhow::bail!(
+                        "Unknown scope '{}'. No source sets are configured. \
+                         Add [scope.<name>] sections to .statik/rules.toml.",
+                        name,
+                    );
+                } else {
+                    anyhow::bail!(
+                        "Unknown scope '{}'. Available scopes: {}",
+                        name,
+                        available.join(", "),
+                    );
+                }
+            }
+            Ok(graph.filter_to_scope(name))
+        }
+        None => Ok(graph),
+    }
+}
+
+/// Build a set of file IDs excluded from analysis output.
+///
+/// Files in source sets with `analysis = false` should not appear in
+/// analysis command output (dead-code, deps, cycles, etc.) but remain
+/// in the graph for correct resolution.
+pub fn analysis_excluded_files(graph: &FileGraph, project_root: &Path) -> HashSet<FileId> {
+    let scope_config = crate::linting::config::load_scope_config(project_root);
+    if scope_config.is_empty() {
+        return HashSet::new();
+    }
+    let scope_index = match crate::linting::config::ScopeIndex::build(&scope_config) {
+        Ok(idx) => idx,
+        Err(_) => return HashSet::new(),
+    };
+    graph
+        .files
+        .iter()
+        .filter_map(|(file_id, info)| {
+            info.source_set
+                .as_ref()
+                .filter(|set| !scope_index.analysis_enabled(set))
+                .map(|_| *file_id)
+        })
+        .collect()
 }
 
 /// Apply --path glob filtering if requested.

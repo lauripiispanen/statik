@@ -92,6 +92,7 @@ fn test_monorepo_cross_module_deps() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -132,6 +133,7 @@ fn test_monorepo_cross_module_deps_gateway() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();
@@ -178,6 +180,7 @@ fn test_monorepo_cross_module_deps_tools() {
         true,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -213,6 +216,7 @@ fn test_monorepo_dead_code_only_unused() {
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
         None,
     )
@@ -263,7 +267,8 @@ fn test_monorepo_summary_low_unresolved() {
     let tmp = setup_monorepo();
     index_monorepo(tmp.path());
 
-    let output = commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false).unwrap();
+    let output =
+        commands::run_summary(tmp.path(), &OutputFormat::Json, true, None, false, None).unwrap();
 
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
     let total_files = json["files"]["total"].as_u64().unwrap();
@@ -323,6 +328,7 @@ source_roots = [
         &OutputFormat::Json,
         true,
         false,
+        None,
         None,
     )
     .unwrap();

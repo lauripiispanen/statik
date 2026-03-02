@@ -2037,15 +2037,15 @@ role = "entry_point"
    source set even though the file itself is in `production`.
 
 Tasks:
-- [ ] Define `ScopeConfig` struct with source set definitions
-- [ ] Add `source_set: Option<String>` field to `FileInfo`
-- [ ] Replace `is_entry_point()` with source set role lookup
-- [ ] Add `lint: bool` and `analysis: bool` per source set
-- [ ] Default source sets when no `[scope]` config exists (backward compat)
+- [x] Define `ScopeConfig` struct with source set definitions
+- [x] Add `source_set: Option<String>` field to `FileInfo`
+- [x] Replace `is_entry_point()` with source set role lookup
+- [x] Add `lint: bool` and `analysis: bool` per source set
+- [x] Default source sets when no `[scope]` config exists (backward compat)
 - [ ] Rust parser: detect `#[cfg(test)]` on mod/fn/impl blocks, tag with scope
 - [ ] Java: auto-detect `src/test/java` as test source set when no config
-- [ ] Add `--scope <name>` CLI flag to restrict analysis to a specific source set
-- [ ] Add tests for each source set role
+- [x] Add `--source-set <name>` CLI flag to restrict analysis to a specific source set
+- [x] Add tests for each source set role
 
 **Acceptance**: `statik dead-code` on statik itself with default scope config
 excludes test fixtures. `statik lint` excludes `#[cfg(test)]` imports.

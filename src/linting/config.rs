@@ -11,6 +11,8 @@ pub struct LintConfig {
     pub rules: Vec<RuleDefinition>,
     #[serde(default)]
     pub tags: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub scope: HashMap<String, ScopeSetConfig>,
 }
 
 /// A single lint rule definition.
@@ -171,6 +173,145 @@ impl std::fmt::Display for Severity {
             Severity::Warning => write!(f, "warning"),
             Severity::Info => write!(f, "info"),
         }
+    }
+}
+
+/// Configuration for a single scope source set.
+///
+/// Defined in the `[scope.<name>]` section of the config file.
+/// Controls which files belong to this source set and how they
+/// are treated during analysis and linting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeSetConfig {
+    /// Glob patterns for files included in this source set.
+    pub include: Vec<String>,
+    /// Glob patterns for files to exclude from this source set.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Role for files in this source set (e.g., "entry_point").
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Whether files in this source set are subject to lint rules.
+    /// Defaults to true.
+    #[serde(default = "default_true")]
+    pub lint: bool,
+    /// Whether files in this source set appear in analysis output.
+    /// Defaults to true.
+    #[serde(default = "default_true")]
+    pub analysis: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl ScopeSetConfig {
+    /// Check if this source set has the given role.
+    pub fn has_role(&self, role: &str) -> bool {
+        self.role.as_deref() == Some(role)
+    }
+}
+
+/// Compiled scope configuration with precompiled glob matchers.
+///
+/// Built from the `[scope]` config section. Provides file classification
+/// and role/lint/analysis queries.
+#[derive(Debug, Clone)]
+pub struct ScopeIndex {
+    /// Ordered list of (set_name, include_matcher, exclude_matcher, config).
+    sets: Vec<(String, globset::GlobSet, globset::GlobSet, ScopeSetConfig)>,
+}
+
+impl ScopeIndex {
+    /// Build a ScopeIndex from the scope config map.
+    pub fn build(scope: &HashMap<String, ScopeSetConfig>) -> Result<Self> {
+        let mut sets = Vec::new();
+        // Use sorted keys for deterministic ordering
+        let mut keys: Vec<&String> = scope.keys().collect();
+        keys.sort();
+        for name in keys {
+            let config = &scope[name];
+            let include = Self::build_globset(&config.include)
+                .with_context(|| format!("invalid include patterns in scope.{}", name))?;
+            let exclude = Self::build_globset(&config.exclude)
+                .with_context(|| format!("invalid exclude patterns in scope.{}", name))?;
+            sets.push((name.clone(), include, exclude, config.clone()));
+        }
+        Ok(Self { sets })
+    }
+
+    /// Classify a project-relative file path into a source set name.
+    ///
+    /// Returns the name of the first matching source set, or `None`
+    /// if the file does not belong to any configured source set.
+    pub fn classify(&self, rel_path: &Path) -> Option<&str> {
+        for (name, include, exclude, _) in &self.sets {
+            if include.is_match(rel_path) && !exclude.is_match(rel_path) {
+                return Some(name.as_str());
+            }
+        }
+        None
+    }
+
+    /// Check if a source set has lint enabled.
+    /// Returns true if the source set is not found (default behavior).
+    pub fn lint_enabled(&self, set_name: &str) -> bool {
+        self.sets
+            .iter()
+            .find(|(name, _, _, _)| name == set_name)
+            .map(|(_, _, _, config)| config.lint)
+            .unwrap_or(true)
+    }
+
+    /// Check if a source set has analysis enabled.
+    /// Returns true if the source set is not found (default behavior).
+    pub fn analysis_enabled(&self, set_name: &str) -> bool {
+        self.sets
+            .iter()
+            .find(|(name, _, _, _)| name == set_name)
+            .map(|(_, _, _, config)| config.analysis)
+            .unwrap_or(true)
+    }
+
+    /// Check if a source set has the given role.
+    pub fn has_role(&self, set_name: &str, role: &str) -> bool {
+        self.sets
+            .iter()
+            .find(|(name, _, _, _)| name == set_name)
+            .map(|(_, _, _, config)| config.has_role(role))
+            .unwrap_or(false)
+    }
+
+    /// Whether any source sets are configured.
+    pub fn is_empty(&self) -> bool {
+        self.sets.is_empty()
+    }
+
+    fn build_globset(patterns: &[String]) -> Result<globset::GlobSet> {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in patterns {
+            builder.add(
+                globset::Glob::new(pattern)
+                    .with_context(|| format!("invalid glob pattern: {}", pattern))?,
+            );
+        }
+        Ok(builder.build()?)
+    }
+}
+
+/// Load scope config from a project, returning empty map if no config exists.
+pub fn load_scope_config(project_root: &Path) -> HashMap<String, ScopeSetConfig> {
+    let path = match find_config_path(project_root, None) {
+        Some(p) => p,
+        None => return HashMap::new(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    match toml::from_str::<LintConfig>(&content) {
+        Ok(config) => config.scope,
+        Err(_) => HashMap::new(),
     }
 }
 
@@ -1166,5 +1307,328 @@ annotations = ["Scheduled"]
 
         let config = parse_config(toml).unwrap();
         assert!(config.rules.is_empty());
+    }
+
+    // =========================================================================
+    // Scope config
+    // =========================================================================
+
+    #[test]
+    fn test_parse_scope_config() {
+        let toml = r#"
+[scope.production]
+include = ["src/main/java/**", "src/**/*.rs"]
+exclude = ["src/**/test/**"]
+
+[scope.test]
+include = ["src/test/**", "tests/**"]
+role = "entry_point"
+lint = false
+
+[scope.fixture]
+include = ["test-fixtures/**"]
+role = "entry_point"
+analysis = false
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.scope.len(), 3);
+
+        let prod = &config.scope["production"];
+        assert_eq!(prod.include, vec!["src/main/java/**", "src/**/*.rs"]);
+        assert_eq!(prod.exclude, vec!["src/**/test/**"]);
+        assert!(prod.role.is_none());
+        assert!(prod.lint);
+        assert!(prod.analysis);
+
+        let test = &config.scope["test"];
+        assert_eq!(test.include, vec!["src/test/**", "tests/**"]);
+        assert!(test.exclude.is_empty());
+        assert_eq!(test.role.as_deref(), Some("entry_point"));
+        assert!(!test.lint);
+        assert!(test.analysis);
+
+        let fixture = &config.scope["fixture"];
+        assert_eq!(fixture.include, vec!["test-fixtures/**"]);
+        assert_eq!(fixture.role.as_deref(), Some("entry_point"));
+        assert!(fixture.lint);
+        assert!(!fixture.analysis);
+    }
+
+    #[test]
+    fn test_parse_scope_config_defaults() {
+        let toml = r#"
+[scope.production]
+include = ["src/**"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        let prod = &config.scope["production"];
+        assert_eq!(prod.include, vec!["src/**"]);
+        assert!(prod.exclude.is_empty());
+        assert!(prod.role.is_none());
+        assert!(prod.lint);
+        assert!(prod.analysis);
+    }
+
+    #[test]
+    fn test_parse_scope_config_empty() {
+        let toml = r#"
+rules = []
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert!(config.scope.is_empty());
+    }
+
+    #[test]
+    fn test_parse_scope_with_rules() {
+        let toml = r#"
+[scope.production]
+include = ["src/**"]
+
+[[rules]]
+id = "test"
+severity = "error"
+description = "test rule"
+
+[rules.boundary]
+from = ["src/a/**"]
+deny = ["src/b/**"]
+"#;
+
+        let config = parse_config(toml).unwrap();
+        assert_eq!(config.scope.len(), 1);
+        assert_eq!(config.rules.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_scope_missing_include() {
+        let toml = r#"
+[scope.bad]
+role = "entry_point"
+"#;
+
+        let result = parse_config(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_scope_index_classify() {
+        let mut scope = HashMap::new();
+        scope.insert(
+            "production".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/main/**".to_string()],
+                exclude: vec![],
+                role: None,
+                lint: true,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "test".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/test/**".to_string(), "tests/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: false,
+                analysis: true,
+            },
+        );
+
+        let index = ScopeIndex::build(&scope).unwrap();
+
+        assert_eq!(
+            index.classify(Path::new("src/main/java/Foo.java")),
+            Some("production")
+        );
+        assert_eq!(
+            index.classify(Path::new("src/test/java/FooTest.java")),
+            Some("test")
+        );
+        assert_eq!(
+            index.classify(Path::new("tests/integration.rs")),
+            Some("test")
+        );
+        assert_eq!(index.classify(Path::new("other/file.txt")), None);
+    }
+
+    #[test]
+    fn test_scope_index_classify_with_exclude() {
+        let mut scope = HashMap::new();
+        scope.insert(
+            "production".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/**".to_string()],
+                exclude: vec!["src/test/**".to_string()],
+                role: None,
+                lint: true,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "test".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/test/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: false,
+                analysis: true,
+            },
+        );
+
+        let index = ScopeIndex::build(&scope).unwrap();
+
+        assert_eq!(
+            index.classify(Path::new("src/main/Foo.java")),
+            Some("production")
+        );
+        // src/test/** is excluded from production, so it falls through to "test"
+        assert_eq!(
+            index.classify(Path::new("src/test/FooTest.java")),
+            Some("test")
+        );
+    }
+
+    #[test]
+    fn test_scope_index_lint_and_analysis() {
+        let mut scope = HashMap::new();
+        scope.insert(
+            "production".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/**".to_string()],
+                exclude: vec![],
+                role: None,
+                lint: true,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "test".to_string(),
+            ScopeSetConfig {
+                include: vec!["tests/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: false,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "fixture".to_string(),
+            ScopeSetConfig {
+                include: vec!["fixtures/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: true,
+                analysis: false,
+            },
+        );
+
+        let index = ScopeIndex::build(&scope).unwrap();
+
+        assert!(index.lint_enabled("production"));
+        assert!(!index.lint_enabled("test"));
+        assert!(index.lint_enabled("fixture"));
+        assert!(index.lint_enabled("nonexistent")); // default true
+
+        assert!(index.analysis_enabled("production"));
+        assert!(index.analysis_enabled("test"));
+        assert!(!index.analysis_enabled("fixture"));
+        assert!(index.analysis_enabled("nonexistent")); // default true
+    }
+
+    #[test]
+    fn test_scope_index_has_role() {
+        let mut scope = HashMap::new();
+        scope.insert(
+            "production".to_string(),
+            ScopeSetConfig {
+                include: vec!["src/**".to_string()],
+                exclude: vec![],
+                role: None,
+                lint: true,
+                analysis: true,
+            },
+        );
+        scope.insert(
+            "test".to_string(),
+            ScopeSetConfig {
+                include: vec!["tests/**".to_string()],
+                exclude: vec![],
+                role: Some("entry_point".to_string()),
+                lint: false,
+                analysis: true,
+            },
+        );
+
+        let index = ScopeIndex::build(&scope).unwrap();
+
+        assert!(!index.has_role("production", "entry_point"));
+        assert!(index.has_role("test", "entry_point"));
+        assert!(!index.has_role("nonexistent", "entry_point"));
+    }
+
+    #[test]
+    fn test_scope_index_empty() {
+        let scope = HashMap::new();
+        let index = ScopeIndex::build(&scope).unwrap();
+        assert!(index.is_empty());
+        assert_eq!(index.classify(Path::new("any/file.rs")), None);
+    }
+
+    #[test]
+    fn test_scope_set_config_has_role() {
+        let config = ScopeSetConfig {
+            include: vec!["tests/**".to_string()],
+            exclude: vec![],
+            role: Some("entry_point".to_string()),
+            lint: true,
+            analysis: true,
+        };
+        assert!(config.has_role("entry_point"));
+        assert!(!config.has_role("other"));
+
+        let no_role = ScopeSetConfig {
+            include: vec!["src/**".to_string()],
+            exclude: vec![],
+            role: None,
+            lint: true,
+            analysis: true,
+        };
+        assert!(!no_role.has_role("entry_point"));
+    }
+
+    #[test]
+    fn test_load_scope_config_from_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let statik_dir = dir.path().join(".statik");
+        std::fs::create_dir_all(&statik_dir).unwrap();
+        std::fs::write(
+            statik_dir.join("rules.toml"),
+            r#"
+[scope.production]
+include = ["src/**"]
+
+[scope.test]
+include = ["tests/**"]
+role = "entry_point"
+lint = false
+"#,
+        )
+        .unwrap();
+
+        let scope = load_scope_config(dir.path());
+        assert_eq!(scope.len(), 2);
+        assert!(scope.contains_key("production"));
+        assert!(scope.contains_key("test"));
+        assert!(!scope["test"].lint);
+    }
+
+    #[test]
+    fn test_load_scope_config_no_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let scope = load_scope_config(dir.path());
+        assert!(scope.is_empty());
     }
 }

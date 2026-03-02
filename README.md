@@ -134,7 +134,7 @@ statik dead-code --runtime-only      # ignore type-only imports
 
 The `symbols` scope performs symbol-level dead code detection: it finds non-exported symbols that have no intra-project references. This is more granular than file-level or export-level analysis.
 
-Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`). For Rust, entry points include `lib.rs`, `main.rs`, files in `src/bin/`, `tests/`, `examples/`, `benches/`, and `build.rs`.
+Entry points are never reported as dead. Entry points are detected automatically: files named `index`, `main`, `app`, `server`, `cli`, and test files (`*.test.*`, `*.spec.*`, `*_test.*`, `*_spec.*`). For Java, entry points are detected by file name conventions (JUnit test files `*Test.java`, `*Tests.java`, `*IT.java`, `Test*.java` and Spring Boot `Application.java`) and by annotation-based detection (`@SpringBootApplication`, `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@Component`, `@Service`, `@Repository`, `@Controller`, `@RestController`, `@Configuration`, `@Bean`, `@Endpoint`, `@WebServlet`). For Rust, entry points include `lib.rs`, `main.rs`, files in `src/bin/`, `tests/`, `examples/`, `benches/`, and `build.rs`. Additionally, files in source sets with `role = "entry_point"` (configured via the `[scope]` section) are treated as entry points.
 
 ### `statik cycles`
 
@@ -588,6 +588,62 @@ Suppression granularity levels from broadest to narrowest:
 2. **Freeze / baseline** (`--freeze`) -- project-level: suppress all existing violations
 3. **Inline comments** (`statik-ignore`) -- line-level: suppress specific known exceptions
 
+#### Source sets (`[scope]` config)
+
+Classify files into named source sets with different roles and analysis behavior. Define `[scope.<name>]` sections in `.statik/rules.toml` to control which files are production code, test code, fixtures, generated code, etc.
+
+```toml
+[scope.production]
+include = ["src/main/java/**", "src/**/*.rs", "src/**/*.ts"]
+exclude = ["src/**/test/**", "src/**/tests/**"]
+
+[scope.test]
+include = ["src/test/**", "tests/**", "**/*.test.*", "**/*.spec.*"]
+role = "entry_point"      # all test files are entry points
+lint = false              # test code is excluded from lint rules
+
+[scope.fixture]
+include = ["test-fixtures/**", "tests/fixtures/**"]
+role = "entry_point"
+analysis = false          # completely excluded from analysis output
+
+[scope.generated]
+include = ["src/generated/**", "build/generated-sources/**"]
+lint = false              # don't lint generated code
+
+[scope.benchmark]
+include = ["benches/**", "benchmarks/**"]
+role = "entry_point"
+```
+
+Each source set supports the following fields:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `include` | yes | -- | Glob patterns for files in this source set |
+| `exclude` | no | `[]` | Glob patterns to exclude from this source set |
+| `role` | no | none | Role for files (currently `"entry_point"` is supported) |
+| `lint` | no | `true` | Whether files in this source set are subject to lint rules |
+| `analysis` | no | `true` | Whether files appear in analysis output (dead-code, deps, etc.) |
+
+**How source sets affect behavior:**
+
+- **`role = "entry_point"`**: Files in this source set are treated as entry points for dead code analysis, equivalent to the built-in entry point detection for `main.rs`, `*Test.java`, `*.test.ts`, etc. This supplements (does not replace) the hardcoded entry point heuristics.
+- **`lint = false`**: Lint violations where the source file belongs to this source set are suppressed. This is useful for test code that legitimately imports from any module.
+- **`analysis = false`**: Files in this source set are excluded from analysis command output (dead-code, deps, cycles, impact, summary) but remain in the graph for correct import resolution. This is useful for test fixtures that should not appear as dead code.
+
+Files are classified into the first matching source set (checked in alphabetical order by set name). Files that do not match any source set remain unclassified and are treated normally (lint and analysis enabled, no special role).
+
+When no `[scope]` config exists, all behavior is backward compatible -- the built-in entry point heuristics and default lint/analysis settings apply.
+
+Use `--source-set <name>` to restrict any analysis command to files in a specific source set:
+
+```
+statik dead-code --source-set production
+statik deps src/main.rs --source-set production
+statik lint --source-set production
+```
+
 #### AI Agent Integration
 
 `statik lint` is designed to be consumed by AI coding agents. Use `--format json` for structured output that agents can parse and act on:
@@ -797,6 +853,7 @@ Files where more than 2 teams have >10% ownership each are flagged as cross-team
 | `--limit <N>` | Limit the number of results shown |
 | `--sort <field>` | Sort results by field (`path`, `confidence`, `name`, `depth`) |
 | `--reverse` | Reverse the sort order |
+| `--source-set <name>` | Restrict analysis to files in a named source set (defined in `[scope]` config) |
 | `--jq <expression>` | Apply a jq filter to JSON output (implicitly sets `--format json`) |
 
 ## How It Works
