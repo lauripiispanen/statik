@@ -282,6 +282,15 @@ impl ScopeIndex {
             .unwrap_or(false)
     }
 
+    /// Return names of source sets that have `analysis = false`.
+    pub fn analysis_disabled_set_names(&self) -> Vec<&str> {
+        self.sets
+            .iter()
+            .filter(|(_, _, _, config)| !config.analysis)
+            .map(|(name, _, _, _)| name.as_str())
+            .collect()
+    }
+
     /// Whether any source sets are configured.
     pub fn is_empty(&self) -> bool {
         self.sets.is_empty()

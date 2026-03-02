@@ -114,6 +114,7 @@ impl LanguageParser for JavaParser {
                 is_type_only: true,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             });
         }
 
@@ -131,6 +132,7 @@ impl LanguageParser for JavaParser {
                 is_type_only: false,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             });
         }
 
@@ -591,6 +593,7 @@ impl<'a> Extractor<'a> {
             is_type_only: false, // Java has no type-only import distinction
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: false,
         });
     }
 

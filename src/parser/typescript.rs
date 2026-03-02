@@ -895,6 +895,7 @@ impl<'a> Extractor<'a> {
                             is_type_only,
                             is_side_effect: false,
                             is_dynamic: false,
+                            is_cfg_test: false,
                         });
                     }
                 }
@@ -920,6 +921,7 @@ impl<'a> Extractor<'a> {
                 is_type_only: false,
                 is_side_effect: true,
                 is_dynamic: false,
+                is_cfg_test: false,
             });
         }
     }
@@ -949,6 +951,7 @@ impl<'a> Extractor<'a> {
                         is_type_only,
                         is_side_effect: false,
                         is_dynamic: false,
+                        is_cfg_test: false,
                     });
                 }
                 "named_imports" => {
@@ -969,6 +972,7 @@ impl<'a> Extractor<'a> {
                             is_type_only,
                             is_side_effect: false,
                             is_dynamic: false,
+                            is_cfg_test: false,
                         });
                     }
                 }
@@ -1008,6 +1012,7 @@ impl<'a> Extractor<'a> {
                         is_type_only,
                         is_side_effect: false,
                         is_dynamic: false,
+                        is_cfg_test: false,
                     });
                 }
             }
@@ -1080,6 +1085,7 @@ impl<'a> Extractor<'a> {
                             is_type_only: false,
                             is_side_effect: false,
                             is_dynamic: false,
+                            is_cfg_test: false,
                         });
                     }
                     return;
@@ -1202,6 +1208,7 @@ impl<'a> Extractor<'a> {
                             is_type_only: false,
                             is_side_effect: false,
                             is_dynamic: false,
+                            is_cfg_test: false,
                         });
                     }
                 }
@@ -1329,6 +1336,7 @@ impl<'a> Extractor<'a> {
                     is_type_only: false,
                     is_side_effect: false,
                     is_dynamic: true,
+                    is_cfg_test: false,
                 });
             }
             // Non-literal arguments (template strings, variables) -- we can't

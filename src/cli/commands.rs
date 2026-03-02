@@ -256,7 +256,7 @@ pub fn run_dead_code(
         );
 
         // Filter out symbols in files from source sets with analysis=false
-        let excluded = analysis_excluded_files(&file_graph, project_path);
+        let excluded = analysis_excluded_files(&file_graph);
         if !excluded.is_empty() {
             let excluded_paths: HashSet<String> = excluded
                 .iter()
@@ -300,7 +300,7 @@ pub fn run_dead_code(
     let mut result = detect_dead_code(&graph, scope, &seed_all_file_ids);
 
     // Filter out files in source sets with analysis=false
-    let excluded = analysis_excluded_files(&graph, project_path);
+    let excluded = analysis_excluded_files(&graph);
     if !excluded.is_empty() {
         result.dead_files.retain(|f| !excluded.contains(&f.file_id));
         result

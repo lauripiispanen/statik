@@ -1949,14 +1949,17 @@ Phase 10 dogfooding fixes (10.4b, 10.4c, 10.7, 10.8, 10.9) are now complete.
 Phase 10.3 (`statik who` — impact-aware reviewer suggestion) is now complete.
 Phase 10.6 (`statik team-coupling` — team boundary analysis) is now complete.
 **Phase 10 is now fully complete.**
-Phase 8 dogfooding fixes: 8.2, 8.3, 8.4, 8.6, 8.7 are complete. Remaining:
-8.1 (source sets), 8.5 (Java multi-module source roots).
+Phase 8 dogfooding fixes: 8.2, 8.3, 8.4, 8.6, 8.7 are complete.
+Phase 8.1 (source sets): core implementation complete. Java auto-detection of
+`src/test/java` directories, Rust `#[cfg(test)]` scope tagging, and
+`analysis_excluded_files()` optimization are done. Remaining: 8.5 (Java
+multi-module source roots with config-driven `source_roots`).
 Phase 9 external dogfooding: 9.1-9.5, 9.6, 9.7-9.11 are complete. Phase 9
 is now fully complete.
-**Highest-priority next work**: 8.1 (source sets) for scope classification.
 **Phase 11 (SCIP ingestion)** is a strategic priority — validated by external
 evaluation as "the cleanest path to making the graph analysis actually precise."
-Can be built alongside any other phase.
+Phase 11.1 (SCIP index reader) is in progress. Can be built alongside any
+other phase.
 
 ---
 
@@ -2042,10 +2045,14 @@ Tasks:
 - [x] Replace `is_entry_point()` with source set role lookup
 - [x] Add `lint: bool` and `analysis: bool` per source set
 - [x] Default source sets when no `[scope]` config exists (backward compat)
-- [ ] Rust parser: detect `#[cfg(test)]` on mod/fn/impl blocks, tag with scope
-- [ ] Java: auto-detect `src/test/java` as test source set when no config
+- [x] Rust parser: detect `#[cfg(test)]` on mod/fn/impl blocks, tag with scope
+- [x] Java: auto-detect `src/test/java` as test source set when no config
 - [x] Add `--source-set <name>` CLI flag to restrict analysis to a specific source set
 - [x] Add tests for each source set role
+- [x] Avoid redundant config I/O in `analysis_excluded_files()` — it re-reads
+  `.statik/rules.toml` and rebuilds `ScopeIndex` on every call, but the
+  classification is already stored in `FileInfo.source_set`. Derive the excluded
+  set from the graph + a cached `ScopeIndex` instead.
 
 **Acceptance**: `statik dead-code` on statik itself with default scope config
 excludes test fixtures. `statik lint` excludes `#[cfg(test)]` imports.
@@ -2683,38 +2690,34 @@ prints a helpful message instead of crashing.
 
 ## What's Left: Strategic Priorities
 
-### Completed (Phases 1-4, 2b, 3, 3b, 7, 8.2, 8.3, 8.6, 9.9, 9.10, 9.11, 9.12)
+### Completed (Phases 1-4, 2b, 3, 3b, 7, 8.1-8.4, 8.6-8.7, 9, 10)
 - Core TS/JS analysis with barrel files, dynamic imports, re-export tracing
 - Java support with source root detection, wildcard imports, annotation entry points
 - Rust support with crate_name resolution, mod-edge filtering, module-path imports
 - Source set dependency visibility with module boundaries (9.11)
+- Source set scope classification with Java auto-detection and Rust #[cfg(test)] tagging (8.1)
+- Inline suppression comments (8.4)
 - 12 lint rule types with freeze/baseline
 - Agent-friendly CLI: --path-filter, --count, --limit, --sort, --jq, CSV, --between
 - Symbol-level dead code, references, callers commands
 - Structural diff command
+- Git history analysis: owners, bus-factor, churn, who, team-coupling (Phase 10)
 - Structural edge propagation for pub mod re-exports (8.2)
 - Relative path output by default with --absolute-paths flag (8.3)
 - Output duplication on stderr audit (8.6)
+- Baseline line-number sensitivity fix (8.7)
 - Split unresolved_imports into external vs truly unresolved (9.9)
 - Forced re-index with --force flag and parser version stamp (9.10)
 - Graceful lint with no rules configured (9.12)
 
 ### Highest-impact next work
-1. **Phase 8.4** (inline suppression): Completes the suppression trilogy
-   (project baseline + source set scope + per-line ignore).
-2. **Phase 9.6** (dead code confidence warning): User-facing warning when
-   results are unreliable due to high unresolved import ratio.
-3. **Phase 10.1-10.3** (human / committer analysis): The most differentiated
-   new feature on the roadmap. No other CLI tool combines dependency-graph
-   blast radius with committer history. `statik who <file>` answers "if I
-   change this, who should I talk to?" — a question that currently requires
-   tribal knowledge. Start with git history extraction (10.1), ownership
-   model (10.2), then the impact-aware `who` command (10.3). The remaining
-   items (bus-factor, churn, team coupling) build on the same data and can
-   follow incrementally.
-4. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
+1. **Phase 11** (SCIP ingestion): Compiler-grade precision via external SCIP
+   indexes. Phase 11.1 (SCIP index reader) is in progress.
+2. **Phase 8.5** (Java multi-module source roots): Config-driven `source_roots`
+   for cross-module import resolution in Maven/Gradle projects.
+3. **Phase 1.4-1.5** (lazy loading + graph caching): Needed before targeting
    large projects (10K+ files).
-5. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
+4. **Phase 5** (refactoring intelligence): `statik diff HEAD~1 HEAD` is the
    killer feature for CI integration.
-6. **Phase 6.2** (graph visualization): `statik graph --format dot` is
+5. **Phase 6.2** (graph visualization): `statik graph --format dot` is
    low-effort, high-value for architecture reviews.

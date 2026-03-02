@@ -296,10 +296,14 @@ own codebase.
 - Cargo workspace cross-crate resolution
 - Proc macro expansion (derive, attribute macros)
 - `#[macro_export]` visibility detection
-- `#[cfg]` conditional compilation evaluation
+- `#[cfg]` evaluation beyond `#[cfg(test)]` (feature flags, platform-specific)
 - `#[path = "..."]` custom module paths
 - Build script generated code visibility
 - Feature flag resolution
+
+**Note**: `#[cfg(test)]` is now handled -- imports inside `#[cfg(test)]` blocks
+are tagged and excluded from production dependency edges. Other `#[cfg]` variants
+remain unhandled.
 
 ---
 

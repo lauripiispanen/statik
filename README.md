@@ -634,7 +634,7 @@ Each source set supports the following fields:
 
 Files are classified into the first matching source set (checked in alphabetical order by set name). Files that do not match any source set remain unclassified and are treated normally (lint and analysis enabled, no special role).
 
-When no `[scope]` config exists, all behavior is backward compatible -- the built-in entry point heuristics and default lint/analysis settings apply.
+When no `[scope]` config exists, all behavior is backward compatible -- the built-in entry point heuristics and default lint/analysis settings apply. Additionally, Java files in standard Maven/Gradle test directories (`**/src/test/java/**`) are automatically classified as the "test" source set and treated as entry points, while files in `**/src/main/java/**` are classified as "production". This auto-detection works for multi-module projects and requires no configuration.
 
 Use `--source-set <name>` to restrict any analysis command to files in a specific source set:
 
@@ -947,6 +947,7 @@ Each language has a dedicated import resolver.
 - **Call references** (function calls, method calls, struct expressions)
 - **Inheritance references** (`impl Trait for Type`)
 - **Type references** (`type_identifier` nodes)
+- **`#[cfg(test)]` scope tagging** -- imports inside `#[cfg(test)]` blocks are tagged and excluded from production dependency edges
 - **Intra-file reference resolution**
 
 ### Storage
@@ -999,7 +1000,7 @@ Rust-specific limitations:
 
 - **No `#[macro_export]` detection** -- `macro_rules!` definitions are always treated as Private visibility. The `#[macro_export]` attribute, which makes macros public at the crate root, is not recognized.
 
-- **No `#[cfg]` evaluation** -- conditional compilation attributes (`#[cfg(test)]`, `#[cfg(feature = "...")]`, platform-specific `#[cfg(target_os = "...")]`) are not evaluated. All branches are parsed unconditionally, which may create dependency edges to test-only or platform-specific modules.
+- **Limited `#[cfg]` evaluation** -- `#[cfg(test)]` is recognized: imports inside `#[cfg(test)]` blocks are tagged and excluded from production dependency edges. However, other conditional compilation attributes (`#[cfg(feature = "...")]`, platform-specific `#[cfg(target_os = "...")]`) are not evaluated. All non-test `#[cfg]` branches are parsed unconditionally, which may create dependency edges to platform-specific modules.
 
 - **No `#[path = "..."]` attribute support** -- custom module path attributes are not recognized. Module resolution uses the standard `foo.rs` / `foo/mod.rs` convention only.
 

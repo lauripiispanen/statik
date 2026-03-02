@@ -90,6 +90,7 @@ impl LanguageParser for RustParser {
                 is_type_only: false,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             });
         }
 
@@ -127,6 +128,8 @@ struct Extractor<'a> {
     ref_qualifiers: Vec<Option<String>>,
     /// Attribute names on functions (e.g. "test" from #[test]) for entry point detection.
     annotations: Vec<String>,
+    /// Nesting depth of `#[cfg(test)]` blocks. When > 0, items are inside test scope.
+    cfg_test_depth: u32,
 }
 
 impl<'a> Extractor<'a> {
@@ -145,6 +148,7 @@ impl<'a> Extractor<'a> {
             ref_target_names: Vec::new(),
             ref_qualifiers: Vec::new(),
             annotations: Vec::new(),
+            cfg_test_depth: 0,
         }
     }
 
@@ -466,6 +470,7 @@ impl<'a> Extractor<'a> {
             is_type_only: false,
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: self.cfg_test_depth > 0,
         });
     }
 
@@ -907,6 +912,9 @@ impl<'a> Extractor<'a> {
             None => return,
         };
 
+        // Check if this mod has #[cfg(test)]
+        let is_cfg_test = self.has_cfg_test_attr(node);
+
         let vis = self.extract_visibility(node);
         let id = self.alloc_symbol_id();
 
@@ -936,6 +944,11 @@ impl<'a> Extractor<'a> {
             });
         }
 
+        // Track cfg(test) depth for items inside this mod
+        if is_cfg_test {
+            self.cfg_test_depth += 1;
+        }
+
         // Check if this is an external mod declaration (no body, just semicolon)
         // vs an inline mod (has a body block)
         let has_body = node.child_by_field_name("body").is_some();
@@ -957,6 +970,7 @@ impl<'a> Extractor<'a> {
                 is_type_only: false,
                 is_side_effect: true,
                 is_dynamic: false,
+                is_cfg_test: self.cfg_test_depth > 0,
             });
         } else {
             // Inline mod: visit its body
@@ -965,6 +979,10 @@ impl<'a> Extractor<'a> {
                 self.visit_children(body);
             }
             self.parent_stack.pop();
+        }
+
+        if is_cfg_test {
+            self.cfg_test_depth -= 1;
         }
     }
 
@@ -1346,6 +1364,24 @@ impl<'a> Extractor<'a> {
 
     fn find_enclosing_symbol(&self) -> Option<SymbolId> {
         self.parent_stack.last().copied()
+    }
+
+    /// Check if a node has a preceding `#[cfg(test)]` attribute.
+    fn has_cfg_test_attr(&self, node: Node) -> bool {
+        let mut sibling = node.prev_sibling();
+        while let Some(sib) = sibling {
+            if sib.kind() == "attribute_item" {
+                let text = self.node_text(sib);
+                let inner = text.trim_start_matches("#[").trim_end_matches(']');
+                if inner.starts_with("cfg(test") {
+                    return true;
+                }
+                sibling = sib.prev_sibling();
+            } else {
+                break;
+            }
+        }
+        false
     }
 
     /// Extract attribute names from preceding sibling `attribute_item` nodes.
@@ -2652,6 +2688,89 @@ const FOO: u32 = 1;
             !self_ref,
             "FOO should not self-reference, refs: {:?}",
             result.references
+        );
+    }
+
+    #[test]
+    fn test_cfg_test_mod_tags_imports() {
+        let result = parse_rust(
+            r#"
+use crate::model::FileId;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    #[test]
+    fn test_something() {}
+}
+"#,
+        );
+
+        // The top-level import should NOT be tagged as cfg_test
+        let top_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path.contains("model"))
+            .expect("should find model import");
+        assert!(
+            !top_import.is_cfg_test,
+            "top-level import should not be cfg_test"
+        );
+
+        // Imports inside #[cfg(test)] mod should be tagged
+        let test_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path.contains("db"));
+        // The `use crate::db::Database` import should have is_cfg_test = true
+        if let Some(imp) = test_import {
+            assert!(
+                imp.is_cfg_test,
+                "import inside #[cfg(test)] should be tagged"
+            );
+        }
+
+        // `use super::*` inside cfg(test) should also be tagged
+        let super_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path == "super" && i.is_cfg_test);
+        assert!(
+            super_import.is_some(),
+            "use super::* inside #[cfg(test)] should be tagged as cfg_test"
+        );
+    }
+
+    #[test]
+    fn test_cfg_test_depth_resets_after_mod() {
+        let result = parse_rust(
+            r#"
+#[cfg(test)]
+mod tests {
+    use crate::test_util::helper;
+}
+
+use crate::production::important;
+"#,
+        );
+
+        let test_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path.contains("test_util"))
+            .expect("should find test_util import");
+        assert!(test_import.is_cfg_test, "import in cfg(test) mod should be tagged");
+
+        let prod_import = result
+            .imports
+            .iter()
+            .find(|i| i.source_path.contains("production"))
+            .expect("should find production import");
+        assert!(
+            !prod_import.is_cfg_test,
+            "import after cfg(test) mod should NOT be tagged"
         );
     }
 }

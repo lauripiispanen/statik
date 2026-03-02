@@ -74,6 +74,9 @@ pub struct FileGraph {
     pub unresolved: Vec<UnresolvedImport>,
     /// Path to FileId lookup.
     path_to_id: HashMap<PathBuf, FileId>,
+    /// Source set names where `analysis = false`, populated during graph construction.
+    /// Used by `analysis_excluded_files()` to avoid redundant config I/O.
+    pub analysis_disabled_sets: std::collections::HashSet<String>,
 }
 
 impl FileGraph {
@@ -178,6 +181,7 @@ impl FileGraph {
         }
 
         new_graph.unresolved = self.unresolved.clone();
+        new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
 
         new_graph
     }
@@ -243,6 +247,8 @@ impl FileGraph {
             }
         }
 
+        new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
+
         new_graph
     }
 
@@ -275,6 +281,8 @@ impl FileGraph {
                 new_graph.add_unresolved(u.clone());
             }
         }
+
+        new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
 
         new_graph
     }
@@ -539,6 +547,7 @@ mod tests {
             is_type_only: false,
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: false,
         }
     }
 

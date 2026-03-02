@@ -1518,6 +1518,52 @@ fn test_java_annotation_entry_point_test() {
 }
 
 // =============================================================================
+// AUTO-DETECT Java src/test/java as test source set
+// =============================================================================
+
+#[test]
+fn test_java_auto_detect_test_source_set() {
+    let tmp = setup_java_project();
+    index_java_project(tmp.path());
+
+    // No scope config present — auto-detection should classify
+    // src/test/java files as "test" and src/main/java as "production"
+    let db = statik::db::Database::open(&tmp.path().join(".statik/index.db")).unwrap();
+    let graph = statik::cli::graph_builder::build_file_graph(&db, tmp.path()).unwrap();
+
+    // Find the test file
+    let test_file = graph
+        .files
+        .values()
+        .find(|f| f.path.to_string_lossy().contains("src/test/java"))
+        .expect("should have a file under src/test/java");
+    assert_eq!(
+        test_file.source_set.as_deref(),
+        Some("test"),
+        "File under src/test/java should be auto-classified as 'test' source set"
+    );
+    assert!(
+        test_file.is_entry_point,
+        "File under src/test/java should be marked as entry point"
+    );
+
+    // Find a production file
+    let prod_file = graph
+        .files
+        .values()
+        .find(|f| {
+            f.path.to_string_lossy().contains("src/main/java")
+                && !f.path.to_string_lossy().contains("Application.java")
+        })
+        .expect("should have a file under src/main/java");
+    assert_eq!(
+        prod_file.source_set.as_deref(),
+        Some("production"),
+        "File under src/main/java should be auto-classified as 'production' source set"
+    );
+}
+
+// =============================================================================
 // INNER CLASS EXPORTS
 // =============================================================================
 

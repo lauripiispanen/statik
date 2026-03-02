@@ -152,6 +152,12 @@ impl Database {
         self.conn
             .execute("ALTER TABLE refs ADD COLUMN target_name TEXT", [])
             .ok();
+        self.conn
+            .execute(
+                "ALTER TABLE imports ADD COLUMN is_cfg_test INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .ok();
 
         Ok(())
     }
@@ -464,8 +470,9 @@ impl Database {
             .execute(
                 "INSERT INTO imports (file_id, source_path, imported_name, local_name,
                  span_start, span_end, line_start, col_start, line_end, col_end,
-                 is_default, is_namespace, is_type_only, is_side_effect, is_dynamic)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 is_default, is_namespace, is_type_only, is_side_effect, is_dynamic,
+                 is_cfg_test)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     import.file.0,
                     import.source_path,
@@ -482,6 +489,7 @@ impl Database {
                     import.is_type_only as i32,
                     import.is_side_effect as i32,
                     import.is_dynamic as i32,
+                    import.is_cfg_test as i32,
                 ],
             )
             .context("failed to insert import")?;
@@ -492,7 +500,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT file_id, source_path, imported_name, local_name,
                     span_start, span_end, line_start, col_start, line_end, col_end,
-                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic
+                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic,
+                    is_cfg_test
              FROM imports WHERE file_id = ?1",
         )?;
 
@@ -522,6 +531,7 @@ impl Database {
                     is_type_only: row.get::<_, i32>(12)? != 0,
                     is_side_effect: row.get::<_, i32>(13)? != 0,
                     is_dynamic: row.get::<_, i32>(14)? != 0,
+                    is_cfg_test: row.get::<_, i32>(15)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -533,7 +543,8 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT file_id, source_path, imported_name, local_name,
                     span_start, span_end, line_start, col_start, line_end, col_end,
-                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic
+                    is_default, is_namespace, is_type_only, is_side_effect, is_dynamic,
+                    is_cfg_test
              FROM imports ORDER BY file_id",
         )?;
 
@@ -563,6 +574,7 @@ impl Database {
                     is_type_only: row.get::<_, i32>(12)? != 0,
                     is_side_effect: row.get::<_, i32>(13)? != 0,
                     is_dynamic: row.get::<_, i32>(14)? != 0,
+                    is_cfg_test: row.get::<_, i32>(15)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -1171,6 +1183,7 @@ mod tests {
             is_type_only: false,
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: false,
         };
         db.insert_import(&import).unwrap();
 
@@ -1231,6 +1244,7 @@ mod tests {
             is_type_only: false,
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: false,
         };
         db.insert_import(&import).unwrap();
 

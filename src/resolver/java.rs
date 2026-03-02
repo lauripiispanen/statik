@@ -755,6 +755,7 @@ mod tests {
             is_type_only: false,
             is_side_effect: false,
             is_dynamic: false,
+            is_cfg_test: false,
         };
         resolver.set_file_wildcards(&[wildcard_import]);
 
@@ -824,6 +825,7 @@ mod tests {
                 is_type_only: false,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             },
             // Project-internal wildcard: should NOT be included (not external)
             crate::model::ImportRecord {
@@ -841,6 +843,7 @@ mod tests {
                 is_type_only: false,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             },
             // Synthetic import: should NOT be included (starts with @)
             crate::model::ImportRecord {
@@ -858,6 +861,7 @@ mod tests {
                 is_type_only: true,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             },
             // Regular (non-namespace) import: should NOT be included
             crate::model::ImportRecord {
@@ -875,6 +879,7 @@ mod tests {
                 is_type_only: false,
                 is_side_effect: false,
                 is_dynamic: false,
+                is_cfg_test: false,
             },
         ];
 

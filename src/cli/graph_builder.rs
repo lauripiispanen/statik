@@ -108,6 +108,9 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         }
     }
 
+    // Check if there are any Java files (for auto-detection fallback)
+    let has_java_files = files.iter().any(|f| f.language == Language::Java);
+
     // Add files to the graph
     for file in &files {
         let exports = exports_by_file.remove(&file.id).unwrap_or_default();
@@ -115,7 +118,18 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         let lang_sem = semantics.get(&file.language).copied();
         let file_source_set = scope_index
             .as_ref()
-            .and_then(|idx| idx.classify(rel_path).map(|s| s.to_string()));
+            .and_then(|idx| idx.classify(rel_path).map(|s| s.to_string()))
+            .or_else(|| {
+                // Auto-detect Java test directories when no scope config is present
+                if scope_index.is_none()
+                    && has_java_files
+                    && file.language == Language::Java
+                {
+                    auto_detect_java_source_set(rel_path)
+                } else {
+                    None
+                }
+            });
         let is_entry = is_entry_point(&file.path, lang_sem)
             || annotation_entry_files.contains(&file.id)
             || custom_pattern_matcher
@@ -125,7 +139,10 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 scope_index
                     .as_ref()
                     .is_some_and(|idx| idx.has_role(set, "entry_point"))
-            });
+            })
+            // Auto-detected Java test files are entry points
+            || (scope_index.is_none()
+                && file_source_set.as_deref() == Some("test"));
 
         let file_suppressions = all_suppressions.get(&file.id).cloned().unwrap_or_default();
         graph.add_file(FileInfo {
@@ -159,6 +176,12 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         for import in &imports {
             // Skip annotation marker imports (handled during entry point detection)
             if import.source_path.starts_with("@annotation:") {
+                continue;
+            }
+
+            // Skip imports from #[cfg(test)] blocks -- they are test-only
+            // and should not create production dependency edges.
+            if import.is_cfg_test {
                 continue;
             }
 
@@ -282,6 +305,14 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     // Post-filter edges by source set visibility
     if let Some(ref index) = source_set_index {
         graph = graph.filter_by_source_sets(index);
+    }
+
+    // Record which source sets have analysis disabled so callers can
+    // filter without re-reading the config file.
+    if let Some(ref idx) = scope_index {
+        for name in idx.analysis_disabled_set_names() {
+            graph.analysis_disabled_sets.insert(name.to_string());
+        }
     }
 
     Ok(graph)
@@ -458,22 +489,20 @@ pub fn maybe_filter_scope(graph: FileGraph, scope: Option<&str>) -> Result<FileG
 /// Files in source sets with `analysis = false` should not appear in
 /// analysis command output (dead-code, deps, cycles, etc.) but remain
 /// in the graph for correct resolution.
-pub fn analysis_excluded_files(graph: &FileGraph, project_root: &Path) -> HashSet<FileId> {
-    let scope_config = crate::linting::config::load_scope_config(project_root);
-    if scope_config.is_empty() {
+///
+/// Uses the `analysis_disabled_sets` cached in the graph during construction,
+/// avoiding redundant config I/O.
+pub fn analysis_excluded_files(graph: &FileGraph) -> HashSet<FileId> {
+    if graph.analysis_disabled_sets.is_empty() {
         return HashSet::new();
     }
-    let scope_index = match crate::linting::config::ScopeIndex::build(&scope_config) {
-        Ok(idx) => idx,
-        Err(_) => return HashSet::new(),
-    };
     graph
         .files
         .iter()
         .filter_map(|(file_id, info)| {
             info.source_set
                 .as_ref()
-                .filter(|set| !scope_index.analysis_enabled(set))
+                .filter(|set| graph.analysis_disabled_sets.contains(set.as_str()))
                 .map(|_| *file_id)
         })
         .collect()
@@ -493,5 +522,101 @@ pub fn maybe_filter_paths(
             Ok(graph.filter_to_paths(&glob, project_root))
         }
         None => Ok(graph),
+    }
+}
+
+/// Auto-detect Java source set from directory conventions.
+///
+/// When no explicit `[scope]` config is present, Java files under
+/// `src/test/java` are classified as "test" source set and files
+/// under `src/main/java` as "production". This matches the standard
+/// Maven/Gradle project layout.
+fn auto_detect_java_source_set(rel_path: &Path) -> Option<String> {
+    let components: Vec<_> = rel_path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    // Look for src/test/java sequence anywhere in the path
+    for window in components.windows(3) {
+        if window[0] == "src" && window[1] == "test" && window[2] == "java" {
+            return Some("test".to_string());
+        }
+        if window[0] == "src" && window[1] == "main" && window[2] == "java" {
+            return Some("production".to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_auto_detect_java_test_source_set() {
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("src/test/java/com/example/FooTest.java")),
+            Some("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_main_source_set() {
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("src/main/java/com/example/Foo.java")),
+            Some("production".to_string())
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_multi_module_test() {
+        // Multi-module Maven layout: module/src/test/java/...
+        assert_eq!(
+            auto_detect_java_source_set(Path::new(
+                "api-service/src/test/java/com/example/ApiTest.java"
+            )),
+            Some("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_multi_module_main() {
+        assert_eq!(
+            auto_detect_java_source_set(Path::new(
+                "api-service/src/main/java/com/example/Api.java"
+            )),
+            Some("production".to_string())
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_non_standard_returns_none() {
+        // Non-standard layout: no classification
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("src/com/example/Foo.java")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_flat_layout_returns_none() {
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("com/example/Foo.java")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_auto_detect_java_partial_match_returns_none() {
+        // Only two of three components match
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("src/test/Foo.java")),
+            None
+        );
+        assert_eq!(
+            auto_detect_java_source_set(Path::new("src/main/Foo.java")),
+            None
+        );
     }
 }

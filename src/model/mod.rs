@@ -250,6 +250,9 @@ pub struct ImportRecord {
     pub is_type_only: bool,
     pub is_side_effect: bool,
     pub is_dynamic: bool,
+    /// True when this import appears inside a `#[cfg(test)]` block (Rust).
+    #[serde(default)]
+    pub is_cfg_test: bool,
 }
 
 /// Represents an export from a source file.
