@@ -125,6 +125,14 @@ impl Database {
                 PRIMARY KEY (file_path, commit_sha)
             );
 
+            CREATE TABLE IF NOT EXISTS suppressions (
+                file_id INTEGER NOT NULL,
+                line INTEGER NOT NULL,
+                rule_id TEXT NOT NULL,
+                PRIMARY KEY (file_id, line, rule_id),
+                FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
@@ -135,6 +143,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
             CREATE INDEX IF NOT EXISTS idx_file_commits_path ON file_commits(file_path);
             CREATE INDEX IF NOT EXISTS idx_commits_email ON commits(author_email);
+            CREATE INDEX IF NOT EXISTS idx_suppressions_file ON suppressions(file_id);
             ",
             )
             .context("failed to initialize database schema")?;
@@ -821,11 +830,100 @@ impl Database {
         Ok(())
     }
 
+    // ---- Suppression operations ----
+
+    /// Store inline suppression comments for a file.
+    /// Clears any existing suppressions for this file first.
+    pub fn store_suppressions(
+        &self,
+        file_id: FileId,
+        suppressions: &std::collections::HashMap<usize, Vec<String>>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM suppressions WHERE file_id = ?1",
+            params![file_id.0],
+        )?;
+        let mut stmt = self
+            .conn
+            .prepare("INSERT INTO suppressions (file_id, line, rule_id) VALUES (?1, ?2, ?3)")?;
+        for (line, rule_ids) in suppressions {
+            if rule_ids.is_empty() {
+                // Empty vec means "suppress all rules" — store with empty string sentinel
+                stmt.execute(params![file_id.0, *line as i64, ""])?;
+            } else {
+                for rule_id in rule_ids {
+                    stmt.execute(params![file_id.0, *line as i64, rule_id])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Load all suppressions for a file.
+    /// Returns a map from 1-based line number to list of suppressed rule IDs.
+    /// An empty vec means "suppress all rules for that line".
+    pub fn get_suppressions_for_file(
+        &self,
+        file_id: FileId,
+    ) -> Result<std::collections::HashMap<usize, Vec<String>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT line, rule_id FROM suppressions WHERE file_id = ?1")?;
+        let mut suppressions: std::collections::HashMap<usize, Vec<String>> =
+            std::collections::HashMap::new();
+        let rows = stmt.query_map(params![file_id.0], |row| {
+            let line: i64 = row.get(0)?;
+            let rule_id: String = row.get(1)?;
+            Ok((line as usize, rule_id))
+        })?;
+        for row in rows {
+            let (line, rule_id) = row?;
+            let entry = suppressions.entry(line).or_default();
+            if rule_id.is_empty() {
+                // Empty string sentinel = suppress all. Keep vec empty.
+                // (Don't add the empty string to the list.)
+            } else {
+                entry.push(rule_id);
+            }
+        }
+        Ok(suppressions)
+    }
+
+    /// Load suppressions for all files at once.
+    /// Returns a map from FileId to line->rules mapping.
+    pub fn all_suppressions(
+        &self,
+    ) -> Result<std::collections::HashMap<FileId, std::collections::HashMap<usize, Vec<String>>>>
+    {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_id, line, rule_id FROM suppressions")?;
+        let mut result: std::collections::HashMap<
+            FileId,
+            std::collections::HashMap<usize, Vec<String>>,
+        > = std::collections::HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            let file_id: i64 = row.get(0)?;
+            let line: i64 = row.get(1)?;
+            let rule_id: String = row.get(2)?;
+            Ok((FileId(file_id as u64), line as usize, rule_id))
+        })?;
+        for row in rows {
+            let (file_id, line, rule_id) = row?;
+            let file_map = result.entry(file_id).or_default();
+            let entry = file_map.entry(line).or_default();
+            if !rule_id.is_empty() {
+                entry.push(rule_id);
+            }
+        }
+        Ok(result)
+    }
+
     /// Delete all data for a file (symbols, refs, imports, exports via CASCADE).
     pub fn clear_file_data(&self, file_id: FileId) -> Result<()> {
         // Due to CASCADE, deleting from files would remove everything.
         // But we want to keep the file record and just clear its symbols.
-        // So we delete symbols (which cascades refs), imports, and exports directly.
+        // So we delete symbols (which cascades refs), imports, exports, and suppressions directly.
         self.conn
             .execute("DELETE FROM exports WHERE file_id = ?1", params![file_id.0])?;
         self.conn
@@ -834,6 +932,10 @@ impl Database {
             .execute("DELETE FROM refs WHERE file_id = ?1", params![file_id.0])?;
         self.conn
             .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id.0])?;
+        self.conn.execute(
+            "DELETE FROM suppressions WHERE file_id = ?1",
+            params![file_id.0],
+        )?;
         Ok(())
     }
 }
@@ -1541,5 +1643,69 @@ mod tests {
         // Ordered by timestamp DESC
         assert_eq!(commits[0].sha, "sha2");
         assert_eq!(commits[1].sha, "sha1");
+    }
+
+    #[test]
+    fn test_suppressions_round_trip() {
+        let db = test_db();
+        db.upsert_file(&sample_file()).unwrap();
+
+        let mut suppressions = std::collections::HashMap::new();
+        suppressions.insert(5usize, vec!["no-ui-to-db".to_string()]);
+        suppressions.insert(10usize, vec![]); // suppress all
+        suppressions.insert(15usize, vec!["rule-a".to_string(), "rule-b".to_string()]);
+
+        db.store_suppressions(FileId(1), &suppressions).unwrap();
+
+        let loaded = db.get_suppressions_for_file(FileId(1)).unwrap();
+        assert_eq!(loaded.get(&5), Some(&vec!["no-ui-to-db".to_string()]));
+        assert_eq!(loaded.get(&10), Some(&vec![])); // suppress all
+        let mut rule_ab = loaded.get(&15).unwrap().clone();
+        rule_ab.sort();
+        assert_eq!(rule_ab, vec!["rule-a".to_string(), "rule-b".to_string()]);
+    }
+
+    #[test]
+    fn test_suppressions_cleared_on_reindex() {
+        let db = test_db();
+        db.upsert_file(&sample_file()).unwrap();
+
+        let mut suppressions = std::collections::HashMap::new();
+        suppressions.insert(5usize, vec!["old-rule".to_string()]);
+        db.store_suppressions(FileId(1), &suppressions).unwrap();
+
+        // Simulate re-index: clear_file_data removes old suppressions
+        db.clear_file_data(FileId(1)).unwrap();
+        let loaded = db.get_suppressions_for_file(FileId(1)).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_all_suppressions() {
+        let db = test_db();
+        db.upsert_file(&sample_file()).unwrap();
+        let file2 = FileRecord {
+            id: FileId(2),
+            path: std::path::PathBuf::from("/test/b.ts"),
+            mtime: 100,
+            language: Language::TypeScript,
+        };
+        db.upsert_file(&file2).unwrap();
+
+        let mut sup1 = std::collections::HashMap::new();
+        sup1.insert(3usize, vec!["rule-x".to_string()]);
+        db.store_suppressions(FileId(1), &sup1).unwrap();
+
+        let mut sup2 = std::collections::HashMap::new();
+        sup2.insert(7usize, vec![]);
+        db.store_suppressions(FileId(2), &sup2).unwrap();
+
+        let all = db.all_suppressions().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            all.get(&FileId(1)).unwrap().get(&3),
+            Some(&vec!["rule-x".to_string()])
+        );
+        assert_eq!(all.get(&FileId(2)).unwrap().get(&7), Some(&vec![]));
     }
 }

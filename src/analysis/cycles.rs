@@ -190,6 +190,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 
@@ -509,6 +510,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -516,6 +518,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // False edge: framework -> app (same-package leakage)

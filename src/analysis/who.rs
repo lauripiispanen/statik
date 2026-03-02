@@ -74,9 +74,7 @@ fn compute_ownership_for_file(
 /// Picks the person covering the most uncovered files, repeats until all
 /// affected files with owners are covered. A person "covers" a file if they
 /// have any non-zero ownership score on it.
-fn greedy_set_cover(
-    affected_files: &[AffectedFileOwnership],
-) -> Vec<ReviewerScore> {
+fn greedy_set_cover(affected_files: &[AffectedFileOwnership]) -> Vec<ReviewerScore> {
     // Build a mapping: author_email -> set of file indices they cover
     let mut author_files: HashMap<String, (String, HashSet<usize>)> = HashMap::new();
     for (i, file) in affected_files.iter().enumerate() {
@@ -103,9 +101,7 @@ fn greedy_set_cover(
         // Find the author covering the most uncovered files
         let best = author_files
             .iter()
-            .max_by_key(|(_email, (_name, files))| {
-                files.intersection(&uncovered).count()
-            });
+            .max_by_key(|(_email, (_name, files))| files.intersection(&uncovered).count());
 
         match best {
             Some((email, (name, files))) => {
@@ -296,6 +292,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 

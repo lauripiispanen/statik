@@ -86,6 +86,10 @@ pub struct DeadCodeSummary {
     pub dead_exports: usize,
     pub entry_points: usize,
     pub files_with_unresolvable_imports: usize,
+    /// Ratio of unresolved imports to total imports (0.0 to 1.0).
+    /// When > 0.5, dead code results are unreliable.
+    #[serde(default)]
+    pub unresolved_ratio: f64,
 }
 
 /// Detect dead code in the project.
@@ -279,8 +283,23 @@ pub fn detect_dead_code(
 
     let overall_confidence = compute_confidence(total_imports, unresolved_count, has_wildcards);
 
+    let unresolved_ratio = if total_imports > 0 {
+        unresolved_count as f64 / total_imports as f64
+    } else {
+        0.0
+    };
+
     let mut limitations = Vec::new();
-    if unresolved_count > 0 {
+    if unresolved_ratio > 0.5 {
+        limitations.push(Limitation {
+            description: format!(
+                "High unresolved import ratio ({:.0}%) \u{2014} dead code results may be unreliable. \
+                 Consider configuring source roots in .statik/rules.toml.",
+                unresolved_ratio * 100.0,
+            ),
+            count: unresolved_count,
+        });
+    } else if unresolved_count > 0 {
         limitations.push(Limitation {
             description: format!("{} imports could not be resolved", unresolved_count),
             count: unresolved_count,
@@ -303,6 +322,7 @@ pub fn detect_dead_code(
         dead_exports: dead_exports.len(),
         entry_points: entry_points.len(),
         files_with_unresolvable_imports: files_with_unresolvable,
+        unresolved_ratio,
     };
 
     DeadCodeResult {
@@ -701,6 +721,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: is_entry,
+            suppressions: Default::default(),
         }
     }
 
@@ -730,6 +751,7 @@ mod tests {
                 })
                 .collect(),
             is_entry_point: is_entry,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 
@@ -922,6 +944,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(barrel);
 
@@ -968,6 +991,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(barrel);
 
@@ -1036,6 +1060,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(barrel);
 
@@ -1094,6 +1119,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(barrel);
 
@@ -1149,6 +1175,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(file_a);
 
@@ -1168,6 +1195,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(file_b);
 
@@ -1213,6 +1241,7 @@ mod tests {
                 line: 0,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_file(barrel);
         graph.add_import(make_edge(1, 2, &["helper"]));
@@ -1391,6 +1420,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
 
         sym_graph.add_file(FileRecord {
@@ -1519,6 +1549,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // File 2: exported symbol becomes entry point when linker confirms it's imported
@@ -1563,6 +1594,7 @@ mod tests {
             }],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Linker confirms that file 1 imports api_handler from file 2
@@ -1625,6 +1657,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1672,6 +1705,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1733,6 +1767,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1789,6 +1824,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1850,6 +1886,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1899,6 +1936,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Unreachable trait in non-entry file — no linker reference targets it
@@ -1928,6 +1966,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -1977,6 +2016,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2028,6 +2068,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2078,6 +2119,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Unreachable struct with dead children in non-entry file
@@ -2101,6 +2143,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2142,6 +2185,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2318,6 +2362,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2361,6 +2406,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -2393,6 +2439,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // commands.rs exports run_deps, build_file_graph
@@ -2423,6 +2470,7 @@ mod tests {
                 },
             ],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // main.rs imports "commands" (module name) from commands.rs
@@ -2466,6 +2514,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -2482,6 +2531,7 @@ mod tests {
                 line: 1,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Importing "utils" (file stem) should NOT mark "helper" as used in TS
@@ -2580,6 +2630,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // File B: process (exported) calls internal_b
                 sg.add_parse_result(ParseResult {
@@ -2608,6 +2659,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // File C: compute (exported)
                 sg.add_parse_result(ParseResult {
@@ -2633,6 +2685,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![
@@ -2710,6 +2763,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // B: b_fn (exported)
                 sg.add_parse_result(ParseResult {
@@ -2735,6 +2789,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // C: c_fn (exported)
                 sg.add_parse_result(ParseResult {
@@ -2760,6 +2815,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // D: d_fn (the diamond bottom)
                 sg.add_parse_result(ParseResult {
@@ -2785,6 +2841,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![
@@ -2864,6 +2921,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // B: process (exported) calls helper (private), dead_fn (private, never called)
                 sg.add_parse_result(ParseResult {
@@ -2887,6 +2945,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![], // No linker refs -- B is never imported
@@ -2942,6 +3001,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 sg.add_parse_result(ParseResult {
                     file_id: FileId(2),
@@ -2964,6 +3024,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![CrossFileRef {
@@ -3021,6 +3082,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // B: exported_fn calls helper, dead_fn is isolated
                 sg.add_parse_result(ParseResult {
@@ -3050,6 +3112,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![
@@ -3111,6 +3174,7 @@ mod tests {
                     exports: vec![],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
                 // B: b_fn (exported)
                 sg.add_parse_result(ParseResult {
@@ -3136,6 +3200,7 @@ mod tests {
                     }],
                     type_references: vec![],
                     annotations: vec![],
+                    suppressions: std::collections::HashMap::new(),
                 });
             },
             vec![
@@ -3194,6 +3259,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // All resolved, no unresolved -> High
@@ -3253,6 +3319,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // File B (non-entry) - exports do_stuff
@@ -3271,6 +3338,7 @@ mod tests {
                 line: 1,
             }],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Import edge: A imports "do_stuff" from B
@@ -3302,6 +3370,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // File B: do_stuff (exported, public), helper (private, called by do_stuff),
@@ -3329,6 +3398,7 @@ mod tests {
             }],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Step 1: Run the REAL linker on the file graph
@@ -3428,6 +3498,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());
@@ -3506,6 +3577,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         });
 
         let result = detect_dead_symbols(&sym_graph, &file_graph, &empty_linker(), &HashSet::new());

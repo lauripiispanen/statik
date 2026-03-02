@@ -103,6 +103,7 @@ impl LanguageParser for RustParser {
             exports: extractor.exports,
             type_references: vec![],
             annotations,
+            suppressions: super::suppression::extract_suppressions(source),
         })
     }
 

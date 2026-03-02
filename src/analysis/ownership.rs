@@ -930,6 +930,7 @@ mod tests {
                 language: Language::Java,
                 exports: vec![],
                 is_entry_point: false,
+                suppressions: std::collections::HashMap::new(),
             });
         }
 
@@ -1019,6 +1020,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1026,6 +1028,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Only web/Config is imported (by a hypothetical consumer)
@@ -1036,6 +1039,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         db.insert_file_commit("web/src/main/java/com/example/App.java", "sha1", 20, 0)
             .unwrap();
@@ -1223,6 +1227,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1230,6 +1235,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         db.insert_file_commit("src/consumer.rs", "sha2", 20, 0)
             .unwrap();
@@ -1373,6 +1379,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -1380,6 +1387,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -1387,6 +1395,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(4),
@@ -1394,6 +1403,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // handler imports auth (auth has fan_in = 1)

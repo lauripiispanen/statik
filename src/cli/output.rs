@@ -592,10 +592,18 @@ pub fn format_lint_text(result: &crate::linting::rules::LintResult) -> String {
         }
     }
 
-    out.push_str(&format!(
-        "{} errors, {} warnings across {} rules\n",
+    let mut summary_parts = vec![format!(
+        "{} errors, {} warnings across {} rules",
         result.summary.errors, result.summary.warnings, result.summary.rules_evaluated,
-    ));
+    )];
+    if result.summary.suppressed > 0 {
+        summary_parts.push(format!(
+            "{} suppressed by inline comments",
+            result.summary.suppressed,
+        ));
+    }
+    out.push_str(&summary_parts.join(", "));
+    out.push('\n');
 
     out
 }

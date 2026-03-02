@@ -60,9 +60,13 @@ impl TestProject {
             .expect("git add failed");
         Command::new("git")
             .args([
-                "-c", "user.name=Test User",
-                "-c", "user.email=test@example.com",
-                "commit", "-m", "initial commit",
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "initial commit",
             ])
             .current_dir(dir)
             .output()

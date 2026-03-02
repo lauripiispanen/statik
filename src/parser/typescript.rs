@@ -82,6 +82,7 @@ impl LanguageParser for TypeScriptParser {
             exports: extractor.exports,
             type_references: Vec::new(),
             annotations: Vec::new(),
+            suppressions: super::suppression::extract_suppressions(source),
         })
     }
 

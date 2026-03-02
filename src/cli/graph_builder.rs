@@ -61,9 +61,10 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let path_to_id: HashMap<PathBuf, FileId> =
         files.iter().map(|f| (f.path.clone(), f.id)).collect();
 
-    // Batch-load all imports and exports (3 queries total instead of 2N+1)
+    // Batch-load all imports, exports, and suppressions
     let all_imports = db.all_imports()?;
     let all_exports = db.all_exports()?;
+    let all_suppressions = db.all_suppressions()?;
 
     let mut imports_by_file: HashMap<FileId, Vec<crate::model::ImportRecord>> = HashMap::new();
     for imp in all_imports {
@@ -110,12 +111,14 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 .as_ref()
                 .is_some_and(|m| m.matches(rel_path));
 
+        let file_suppressions = all_suppressions.get(&file.id).cloned().unwrap_or_default();
         graph.add_file(FileInfo {
             id: file.id,
             path: file.path.clone(),
             language: file.language,
             exports,
             is_entry_point: is_entry,
+            suppressions: file_suppressions,
         });
     }
 
@@ -317,6 +320,7 @@ pub fn build_symbol_graph(db: &Database) -> Result<SymbolGraph> {
                 exports,
                 type_references: vec![],
                 annotations: vec![],
+                suppressions: HashMap::new(),
             });
         }
     }

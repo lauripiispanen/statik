@@ -287,6 +287,21 @@ pub enum Commands {
         #[arg(long, default_value = "3")]
         top: usize,
     },
+
+    /// Analyze cross-team coordination costs via ownership and dependency boundaries
+    TeamCoupling {
+        /// Glob pattern for files to analyze (optional)
+        glob: Option<String>,
+        /// Recency half-life in days (default: 180)
+        #[arg(long, default_value = "180")]
+        half_life: f64,
+        /// Half-life mode: fixed or adaptive (default: adaptive)
+        #[arg(long, default_value = "adaptive")]
+        half_life_mode: HalfLifeModeCli,
+        /// Ownership threshold for counting as a contributing team (0.0-1.0, default: 0.1)
+        #[arg(long, default_value = "0.1")]
+        threshold: f64,
+    },
 }
 
 #[derive(Clone, ValueEnum)]

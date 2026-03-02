@@ -6,6 +6,7 @@ pub mod diff;
 pub mod impact;
 pub mod linker;
 pub mod ownership;
+pub mod teams;
 pub mod who;
 
 use serde::{Deserialize, Serialize};

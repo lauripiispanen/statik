@@ -9,12 +9,35 @@ use super::rules::LintViolation;
 const BASELINE_PATH: &str = ".statik/lint-baseline.json";
 
 /// A single baseline entry identifying a known violation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// The `line` field is stored for informational purposes but is NOT used
+/// for matching.  Baseline matching uses (rule_id, source_file, target_file)
+/// only, so that adding or removing blank lines does not break suppression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineEntry {
     pub rule_id: String,
     pub source_file: PathBuf,
     pub target_file: PathBuf,
     pub line: usize,
+}
+
+/// Key used for baseline matching — excludes `line` so that whitespace
+/// changes do not break suppression.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BaselineKey {
+    rule_id: String,
+    source_file: PathBuf,
+    target_file: PathBuf,
+}
+
+impl BaselineEntry {
+    fn key(&self) -> BaselineKey {
+        BaselineKey {
+            rule_id: self.rule_id.clone(),
+            source_file: self.source_file.clone(),
+            target_file: self.target_file.clone(),
+        }
+    }
 }
 
 /// Stored baseline of known lint violations.
@@ -134,28 +157,33 @@ impl Baseline {
     }
 
     /// Check if a violation is known in this baseline.
+    ///
+    /// Matching ignores line numbers — only (rule_id, source_file, target_file)
+    /// are compared, so that inserting blank lines does not break suppression.
     pub fn is_known(&self, entry: &BaselineEntry) -> bool {
-        self.as_set().contains(entry)
+        self.key_set().contains(&entry.key())
     }
 
-    fn as_set(&self) -> HashSet<&BaselineEntry> {
-        self.violations.iter().collect()
+    fn key_set(&self) -> HashSet<BaselineKey> {
+        self.violations.iter().map(|v| v.key()).collect()
     }
 
     /// Filter out violations that are present in this baseline.
     /// Returns only the new/unknown violations.
+    ///
+    /// Matching ignores line numbers — only (rule_id, source_file, target_file)
+    /// are compared.
     pub fn filter_known(&self, violations: Vec<LintViolation>) -> Vec<LintViolation> {
-        let known = self.as_set();
+        let known = self.key_set();
         violations
             .into_iter()
             .filter(|v| {
-                let entry = BaselineEntry {
+                let key = BaselineKey {
                     rule_id: v.rule_id.clone(),
                     source_file: v.source_file.clone(),
                     target_file: v.target_file.clone(),
-                    line: v.line,
                 };
-                !known.contains(&entry)
+                !known.contains(&key)
             })
             .collect()
     }
@@ -220,13 +248,40 @@ mod tests {
         };
         assert!(baseline.is_known(&known));
 
-        let unknown = BaselineEntry {
+        // Same violation at a different line should still match (line-insensitive matching)
+        let shifted_line = BaselineEntry {
             rule_id: "rule-1".to_string(),
             source_file: PathBuf::from("src/a.ts"),
             target_file: PathBuf::from("src/b.ts"),
-            line: 6, // different line
+            line: 6, // different line — still matches
         };
-        assert!(!baseline.is_known(&unknown));
+        assert!(
+            baseline.is_known(&shifted_line),
+            "Baseline matching should ignore line numbers"
+        );
+
+        // Different rule_id should NOT match
+        let different_rule = BaselineEntry {
+            rule_id: "rule-2".to_string(),
+            source_file: PathBuf::from("src/a.ts"),
+            target_file: PathBuf::from("src/b.ts"),
+            line: 5,
+        };
+        assert!(!baseline.is_known(&different_rule));
+    }
+
+    #[test]
+    fn test_filter_known_ignores_line_numbers() {
+        let violations = vec![make_violation("rule-1", "src/a.ts", "src/b.ts", 5)];
+        let baseline = Baseline::from_violations(&violations);
+
+        // Same violation but line shifted (e.g. blank line added above)
+        let shifted = vec![make_violation("rule-1", "src/a.ts", "src/b.ts", 8)];
+        let filtered = baseline.filter_known(shifted);
+        assert!(
+            filtered.is_empty(),
+            "Shifted-line violation should be suppressed by baseline"
+        );
     }
 
     #[test]

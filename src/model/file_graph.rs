@@ -34,6 +34,9 @@ pub struct FileInfo {
     pub language: Language,
     pub exports: Vec<ExportRecord>,
     pub is_entry_point: bool,
+    /// Inline suppression comments: line_number -> list of rule IDs (empty vec = suppress all).
+    #[serde(default, skip_serializing)]
+    pub suppressions: HashMap<usize, Vec<String>>,
 }
 
 /// Reason why an import could not be resolved.
@@ -332,6 +335,7 @@ impl FileGraph {
                 language: *language,
                 exports: exports.clone(),
                 is_entry_point: is_entry,
+                suppressions: HashMap::new(),
             });
         }
 
@@ -739,6 +743,7 @@ mod tests {
                 language: Language::TypeScript,
                 exports: vec![],
                 is_entry_point: is_entry,
+                suppressions: std::collections::HashMap::new(),
             });
         }
 
@@ -816,6 +821,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -823,6 +829,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -830,6 +837,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // Type-only edge: index -> types
@@ -874,6 +882,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -881,6 +890,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         graph.add_import(FileImport {
@@ -921,6 +931,7 @@ mod tests {
                 language: Language::Java,
                 exports: vec![],
                 is_entry_point: false,
+                suppressions: std::collections::HashMap::new(),
             }
         }
 

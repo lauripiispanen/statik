@@ -236,6 +236,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 

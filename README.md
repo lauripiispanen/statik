@@ -554,7 +554,39 @@ statik lint
 statik lint --update-baseline
 ```
 
-The baseline is stored at `.statik/lint-baseline.json`. Add it to version control so the team shares the same baseline.
+The baseline is stored at `.statik/lint-baseline.json`. Add it to version control so the team shares the same baseline. Baseline matching uses `(rule_id, source_file, target_file)` only -- line numbers are stored for reference but not used for matching, so adding or removing blank lines does not break suppression.
+
+#### Inline suppression comments
+
+For per-line exceptions, add a `statik-ignore` comment above the import:
+
+```rust
+// statik-ignore[model-is-leaf]
+use crate::resolver::TypeScriptResolver;
+```
+
+The comment format is language-agnostic and works in Rust, TypeScript/JavaScript, and Java:
+
+```typescript
+// statik-ignore[no-ui-to-db]
+import { query } from '../db/connection';
+```
+
+```java
+// statik-ignore[layer-violation]
+import com.example.internal.Helper;
+```
+
+- `// statik-ignore[rule-id]` suppresses a specific rule for the next line
+- `// statik-ignore` (no brackets) suppresses all rules for the next line
+- `/* statik-ignore[rule-id] */` block comment variant is also supported
+- Suppressed violations are counted and shown in the lint summary
+
+Suppression granularity levels from broadest to narrowest:
+
+1. **Source sets** (`[scope]` config) -- scope-level: exclude entire categories of code from linting
+2. **Freeze / baseline** (`--freeze`) -- project-level: suppress all existing violations
+3. **Inline comments** (`statik-ignore`) -- line-level: suppress specific known exceptions
 
 #### AI Agent Integration
 
@@ -717,6 +749,37 @@ The output includes three sections:
 | `--half-life-mode fixed\|adaptive` | Half-life mode (default: `adaptive`). Adaptive mode scales the half-life with file age |
 | `--top <N>` | Show top N owners per affected file (default: 3) |
 | `--max-depth <N>` | Limit blast radius depth (global flag) |
+
+### `statik team-coupling [glob]`
+
+Analyze cross-team coordination costs. Maps git authors to teams and identifies files that require coordination across team boundaries, plus dependency edges that cross team boundaries.
+
+Requires `statik index --with-history` to have been run first.
+
+Teams are configured via the `[teams]` section in `.statik/rules.toml`:
+
+```toml
+[teams]
+platform = ["*@platform.example.com", "alice@example.com"]
+product = ["*@product.example.com"]
+infra = ["*@infra.example.com"]
+```
+
+When no `[teams]` config exists, teams are inferred from email domains.
+
+```
+statik team-coupling
+statik team-coupling "src/core/**"
+statik team-coupling --format json
+```
+
+Files where more than 2 teams have >10% ownership each are flagged as cross-team coordination hotspots. The output also includes dependency edges that cross team boundaries (source file owned by one team depends on a target file owned by a different team).
+
+| Flag | Description |
+|------|-------------|
+| `--half-life <days>` | Recency half-life in days (default: 180) |
+| `--half-life-mode fixed\|adaptive` | Half-life mode (default: `adaptive`) |
+| `--threshold <0.0-1.0>` | Ownership threshold for counting as a contributing team (default: 0.1) |
 
 ## Global Flags
 

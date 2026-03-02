@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -277,6 +278,8 @@ pub struct ParseResult {
     pub type_references: Vec<String>,
     /// Annotation/attribute names on top-level declarations (for entry point detection).
     pub annotations: Vec<String>,
+    /// Inline suppression comments: line_number -> list of rule IDs (empty vec = suppress all).
+    pub suppressions: HashMap<usize, Vec<String>>,
 }
 
 pub mod file_graph;

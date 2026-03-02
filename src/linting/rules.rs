@@ -35,6 +35,8 @@ pub struct LintSummary {
     pub warnings: usize,
     pub infos: usize,
     pub rules_evaluated: usize,
+    #[serde(default)]
+    pub suppressed: usize,
 }
 
 /// Result of running lint rules against a project.
@@ -777,6 +779,31 @@ pub fn evaluate_rules(
             .then(a.line.cmp(&b.line))
     });
 
+    // Filter out violations suppressed by inline statik-ignore comments.
+    // Build a lookup from relative path to FileInfo for efficient suppression checks.
+    let rel_path_to_id: HashMap<PathBuf, crate::model::FileId> = graph
+        .files
+        .values()
+        .map(|f| {
+            let rel = to_relative(&f.path, project_root).to_path_buf();
+            (rel, f.id)
+        })
+        .collect();
+
+    let total_before = all_violations.len();
+    all_violations.retain(|v| {
+        let source_id = match rel_path_to_id.get(&v.source_file) {
+            Some(id) => *id,
+            None => return true, // keep if we can't find the file
+        };
+        let file_info = match graph.files.get(&source_id) {
+            Some(info) => info,
+            None => return true,
+        };
+        !is_suppressed(&file_info.suppressions, v.line, &v.rule_id)
+    });
+    let suppressed = total_before - all_violations.len();
+
     let errors = all_violations
         .iter()
         .filter(|v| v.severity == Severity::Error)
@@ -797,6 +824,7 @@ pub fn evaluate_rules(
             warnings,
             infos,
             rules_evaluated: config.rules.len(),
+            suppressed,
         },
         violations: all_violations,
         rules_evaluated: config.rules.len(),
@@ -808,6 +836,15 @@ fn severity_order(s: Severity) -> u8 {
         Severity::Error => 0,
         Severity::Warning => 1,
         Severity::Info => 2,
+    }
+}
+
+/// Check if a violation at the given line is suppressed by an inline comment.
+fn is_suppressed(suppressions: &HashMap<usize, Vec<String>>, line: usize, rule_id: &str) -> bool {
+    match suppressions.get(&line) {
+        Some(rules) if rules.is_empty() => true, // suppress all rules
+        Some(rules) => rules.iter().any(|r| r == rule_id),
+        None => false,
     }
 }
 
@@ -828,6 +865,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 
@@ -1894,5 +1932,183 @@ mod tests {
             result.violations.is_empty(),
             "Unknown tags should be silently skipped"
         );
+    }
+
+    // =========================================================================
+    // Inline suppression tests
+    // =========================================================================
+
+    #[test]
+    fn test_is_suppressed_specific_rule() {
+        let mut suppressions = HashMap::new();
+        suppressions.insert(5, vec!["no-ui-to-db".to_string()]);
+        assert!(is_suppressed(&suppressions, 5, "no-ui-to-db"));
+        assert!(!is_suppressed(&suppressions, 5, "other-rule"));
+        assert!(!is_suppressed(&suppressions, 6, "no-ui-to-db"));
+    }
+
+    #[test]
+    fn test_is_suppressed_all_rules() {
+        let mut suppressions = HashMap::new();
+        suppressions.insert(5, vec![]); // suppress all
+        assert!(is_suppressed(&suppressions, 5, "any-rule"));
+        assert!(is_suppressed(&suppressions, 5, "other-rule"));
+        assert!(!is_suppressed(&suppressions, 6, "any-rule"));
+    }
+
+    #[test]
+    fn test_is_suppressed_no_suppression() {
+        let suppressions = HashMap::new();
+        assert!(!is_suppressed(&suppressions, 5, "any-rule"));
+    }
+
+    #[test]
+    fn test_inline_suppression_filters_violation() {
+        let mut graph = FileGraph::new();
+
+        // File with suppression on line 5
+        let mut file_suppressions = HashMap::new();
+        file_suppressions.insert(5, vec!["no-ui-to-db".to_string()]);
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/ui/Button.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: file_suppressions,
+        });
+        graph.add_file(make_file(2, "src/db/connection.ts"));
+
+        graph.add_import(make_edge(1, 2, &["connect"], 5)); // suppressed line
+
+        let config = LintConfig {
+            rules: vec![make_boundary_rule(
+                "no-ui-to-db",
+                Severity::Error,
+                &["src/ui/**"],
+                &["src/db/**"],
+            )],
+            tags: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(
+            result.violations.is_empty(),
+            "Violation should be suppressed"
+        );
+        assert_eq!(result.summary.suppressed, 1);
+    }
+
+    #[test]
+    fn test_inline_suppression_all_rules() {
+        let mut graph = FileGraph::new();
+
+        // Suppress all rules on line 5
+        let mut file_suppressions = HashMap::new();
+        file_suppressions.insert(5, vec![]); // suppress all
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/ui/Button.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: file_suppressions,
+        });
+        graph.add_file(make_file(2, "src/db/connection.ts"));
+
+        graph.add_import(make_edge(1, 2, &["connect"], 5));
+
+        let config = LintConfig {
+            rules: vec![make_boundary_rule(
+                "no-ui-to-db",
+                Severity::Error,
+                &["src/ui/**"],
+                &["src/db/**"],
+            )],
+            tags: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert!(
+            result.violations.is_empty(),
+            "All rules should be suppressed on that line"
+        );
+        assert_eq!(result.summary.suppressed, 1);
+    }
+
+    #[test]
+    fn test_inline_suppression_wrong_rule_not_suppressed() {
+        let mut graph = FileGraph::new();
+
+        // Suppress a different rule on line 5
+        let mut file_suppressions = HashMap::new();
+        file_suppressions.insert(5, vec!["other-rule".to_string()]);
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/ui/Button.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: file_suppressions,
+        });
+        graph.add_file(make_file(2, "src/db/connection.ts"));
+
+        graph.add_import(make_edge(1, 2, &["connect"], 5));
+
+        let config = LintConfig {
+            rules: vec![make_boundary_rule(
+                "no-ui-to-db",
+                Severity::Error,
+                &["src/ui/**"],
+                &["src/db/**"],
+            )],
+            tags: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert_eq!(
+            result.violations.len(),
+            1,
+            "Different rule suppression should not apply"
+        );
+        assert_eq!(result.summary.suppressed, 0);
+    }
+
+    #[test]
+    fn test_inline_suppression_different_line_not_suppressed() {
+        let mut graph = FileGraph::new();
+
+        // Suppress rule on line 10, but violation is on line 5
+        let mut file_suppressions = HashMap::new();
+        file_suppressions.insert(10, vec!["no-ui-to-db".to_string()]);
+        graph.add_file(FileInfo {
+            id: FileId(1),
+            path: PathBuf::from("/project/src/ui/Button.ts"),
+            language: Language::TypeScript,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: file_suppressions,
+        });
+        graph.add_file(make_file(2, "src/db/connection.ts"));
+
+        graph.add_import(make_edge(1, 2, &["connect"], 5));
+
+        let config = LintConfig {
+            rules: vec![make_boundary_rule(
+                "no-ui-to-db",
+                Severity::Error,
+                &["src/ui/**"],
+                &["src/db/**"],
+            )],
+            tags: HashMap::new(),
+        };
+
+        let result = evaluate_rules(&config, &graph, Path::new("/project")).unwrap();
+        assert_eq!(
+            result.violations.len(),
+            1,
+            "Wrong line suppression should not apply"
+        );
+        assert_eq!(result.summary.suppressed, 0);
     }
 }

@@ -263,6 +263,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
 
         graph.add_parse_result(result);
@@ -293,6 +294,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
 
         graph.add_parse_result(result);
@@ -330,6 +332,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -359,6 +362,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -391,6 +395,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -414,6 +419,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         let result2 = ParseResult {
             file_id: FileId(2),
@@ -423,6 +429,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result1);
         graph.add_parse_result(result2);
@@ -458,6 +465,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -490,6 +498,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -538,6 +547,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         let result2 = ParseResult {
             file_id: FileId(2),
@@ -547,6 +557,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result1);
         graph.add_parse_result(result2);
@@ -582,6 +593,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -609,6 +621,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         // File 2
         let result2 = ParseResult {
@@ -622,6 +635,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
 
         graph.add_parse_result(result1);
@@ -669,6 +683,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 
@@ -696,6 +711,7 @@ mod tests {
             exports: vec![],
             type_references: vec![],
             annotations: vec![],
+            suppressions: std::collections::HashMap::new(),
         };
         graph.add_parse_result(result);
 

@@ -571,6 +571,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -578,6 +579,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -585,6 +587,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         (dir, graph, index)
@@ -608,6 +611,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -615,6 +619,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_import(FileImport {
             from: FileId(1),
@@ -648,6 +653,7 @@ deps = ["other"]
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_import(FileImport {
             from: FileId(1),

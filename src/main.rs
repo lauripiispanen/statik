@@ -412,6 +412,24 @@ fn main() -> Result<()> {
             )?;
             emit_output(&output, command_name, &post_opts);
         }
+
+        Commands::TeamCoupling {
+            ref glob,
+            half_life,
+            ref half_life_mode,
+            threshold,
+        } => {
+            let output = commands::run_team_coupling(
+                &project_path,
+                glob.as_deref(),
+                half_life,
+                format,
+                cli.no_index,
+                half_life_mode.to_analysis_mode(),
+                threshold,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
     }
 
     Ok(())
@@ -437,6 +455,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Churn { .. } => "churn",
         Commands::Graph { .. } => "graph",
         Commands::Who { .. } => "who",
+        Commands::TeamCoupling { .. } => "team-coupling",
     }
 }
 
@@ -613,6 +632,7 @@ fn primary_arrays(command: &str) -> Vec<&'static str> {
         "diff" => vec!["changes", "import_edge_changes", "cycle_changes"],
         "summary" => vec!["directories"],
         "graph" => vec!["nodes", "edges"],
+        "team-coupling" => vec!["files", "cross_team_edges"],
         _ => vec![],
     }
 }

@@ -182,6 +182,11 @@ pub fn run_index(
                 for export in &parse_result.exports {
                     db.insert_export(export)?;
                 }
+
+                // Insert suppressions
+                if !parse_result.suppressions.is_empty() {
+                    db.store_suppressions(*file_id, &parse_result.suppressions)?;
+                }
             }
             Err(e) => {
                 parse_errors.push(format!("{}: {}", path_str, e));

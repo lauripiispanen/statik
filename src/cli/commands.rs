@@ -1703,6 +1703,112 @@ fn format_who_text(result: &crate::analysis::who::WhoResult) -> String {
     out
 }
 
+/// Run the `team-coupling` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_team_coupling(
+    project_path: &Path,
+    glob_pattern: Option<&str>,
+    half_life_days: f64,
+    format: &OutputFormat,
+    no_index: bool,
+    half_life_mode: crate::analysis::ownership::HalfLifeMode,
+    threshold: f64,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+
+    let team_config = crate::linting::config::load_team_config(project_path);
+
+    let params = crate::analysis::teams::TeamCouplingParams {
+        glob_pattern,
+        half_life_days,
+        half_life_mode,
+        team_config: &team_config,
+        ownership_threshold: threshold,
+    };
+    let mut result =
+        crate::analysis::teams::compute_team_coupling(&db, &graph, project_path, &params)?;
+
+    // Apply display_path to file paths for relative display
+    for file in &mut result.files {
+        file.path = display_path(&project_path.join(&file.path));
+    }
+    for edge in &mut result.cross_team_edges {
+        edge.from_file = display_path(&project_path.join(&edge.from_file));
+        edge.to_file = display_path(&project_path.join(&edge.to_file));
+    }
+
+    Ok(match format {
+        OutputFormat::Text => format_team_coupling_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Format team coupling result as human-readable text.
+fn format_team_coupling_text(result: &crate::analysis::teams::TeamCouplingResult) -> String {
+    let mut out = String::new();
+
+    // Cross-team files
+    let cross_team_files: Vec<_> = result.files.iter().filter(|f| f.is_cross_team).collect();
+    if !cross_team_files.is_empty() {
+        out.push_str(&format!(
+            "Cross-team files ({} files requiring multi-team coordination):\n\n",
+            cross_team_files.len()
+        ));
+        for file in &cross_team_files {
+            let team_summary: Vec<String> = file
+                .teams
+                .iter()
+                .filter(|t| t.ownership_pct >= 10.0)
+                .map(|t| format!("{} ({:.0}%)", t.team, t.ownership_pct))
+                .collect();
+            out.push_str(&format!(
+                "  {:<50} teams: {}\n",
+                file.path,
+                team_summary.join(", ")
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Cross-team dependency edges (limit to first 20)
+    if !result.cross_team_edges.is_empty() {
+        out.push_str(&format!(
+            "Cross-team dependency edges ({}):\n\n",
+            result.cross_team_edges.len()
+        ));
+        for (i, edge) in result.cross_team_edges.iter().enumerate() {
+            if i >= 20 {
+                out.push_str(&format!(
+                    "  ... and {} more\n",
+                    result.cross_team_edges.len() - 20
+                ));
+                break;
+            }
+            out.push_str(&format!(
+                "  {} ({}) -> {} ({})\n",
+                edge.from_file, edge.from_team, edge.to_file, edge.to_team
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Summary
+    out.push_str(&format!(
+        "Summary: {} files analyzed, {} teams found, {} cross-team files, {} cross-team edges\n",
+        result.summary.files_analyzed,
+        result.summary.teams_found,
+        result.summary.cross_team_files,
+        result.summary.cross_team_edges,
+    ));
+
+    if result.summary.cross_team_files == 0 && result.summary.cross_team_edges == 0 {
+        out.push_str("No cross-team coordination issues detected.\n");
+    }
+
+    out
+}
+
 /// Run the `graph` command.
 #[allow(clippy::too_many_arguments)]
 pub fn run_graph(
@@ -2175,6 +2281,7 @@ mod tests {
                 dead_exports: 0,
                 entry_points: 1,
                 files_with_unresolvable_imports: 0,
+                unresolved_ratio: 0.0,
             },
         };
 
@@ -2198,6 +2305,7 @@ mod tests {
                 dead_exports: 0,
                 entry_points: 1,
                 files_with_unresolvable_imports: 0,
+                unresolved_ratio: 0.0,
             },
         };
 
@@ -2408,6 +2516,7 @@ mod tests {
                 warnings: 0,
                 infos: 0,
                 rules_evaluated: 1,
+                suppressed: 0,
             },
         };
 
@@ -2432,6 +2541,7 @@ mod tests {
                 warnings: 0,
                 infos: 0,
                 rules_evaluated: 2,
+                suppressed: 0,
             },
         };
 
@@ -2465,6 +2575,7 @@ mod tests {
                 warnings: 1,
                 infos: 0,
                 rules_evaluated: 1,
+                suppressed: 0,
             },
         };
 
@@ -2506,6 +2617,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(2),
@@ -2513,6 +2625,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(3),
@@ -2520,6 +2633,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(FileInfo {
             id: FileId(4),
@@ -2527,6 +2641,7 @@ mod tests {
             language: Language::Rust,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // main imports a (normal edge)
@@ -2608,6 +2723,7 @@ mod tests {
             language: Language::Java,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
 
         // 2 external imports
@@ -2674,6 +2790,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: true,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(crate::model::file_graph::FileInfo {
             id: FileId(2),
@@ -2681,6 +2798,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_file(crate::model::file_graph::FileInfo {
             id: FileId(3),
@@ -2688,6 +2806,7 @@ mod tests {
             language: Language::TypeScript,
             exports: vec![],
             is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
         });
         graph.add_import(crate::model::file_graph::FileImport {
             from: FileId(1),
@@ -2773,6 +2892,7 @@ mod tests {
                 language: Language::TypeScript,
                 exports: vec![],
                 is_entry_point: i == 1,
+                suppressions: std::collections::HashMap::new(),
             });
         }
         graph.add_import(crate::model::file_graph::FileImport {

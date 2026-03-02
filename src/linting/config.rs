@@ -223,6 +223,32 @@ pub fn load_java_config(project_root: &Path) -> Option<JavaConfig> {
     wrapper.java.filter(|c| !c.source_roots.is_empty())
 }
 
+/// Wrapper for deserializing the optional `[teams]` section.
+#[derive(Debug, Deserialize)]
+struct ConfigWithTeams {
+    #[serde(default)]
+    teams: HashMap<String, Vec<String>>,
+}
+
+/// Load team config from a project, returning empty map if no config or no `[teams]` section.
+///
+/// Teams are defined as: `team_name = ["email_pattern1", "email_pattern2"]`
+/// Email patterns support `*` wildcard prefix (e.g., `*@platform.example.com`).
+pub fn load_team_config(project_root: &Path) -> HashMap<String, Vec<String>> {
+    let path = match find_config_path(project_root, None) {
+        Some(p) => p,
+        None => return HashMap::new(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    match toml::from_str::<ConfigWithTeams>(&content) {
+        Ok(wrapper) => wrapper.teams,
+        Err(_) => HashMap::new(),
+    }
+}
+
 /// User-configurable entry point definitions.
 ///
 /// These are checked IN ADDITION to the built-in entry point heuristics.

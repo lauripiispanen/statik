@@ -373,6 +373,7 @@ mod tests {
             language: Language::TypeScript,
             exports,
             is_entry_point: is_entry,
+            suppressions: std::collections::HashMap::new(),
         }
     }
 

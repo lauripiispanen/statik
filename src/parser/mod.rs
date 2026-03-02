@@ -7,6 +7,7 @@ use crate::model::{FileId, Language, LanguageSemantics, ParseResult};
 pub mod java;
 pub mod resolve;
 pub mod rust;
+pub mod suppression;
 pub mod typescript;
 
 /// Trait for language-specific symbol extractors.

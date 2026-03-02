@@ -144,6 +144,7 @@ impl LanguageParser for JavaParser {
             exports: extractor.exports,
             type_references,
             annotations,
+            suppressions: super::suppression::extract_suppressions(source),
         })
     }
 

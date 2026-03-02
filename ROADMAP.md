@@ -466,7 +466,7 @@ integrations.
 
 ---
 
-### Phase 10: Human / Committer Analysis (VCS History Intelligence) — MOSTLY COMPLETE
+### Phase 10: Human / Committer Analysis (VCS History Intelligence) — COMPLETE
 
 **Goal**: Add a "people layer" to statik's code graph. Git history records every
 human interaction with every file. Combined with the existing dependency graph,
@@ -474,10 +474,10 @@ this answers questions no other CLI tool can: "if I change this file, who should
 I talk to?", "what's the bus factor of this critical module?", and "which files
 change together but have no import relationship?"
 
-**Status**: Core commands delivered (10.1-10.5). Dogfooding fixes delivered
-(10.4b, 10.4c, 10.7, 10.8, 10.9). Impact-aware reviewer suggestion delivered
-(10.3). External evaluation on a large multi-module project (~7K files, 130K
-commits) validated the approach.
+**Status**: All items delivered. Core commands (10.1-10.5), dogfooding fixes
+(10.4b, 10.4c, 10.7, 10.8, 10.9), impact-aware reviewer suggestion (10.3),
+and team boundary analysis (10.6) are complete. External evaluation on a large
+multi-module project (~7K files, 130K commits) validated the approach.
 
 **Delivered**:
 
@@ -519,11 +519,11 @@ commits) validated the approach.
 8. **Suppressed unknown language warnings** (10.9 ✅) -- Single summary
    line instead of per-file warnings for files in unsupported languages.
 
-**Remaining**:
-
-9. **Team boundary analysis** (`statik team-coupling`) -- Optional,
-   config-driven. When a people-to-team mapping is available, detect
-   misalignment between team boundaries and code boundaries.
+9. **Team boundary analysis** (10.6 ✅) -- `statik team-coupling [glob]`
+   maps authors to teams via `[teams]` config in `.statik/rules.toml` (or
+   infers teams from email domains). Reports cross-team coordination costs
+   per file and identifies dependency edges that cross team boundaries.
+   Flags files where >2 teams have >10% ownership each.
 
 **Dependencies**: Existing `impact` command for `statik who`. Existing
 `FileGraph` for fan-in data in `bus-factor`. Git repository required (already
