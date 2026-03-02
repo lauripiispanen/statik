@@ -272,6 +272,21 @@ pub enum Commands {
         #[arg(long)]
         depth: Option<usize>,
     },
+
+    /// Impact-aware reviewer suggestion: who should review a change to this file?
+    Who {
+        /// File path to analyze
+        path: String,
+        /// Recency half-life in days (default: 180)
+        #[arg(long, default_value = "180")]
+        half_life: f64,
+        /// Half-life mode: fixed or adaptive (default: adaptive)
+        #[arg(long, default_value = "adaptive")]
+        half_life_mode: HalfLifeModeCli,
+        /// Show top N owners per affected file (default: 3)
+        #[arg(long, default_value = "3")]
+        top: usize,
+    },
 }
 
 #[derive(Clone, ValueEnum)]

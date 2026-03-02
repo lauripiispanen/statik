@@ -693,6 +693,31 @@ statik churn --format json
 | `--until <YYYY-MM-DD>` | Only include changes before this date |
 | `--min-co-changes <N>` | Minimum co-change count to report (default: 3) |
 
+### `statik who <path>`
+
+Impact-aware reviewer suggestion. Combines blast radius analysis with git ownership data to answer: "if I change this file, who should I talk to?" This is `git blame` meets `statik impact` -- it follows dependencies, not just file history.
+
+Requires `statik index --with-history` to have been run first.
+
+```
+statik who src/core/engine.ts
+statik who src/core/engine.ts --max-depth 2
+statik who src/core/engine.ts --format json
+```
+
+The output includes three sections:
+
+- **Direct owners**: who owns the target file itself (from git history)
+- **Suggested reviewers**: a minimal set of people covering all affected files (greedy set-cover algorithm)
+- **Downstream owners**: all people who own files in the blast radius, ranked by total ownership weight
+
+| Flag | Description |
+|------|-------------|
+| `--half-life <days>` | Recency half-life in days (default: 180) |
+| `--half-life-mode fixed\|adaptive` | Half-life mode (default: `adaptive`). Adaptive mode scales the half-life with file age |
+| `--top <N>` | Show top N owners per affected file (default: 3) |
+| `--max-depth <N>` | Limit blast radius depth (global flag) |
+
 ## Global Flags
 
 | Flag | Description |

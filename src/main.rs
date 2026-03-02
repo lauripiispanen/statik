@@ -391,6 +391,27 @@ fn main() -> Result<()> {
             )?;
             emit_output(&output, command_name, &post_opts);
         }
+
+        Commands::Who {
+            ref path,
+            half_life,
+            ref half_life_mode,
+            top,
+        } => {
+            let output = commands::run_who(
+                &project_path,
+                path,
+                cli.max_depth,
+                half_life,
+                format,
+                cli.no_index,
+                cli.runtime_only,
+                path_glob,
+                half_life_mode.to_analysis_mode(),
+                top,
+            )?;
+            emit_output(&output, command_name, &post_opts);
+        }
     }
 
     Ok(())
@@ -415,6 +436,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Owners { .. } => "owners",
         Commands::Churn { .. } => "churn",
         Commands::Graph { .. } => "graph",
+        Commands::Who { .. } => "who",
     }
 }
 

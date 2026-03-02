@@ -1450,29 +1450,29 @@ the file, not just whoever made the last commit.
 
 ---
 
-### 10.3 `statik who` — impact-aware reviewer suggestion
+### 10.3 `statik who` — impact-aware reviewer suggestion ✅
 **Complexity**: M
 **Prerequisites**: 10.2, existing `impact` command
-**Files**: `src/analysis/ownership.rs`, `src/cli/commands.rs`
+**Files**: `src/analysis/who.rs`, `src/cli/commands.rs`, `src/cli/mod.rs`
 
 The highest-value command: combine the dependency graph blast radius with
 ownership to answer "if I change this file, who should I talk to?"
 
 Tasks:
-- [ ] Add `statik who <file>` command that:
+- [x] Add `statik who <file>` command that:
   1. Runs blast radius analysis (same as `statik impact`) to get affected files
   2. Computes ownership for all affected files
   3. Aggregates: rank people by total ownership weight across all affected files
   4. Groups output: direct owners (of the target file) vs downstream owners
      (own files affected via dependency graph)
-- [ ] Output includes "suggested reviewers": minimal set of people covering
+- [x] Output includes "suggested reviewers": minimal set of people covering
   all affected areas (greedy set-cover by ownership weight)
-- [ ] Support `--depth <N>` to limit blast radius depth (inherited from impact)
-- [ ] Text output: sections for direct owners, downstream owners, suggested
+- [x] Support `--max-depth <N>` to limit blast radius depth (via global flag)
+- [x] Text output: sections for direct owners, downstream owners, suggested
   reviewers
-- [ ] JSON output: structured with `direct_owners`, `downstream_owners`,
+- [x] JSON output: structured with `direct_owners`, `downstream_owners`,
   `suggested_reviewers`, `affected_files` with per-file owners
-- [ ] Add tests: file with blast radius spanning multiple owners
+- [x] Add tests: file with blast radius spanning multiple owners
 
 **Acceptance**: `statik who src/api/users.ts` shows direct owners and
 downstream owners affected via the dependency graph. Suggested reviewers is a
@@ -1945,12 +1945,12 @@ on enriched files. `statik summary` shows enrichment coverage.
 CLI), and Phase 10 core (10.1-10.5: git history, owners, bus-factor, churn) are
 complete. Phase 3b (Rust support) is complete including dogfooding fixes.
 Phase 10 dogfooding fixes (10.4b, 10.4c, 10.7, 10.8, 10.9) are now complete.
-**Highest-priority next work**: 10.5 (`statik who` — impact-aware reviewer
-suggestion), 10.6 (team boundary analysis). See also **Phase 8:
-Dogfooding-Driven Fixes** for scope/source set improvements. **Phase 11 (SCIP
-ingestion)** is a strategic priority — validated by external evaluation as "the
-cleanest path to making the graph analysis actually precise." Can be built
-alongside any other phase.
+Phase 10.3 (`statik who` — impact-aware reviewer suggestion) is now complete.
+**Highest-priority next work**: 10.6 (team boundary analysis). See also
+**Phase 8: Dogfooding-Driven Fixes** for scope/source set improvements.
+**Phase 11 (SCIP ingestion)** is a strategic priority — validated by external
+evaluation as "the cleanest path to making the graph analysis actually precise."
+Can be built alongside any other phase.
 
 ---
 

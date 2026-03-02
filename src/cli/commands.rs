@@ -1596,6 +1596,113 @@ fn format_owners_text(result: &crate::analysis::ownership::OwnersResult) -> Stri
     out
 }
 
+/// Run the `who` command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_who(
+    project_path: &Path,
+    file_path: &str,
+    max_depth: Option<usize>,
+    half_life_days: f64,
+    format: &OutputFormat,
+    no_index: bool,
+    runtime_only: bool,
+    path_glob: Option<&str>,
+    half_life_mode: crate::analysis::ownership::HalfLifeMode,
+    top_per_file: usize,
+) -> Result<String> {
+    let db = ensure_index(project_path, no_index)?;
+    let graph = build_file_graph(&db, project_path)?;
+    let graph = maybe_filter_type_only(graph, runtime_only);
+    let graph = maybe_filter_paths(graph, path_glob, project_path)?;
+
+    let target_id = resolve_file_id(&graph, project_path, file_path)?;
+
+    let mut result = crate::analysis::who::analyze_who(
+        &db,
+        &graph,
+        target_id,
+        max_depth,
+        half_life_days,
+        project_path,
+        half_life_mode,
+        top_per_file,
+    )?;
+
+    // Apply display_path to all paths in the result
+    result.target_file = display_path(&project_path.join(&result.target_file));
+    for file in &mut result.affected_files {
+        file.path = display_path(&project_path.join(&file.path));
+    }
+
+    Ok(match format {
+        OutputFormat::Text => format_who_text(&result),
+        _ => format_json(&result, format),
+    })
+}
+
+/// Format who result as human-readable text.
+fn format_who_text(result: &crate::analysis::who::WhoResult) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Who to talk to about changes to {}:\n\n",
+        result.target_file
+    ));
+
+    // Direct owners
+    out.push_str("Direct owners:\n");
+    if result.direct_owners.is_empty() {
+        out.push_str("  (no ownership data)\n");
+    } else {
+        for owner in &result.direct_owners {
+            out.push_str(&format!(
+                "  {:<30} {:>5.1}%\n",
+                format!("{} <{}>", owner.author_name, owner.author_email),
+                owner.score
+            ));
+        }
+    }
+    out.push('\n');
+
+    // Suggested reviewers
+    if !result.suggested_reviewers.is_empty() {
+        out.push_str("Suggested reviewers (minimal covering set):\n");
+        for (i, reviewer) in result.suggested_reviewers.iter().enumerate() {
+            out.push_str(&format!(
+                "  {}. {:<30} covers {} affected files\n",
+                i + 1,
+                format!("{} <{}>", reviewer.author_name, reviewer.author_email),
+                reviewer.files_owned
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Downstream owners
+    if !result.downstream_owners.is_empty() {
+        out.push_str(&format!(
+            "Downstream owners ({} affected files):\n",
+            result.summary.total_affected_files
+        ));
+        for owner in &result.downstream_owners {
+            out.push_str(&format!(
+                "  {:<30} weight: {:>6.1}  files: {}\n",
+                format!("{} <{}>", owner.author_name, owner.author_email),
+                owner.total_weight,
+                owner.files_owned
+            ));
+        }
+        out.push('\n');
+    }
+
+    // Summary
+    out.push_str(&format!(
+        "Blast radius: {} files affected, {} unique downstream owners\n",
+        result.summary.total_affected_files, result.summary.unique_downstream_owners
+    ));
+
+    out
+}
+
 /// Run the `graph` command.
 #[allow(clippy::too_many_arguments)]
 pub fn run_graph(

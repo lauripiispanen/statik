@@ -44,6 +44,69 @@ impl TestProject {
         let output = self.run(args);
         String::from_utf8_lossy(&output.stdout).to_string()
     }
+
+    /// Initialize a git repo, add all files, and create a commit.
+    fn git_init_and_commit(&self) {
+        let dir = self.dir.path();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .expect("git init failed");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git add failed");
+        Command::new("git")
+            .args([
+                "-c", "user.name=Test User",
+                "-c", "user.email=test@example.com",
+                "commit", "-m", "initial commit",
+            ])
+            .current_dir(dir)
+            .output()
+            .expect("git commit failed");
+    }
+
+    /// Run a git command in the project directory, asserting success.
+    #[allow(dead_code)]
+    fn git(&self, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(self.dir.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Stage files and commit as a specific author.
+    #[allow(dead_code)]
+    fn git_commit_as(&self, files: &[&str], msg: &str, name: &str, email: &str) {
+        for f in files {
+            self.git(&["add", f]);
+        }
+        let output = Command::new("git")
+            .args(["commit", "-m", msg])
+            .current_dir(self.dir.path())
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .output()
+            .expect("git commit failed");
+        assert!(
+            output.status.success(),
+            "git commit as {} failed: {}",
+            name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 /// Create a basic project with a known dependency structure:
@@ -1946,5 +2009,181 @@ fn test_auto_index_messages_on_stderr_only() {
         !stdout.contains("auto-index") && !stdout.contains("Running auto"),
         "Auto-index messages should not appear on stdout, got: {}",
         stdout
+    );
+}
+
+// =============================================================================
+// WHO command tests
+// =============================================================================
+
+/// Create a project with git history for `who` command tests.
+///
+/// Structure:
+///   src/core.ts  <--  src/services/api.ts  <--  src/app.ts
+///                <--  src/utils/helpers.ts
+///   src/leaf.ts  (no importers)
+///
+/// All files committed by "Test User <test@example.com>".
+fn create_who_project() -> TestProject {
+    let dir = tempfile::TempDir::new().unwrap();
+    let proj = TestProject { dir };
+
+    proj.write_file(
+        "src/core.ts",
+        r#"export function coreFunction() { return 42; }
+export function coreHelper() { return "help"; }
+"#,
+    );
+
+    proj.write_file(
+        "src/services/api.ts",
+        r#"import { coreFunction } from '../core';
+export function apiEndpoint() { return coreFunction(); }
+"#,
+    );
+
+    proj.write_file(
+        "src/utils/helpers.ts",
+        r#"import { coreHelper } from '../core';
+export function helperFunc() { return coreHelper(); }
+"#,
+    );
+
+    proj.write_file(
+        "src/app.ts",
+        r#"import { apiEndpoint } from './services/api';
+export function main() { return apiEndpoint(); }
+"#,
+    );
+
+    proj.write_file(
+        "src/leaf.ts",
+        r#"export function leafFunction() { return "leaf"; }
+"#,
+    );
+
+    proj.git_init_and_commit();
+
+    // Index with history so ownership data is available
+    let output = proj.run(&["index", ".", "--with-history"]);
+    assert!(output.status.success(), "index --with-history failed");
+
+    proj
+}
+
+#[test]
+fn test_who_basic() {
+    let proj = create_who_project();
+    let output = proj.run(&["who", "src/core.ts"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(output.status.success(), "who command failed: {:?}", output);
+    assert!(
+        stdout.contains("Direct owners"),
+        "Should show direct owners heading, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("affected files"),
+        "Should mention affected files, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_who_json_output() {
+    let proj = create_who_project();
+    let output = proj.run(&["who", "src/core.ts", "--format", "json"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(
+        output.status.success(),
+        "who --format json failed: {:?}",
+        output
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("Invalid JSON: {}\nOutput: {}", e, stdout));
+
+    assert_eq!(json["command"], "who");
+    assert!(json["target_file"].is_string());
+    assert!(json["direct_owners"].is_array());
+    assert!(json["downstream_owners"].is_array());
+    assert!(json["suggested_reviewers"].is_array());
+    assert!(json["summary"].is_object());
+    assert!(json["summary"]["total_affected_files"].is_number());
+    assert!(json["summary"]["unique_downstream_owners"].is_number());
+    assert!(json["summary"]["suggested_reviewer_count"].is_number());
+}
+
+#[test]
+fn test_who_no_dependents() {
+    let proj = create_who_project();
+    let output = proj.run(&["who", "src/leaf.ts"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(
+        output.status.success(),
+        "who on leaf file failed: {:?}",
+        output
+    );
+    assert!(
+        stdout.contains("Direct owners"),
+        "Should still show direct owners, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("0 files affected"),
+        "Leaf file should have 0 affected files, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_who_max_depth() {
+    let proj = create_who_project();
+
+    // Without depth limit: core.ts -> api.ts (depth 1), helpers.ts (depth 1), app.ts (depth 2)
+    let output_unlimited = proj.run(&["who", "src/core.ts", "--format", "json"]);
+    let json_unlimited: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output_unlimited.stdout)).unwrap();
+    let total_unlimited = json_unlimited["summary"]["total_affected_files"]
+        .as_u64()
+        .unwrap();
+
+    // With --max-depth 1: should only include direct dependents
+    let output_depth1 = proj.run(&["who", "src/core.ts", "--max-depth", "1", "--format", "json"]);
+    let json_depth1: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output_depth1.stdout)).unwrap();
+    let total_depth1 = json_depth1["summary"]["total_affected_files"]
+        .as_u64()
+        .unwrap();
+
+    assert!(
+        total_depth1 <= total_unlimited,
+        "Depth-limited result ({}) should not exceed unlimited result ({})",
+        total_depth1,
+        total_unlimited
+    );
+    assert!(
+        total_depth1 > 0,
+        "core.ts has direct dependents, depth 1 should find some"
+    );
+}
+
+#[test]
+fn test_who_file_not_found() {
+    let proj = create_who_project();
+    let output = proj.run(&["who", "nonexistent.ts"]);
+
+    assert!(
+        !output.status.success(),
+        "who on nonexistent file should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("not found") || stderr.contains("Not found"),
+        "Error should mention 'not found', got: {}",
+        stderr
     );
 }

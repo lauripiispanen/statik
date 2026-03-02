@@ -475,8 +475,9 @@ I talk to?", "what's the bus factor of this critical module?", and "which files
 change together but have no import relationship?"
 
 **Status**: Core commands delivered (10.1-10.5). Dogfooding fixes delivered
-(10.4b, 10.4c, 10.7, 10.8, 10.9). External evaluation on a large
-multi-module project (~7K files, 130K commits) validated the approach.
+(10.4b, 10.4c, 10.7, 10.8, 10.9). Impact-aware reviewer suggestion delivered
+(10.3). External evaluation on a large multi-module project (~7K files, 130K
+commits) validated the approach.
 
 **Delivered**:
 
@@ -489,34 +490,36 @@ multi-module project (~7K files, 130K commits) validated the approach.
    half-life (default) scales with file age so original creators retain
    meaningful ownership.
 
-3. **Bus factor analysis** (10.4 ✅) -- `statik bus-factor` computes
+3. **Impact-aware reviewer suggestion** (10.3 ✅) -- `statik who <file>`
+   combines blast radius analysis with ownership data to suggest a minimal
+   reviewer set. Runs `statik impact` to find affected files, computes
+   ownership for each, aggregates downstream owners, and uses a greedy
+   set-cover algorithm to produce a minimal covering set of reviewers.
+   Supports `--half-life`, `--half-life-mode`, `--top`, and the global
+   `--max-depth` flag for limiting blast radius depth.
+
+4. **Bus factor analysis** (10.4 ✅) -- `statik bus-factor` computes
    knowledge concentration risk. Uses FileId-based lookup for fan_in
    (10.4b fix). Supports `--by-author` for per-person ownership
    concentration view (10.4c).
 
-4. **Change frequency and co-change** (10.5 ✅) -- `statik churn` with
+5. **Change frequency and co-change** (10.5 ✅) -- `statik churn` with
    `--co-change` mode. Found hundreds of hidden couplings on a real project,
    including framework-level coupling invisible to static analysis.
 
-5. **Adaptive ownership half-life** (10.7 ✅) -- `--half-life-mode` flag
+6. **Adaptive ownership half-life** (10.7 ✅) -- `--half-life-mode` flag
    with `adaptive` (default) and `fixed` modes. Adaptive mode scales
    half-life with file age, preventing original creators from decaying to
    zero ownership on old files.
 
-6. **Wildcard import source set boundaries** (10.8 ✅) -- Wildcard imports
+7. **Wildcard import source set boundaries** (10.8 ✅) -- Wildcard imports
    are scoped to source set visibility, preventing false dependency edges
    from production code to test source sets in other modules.
 
-7. **Suppressed unknown language warnings** (10.9 ✅) -- Single summary
+8. **Suppressed unknown language warnings** (10.9 ✅) -- Single summary
    line instead of per-file warnings for files in unsupported languages.
 
 **Remaining**:
-
-8. **Impact-aware reviewer suggestion** (`statik who <file>`) -- The
-   highest-value command. Runs blast radius analysis, computes ownership for
-   all affected files, aggregates across the dependency graph, and suggests
-   a minimal reviewer set. This is `git blame` meets `statik impact` -- it
-   follows dependencies, not just file history.
 
 9. **Team boundary analysis** (`statik team-coupling`) -- Optional,
    config-driven. When a people-to-team mapping is available, detect
