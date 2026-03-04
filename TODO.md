@@ -5,6 +5,8 @@ Task details in [TODO/](TODO/). Completed tasks in [DONE.md](DONE.md).
 
 ## Phase 11: SCIP Ingestion (in progress)
 
+- [ ] **[11.8b SCIP edge replacement for enriched files (S)](TODO/11.8b-scip-edge-replacement.md)** — for enriched files, replace tree-sitter edges with SCIP edges to eliminate false positives; prereq: 11.8
+- [ ] **[11.10 Indexing performance: SQLite batch operations (S)](TODO/11.10-indexing-performance.md)** — skip pointless DELETEs on --force, prepared statements, batch operations; target ≥50% speedup
 - [ ] [11.9 SCIP-powered symbol-level analysis (L)](TODO/11.9-scip-symbol-level-analysis.md) — symbol-level impact, improved dead-code seeding, cross-file callers; prereq: 11.8
 - [ ] [11.4 C++ support via scip-clang (M)](TODO/11.4-cpp-support.md)
 - [ ] [11.5 Cross-language dependency edges (L)](TODO/11.5-cross-language-edges.md)
@@ -37,8 +39,10 @@ Task details in [TODO/](TODO/). Completed tasks in [DONE.md](DONE.md).
 
 ## Strategic priorities
 
-1. **11.9** — SCIP symbol-level analysis (unique differentiator: `statik impact --symbol`)
-2. **8.5** — Java multi-module source roots
-3. **1.4–1.5** — Lazy loading + graph caching (10K+ file scale)
-4. **5.x** — Refactoring intelligence (`statik diff HEAD~1 HEAD`)
-5. **6.2** — Graph visualization (`statik graph --format dot`)
+1. **11.8b** — SCIP edge replacement (eliminate false positives for enriched files)
+2. **11.10** — Indexing performance (skip empty DELETEs, prepared statements — target ≥50% speedup)
+3. **11.9** — SCIP symbol-level analysis (unique differentiator: `statik impact --symbol`)
+4. **8.5** — Java multi-module source roots
+5. **1.4–1.5** — Lazy loading + graph caching (10K+ file scale)
+6. **5.x** — Refactoring intelligence (`statik diff HEAD~1 HEAD`)
+7. **6.2** — Graph visualization (`statik graph --format dot`)

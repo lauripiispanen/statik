@@ -11,13 +11,13 @@ Spin up a coordinated team to plan, implement, review, test, and ship the next i
 
 ## Team Roles
 
-Create a team with `TeamCreate`, then spawn these 6 agents:
+Create a team with `TeamCreate`, then spawn these 7 agents:
 
 ### 1. Architect (`architect`)
 - **Type**: `general-purpose`
 - **Job**: Read TODO.md (condensed index with links) and ROADMAP.md. Follow links to TODO/{task}.md for full task descriptions. Identify the next logical increment based on remaining unchecked items in TODO.md (completed items are in DONE.md). Write a plan, then create concrete implementation tasks in the task list with file paths, descriptions, and acceptance criteria.
 - **First task**: Claim the planning task, analyze the project state, create implementation tasks, message the team when ready.
-- **Ongoing**: Review boyscout findings, confirm completed tasks, answer architecture questions from the coder. Dogfood statik on itself when implementation is done.
+- **Ongoing**: Review boyscout findings, confirm completed tasks, answer architecture questions from the coder.
 
 ### 2. Coder (`coder`)
 - **Type**: `general-purpose`
@@ -51,7 +51,20 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - **Regression test enforcement**: For every reported bug or issue being fixed, verify that a substantive test case exists that specifically covers the bug scenario. If a bug fix ships without a regression test, report it as a blocking issue to the lead and the coder. A test is "substantive" if it would FAIL when the bug is reintroduced — not just "it compiles" or "it doesn't panic".
 - **Ongoing**: Re-run tests after each task completes, add missing integration tests, report failures immediately to coder. Do a final comprehensive test report before commit.
 
-### 6. Documenter (`documenter`)
+### 6. Dogfooder (`dogfooder`)
+- **Type**: `general-purpose`
+- **Job**: Test new and changed features by running statik on its own codebase. Verify that the increment's changes produce real, observable improvements when used on a real project (statik itself). Catch issues that unit/integration tests miss — wrong output formatting, misleading results, poor UX, performance regressions.
+- **First task**: Wait for implementation tasks to be created so you know what's changing. While waiting, familiarize yourself with statik's CLI commands and current output by reading README.md and running `cargo run -- --help`.
+- **Ongoing responsibilities**:
+  - After implementation tasks complete, build and run statik on itself: `cargo run -- index .` then exercise affected commands
+  - For each changed command, compare output before vs after (if possible) and verify the changes are visible and correct
+  - Test edge cases: what happens with no SCIP data? With stale data? With missing files?
+  - Verify text and JSON output formats are correct and useful
+  - Report any issues (crashes, wrong output, confusing UX) to the coder and lead as blocking issues
+  - Produce a dogfooding report summarizing what was tested and what was found
+- **Timing**: The dogfooder works in the wrap-up phase after implementation tasks are mostly complete. Can start reading docs and building familiarity earlier.
+
+### 7. Documenter (`documenter`)
 - **Type**: `general-purpose`
 - **Job**: Ensure documentation matches the current state of the project after the increment. Bridge gaps between ROADMAP.md/TODO.md goals, what was actually implemented, and user-facing docs.
 - **First task**: Read ROADMAP.md, TODO.md, and any existing documentation (README.md, --help output, doc comments). Wait for implementation tasks to be created so you know what's changing.
@@ -69,7 +82,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 ### Phase 1: Setup
 1. `TeamCreate` with descriptive name
 2. Create initial tasks: "Plan the next increment" and "Identify refactoring opportunities"
-3. Spawn all 6 agents in parallel with `run_in_background: true`
+3. Spawn all 7 agents in parallel with `run_in_background: true`
 4. If `$ARGUMENTS` specifies a focus area, include it in the architect's prompt
 
 ### Phase 2: Planning (architect + boyscout work in parallel)
@@ -77,6 +90,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - Boyscout explores codebase for refactoring opportunities, syncs with architect
 - Tester establishes test baseline
 - Documenter reads existing docs, prepares for updates
+- Dogfooder reads README.md, familiarizes with CLI
 - Coder and police wait for tasks
 
 ### Phase 3: Implementation (all agents active)
@@ -90,11 +104,11 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - All implementation tasks complete
 - Police does final review pass across all changes — flags any regressions or old issues
 - Tester runs full suite one final time, produces comprehensive report — confirms zero regressions
+- Dogfooder runs statik on itself, exercises affected commands, produces dogfooding report
 - Documenter updates TODO.md, ROADMAP.md, README.md, and any other docs
-- Architect dogfoods statik on itself, reports findings
 
 ### Phase 5: Fix-up (if needed)
-- If police or tester report issues after the coder has finished:
+- If police, tester, or dogfooder report issues after the coder has finished:
   - Lead checks if the existing coder agent is still active
   - If active: message the coder with the issues to fix
   - If shut down or at context limit: spawn a fresh `coder2` (or `coder3`, etc.)
@@ -118,7 +132,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - [ ] Documentation updated (TODO.md, DONE.md, ROADMAP.md, README.md, CLI help text)
 - [ ] `cargo clippy` passes clean
 - [ ] Changes committed to git
-- [ ] Dogfooding report from architect (if applicable)
+- [ ] Dogfooding report from dogfooder — new features verified on statik's own codebase
 
 ## Lead Responsibilities (YOU)
 - **Do NOT enter plan mode** — go straight to team setup. Planning is the architect's job, not yours.
@@ -138,7 +152,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - The police should review incrementally, not batch at the end
 - Message agents directly when they need direction — don't wait for them to ask
 - The documenter can start reading docs early but should write changes after implementation stabilizes
-- If police or tester find issues post-implementation, always spawn a new coder rather than leaving issues unresolved
+- If police, tester, or dogfooder find issues post-implementation, always spawn a new coder rather than leaving issues unresolved
 
 ## Focus Area
 
