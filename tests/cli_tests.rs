@@ -2191,3 +2191,155 @@ fn test_who_file_not_found() {
         stderr
     );
 }
+
+// ── SCIP enrich CLI tests ──
+
+/// Create a project with a Rust file and a corresponding SCIP index.
+fn create_enrich_project() -> TestProject {
+    let dir = tempfile::TempDir::new().unwrap();
+    let proj = TestProject { dir };
+
+    proj.write_file(
+        "src/main.rs",
+        r#"fn main() {
+    greet();
+}
+
+fn greet() {
+    println!("hello");
+}
+"#,
+    );
+
+    // Build a SCIP index
+    use scip::types::{
+        symbol_information::Kind, Document, Index, Occurrence, SymbolInformation, SymbolRole,
+    };
+
+    let mut index = Index::new();
+    let mut doc = Document::new();
+    doc.relative_path = "src/main.rs".to_string();
+    doc.language = "Rust".to_string();
+
+    let mut main_occ = Occurrence::new();
+    main_occ.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+    main_occ.range = vec![0, 3, 7];
+    main_occ.symbol_roles = SymbolRole::Definition as i32;
+    doc.occurrences.push(main_occ);
+
+    let mut greet_occ = Occurrence::new();
+    greet_occ.symbol = "rust-analyzer cargo test 0.1.0 greet().".to_string();
+    greet_occ.range = vec![4, 3, 8];
+    greet_occ.symbol_roles = SymbolRole::Definition as i32;
+    doc.occurrences.push(greet_occ);
+
+    let mut sym = SymbolInformation::new();
+    sym.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+    sym.kind = protobuf::EnumOrUnknown::new(Kind::Function);
+    doc.symbols.push(sym);
+
+    index.documents.push(doc);
+
+    let scip_path = proj.path().join("index.scip");
+    scip::write_message_to_file(&scip_path, index).expect("write SCIP");
+
+    proj
+}
+
+#[test]
+fn test_enrich_command_json_output() {
+    let proj = create_enrich_project();
+
+    // First index the project
+    proj.run(&["index", proj.path().to_str().unwrap()]);
+
+    // Now enrich
+    let output = proj.run(&["enrich", "--format", "json", "index.scip"]);
+    assert!(
+        output.status.success(),
+        "enrich should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(
+        json["files_enriched"].as_u64().unwrap() >= 1,
+        "Should enrich at least 1 file, got: {}",
+        stdout
+    );
+    assert!(
+        json["symbols_added"].as_u64().unwrap() >= 1,
+        "Should add at least 1 symbol"
+    );
+}
+
+#[test]
+fn test_enrich_command_text_output() {
+    let proj = create_enrich_project();
+    proj.run(&["index", proj.path().to_str().unwrap()]);
+
+    let output = proj.run(&["enrich", "index.scip"]);
+    assert!(
+        output.status.success(),
+        "enrich should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("Enriched"),
+        "Text output should mention 'Enriched', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_enrich_missing_scip_file() {
+    let proj = create_enrich_project();
+    proj.run(&["index", proj.path().to_str().unwrap()]);
+
+    let output = proj.run(&["enrich", "nonexistent.scip"]);
+    assert!(
+        !output.status.success(),
+        "enrich with missing file should fail"
+    );
+}
+
+#[test]
+fn test_enrich_invalid_scip_file() {
+    let proj = create_enrich_project();
+    proj.run(&["index", proj.path().to_str().unwrap()]);
+
+    // Write a non-protobuf file
+    proj.write_file("bad.scip", "this is not a valid protobuf file");
+
+    let output = proj.run(&["enrich", "bad.scip"]);
+    assert!(
+        !output.status.success(),
+        "enrich with invalid file should fail"
+    );
+}
+
+#[test]
+fn test_enrich_empty_scip_index() {
+    let proj = create_enrich_project();
+    proj.run(&["index", proj.path().to_str().unwrap()]);
+
+    // Write an empty SCIP index (valid protobuf but 0 documents)
+    let index = scip::types::Index::new();
+    let empty_path = proj.path().join("empty.scip");
+    scip::write_message_to_file(&empty_path, index).expect("write empty SCIP");
+
+    let output = proj.run(&["enrich", "--format", "json", "empty.scip"]);
+    assert!(
+        output.status.success(),
+        "enrich with empty SCIP should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["files_enriched"].as_u64().unwrap(), 0);
+    assert_eq!(json["symbols_added"].as_u64().unwrap(), 0);
+}

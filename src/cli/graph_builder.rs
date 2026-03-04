@@ -69,10 +69,11 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
     let path_to_id: HashMap<PathBuf, FileId> =
         files.iter().map(|f| (f.path.clone(), f.id)).collect();
 
-    // Batch-load all imports, exports, and suppressions
+    // Batch-load all imports, exports, suppressions, and SCIP enrichment status
     let all_imports = db.all_imports()?;
     let all_exports = db.all_exports()?;
     let all_suppressions = db.all_suppressions()?;
+    let scip_enriched_ids = db.scip_enriched_file_ids().unwrap_or_default();
 
     let mut imports_by_file: HashMap<FileId, Vec<crate::model::ImportRecord>> = HashMap::new();
     for imp in all_imports {
@@ -121,10 +122,7 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             .and_then(|idx| idx.classify(rel_path).map(|s| s.to_string()))
             .or_else(|| {
                 // Auto-detect Java test directories when no scope config is present
-                if scope_index.is_none()
-                    && has_java_files
-                    && file.language == Language::Java
-                {
+                if scope_index.is_none() && has_java_files && file.language == Language::Java {
                     auto_detect_java_source_set(rel_path)
                 } else {
                     None
@@ -155,6 +153,9 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
             source_set: file_source_set,
         });
     }
+
+    // Set SCIP enrichment info on the graph
+    graph.scip_enriched = scip_enriched_ids;
 
     // Build file language lookup for resolver dispatch
     let file_language: HashMap<FileId, Language> =

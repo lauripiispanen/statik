@@ -529,6 +529,8 @@ pub fn run_summary(
         dependencies: DepSummary,
         dead_code: DeadCodeSummaryCompact,
         cycles: CycleSummaryCompact,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        enrichment: Option<EnrichmentSummary>,
     }
 
     #[derive(serde::Serialize)]
@@ -558,6 +560,30 @@ pub fn run_summary(
         files_in_cycles: usize,
     }
 
+    #[derive(serde::Serialize)]
+    struct EnrichmentSummary {
+        scip_enriched_files: usize,
+        scip_stale_files: usize,
+        tree_sitter_only_files: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scip_tool: Option<String>,
+    }
+
+    // Check for SCIP enrichment
+    let scip_enriched_count = db.scip_enriched_file_count().unwrap_or(0);
+    let enrichment = if scip_enriched_count > 0 {
+        let scip_tool = db.get_metadata("scip_tool").unwrap_or(None);
+        let scip_stale = db.scip_stale_file_count().unwrap_or(0);
+        Some(EnrichmentSummary {
+            scip_enriched_files: scip_enriched_count,
+            scip_stale_files: scip_stale,
+            tree_sitter_only_files: graph.file_count().saturating_sub(scip_enriched_count),
+            scip_tool,
+        })
+    } else {
+        None
+    };
+
     let result = SummaryResult {
         command: "summary".to_string(),
         tier: "general".to_string(),
@@ -580,6 +606,7 @@ pub fn run_summary(
             cycle_count: cycles.cycles.len(),
             files_in_cycles: cycles.summary.files_in_cycles,
         },
+        enrichment,
     };
 
     Ok(match format {
@@ -2252,6 +2279,201 @@ fn lang_str_to_language(s: &str) -> Option<Language> {
     Language::from_extension(ext)
 }
 
+/// Result of the enrich command.
+pub struct EnrichResult {
+    pub files_enriched: usize,
+    pub files_skipped: usize,
+    pub symbols_added: usize,
+    pub references_added: usize,
+}
+
+/// Run the `enrich` command: import SCIP index data into the existing DB.
+pub fn run_enrich(project_path: &Path, scip_files: &[String]) -> Result<EnrichResult> {
+    let db = ensure_index(project_path, false)?;
+
+    let mut total_files_enriched = 0;
+    let mut total_files_skipped = 0;
+    let mut total_symbols = 0;
+    let mut total_refs = 0;
+
+    for scip_file in scip_files {
+        let scip_path = std::path::Path::new(scip_file);
+        if !scip_path.exists() {
+            anyhow::bail!("SCIP file not found: {}", scip_file);
+        }
+
+        let scip_index = crate::scip::read_scip_index(scip_path)
+            .with_context(|| format!("failed to read SCIP file: {}", scip_file))?;
+
+        db.begin_transaction()?;
+
+        let mut next_sym_id = db.next_symbol_id()?;
+        let mut next_ref_id = db.next_reference_id()?;
+
+        for doc in &scip_index.documents {
+            let rel_path = doc.relative_path.to_string_lossy();
+            // Try to find this file in the DB by its relative path.
+            // The DB stores absolute paths, so we try both absolute and path-suffix matching.
+            let abs_path = project_path.join(&*rel_path);
+            let abs_path_str = abs_path.to_string_lossy().to_string();
+
+            let file_record = db
+                .get_file_by_path(&abs_path_str)
+                .unwrap_or(None)
+                .or_else(|| {
+                    // Fallback: try matching by suffix against all files
+                    db.all_files()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|f| f.path.ends_with(&*rel_path))
+                });
+
+            let file_record = match file_record {
+                Some(f) => f,
+                None => {
+                    total_files_skipped += 1;
+                    continue;
+                }
+            };
+
+            // Clear any previous SCIP data for this file
+            db.clear_scip_data_for_file(file_record.id)?;
+
+            // Build a map from SCIP symbol string -> statik SymbolId for cross-referencing
+            let mut scip_to_statik: std::collections::HashMap<String, crate::model::SymbolId> =
+                std::collections::HashMap::new();
+
+            // Insert definitions as symbols
+            for def in &doc.definitions {
+                let sym_id = crate::model::SymbolId(next_sym_id);
+                next_sym_id += 1;
+
+                let symbol = crate::model::Symbol {
+                    id: sym_id,
+                    name: def.name.clone(),
+                    qualified_name: def.qualified_name.clone(),
+                    kind: def.kind,
+                    file: file_record.id,
+                    span: crate::model::Span {
+                        start: 0, // SCIP doesn't provide byte offsets
+                        end: 0,
+                    },
+                    line_span: crate::model::LineSpan {
+                        start: crate::model::Position {
+                            line: def.line as usize + 1, // convert 0-based to 1-based
+                            column: def.column as usize,
+                        },
+                        end: crate::model::Position {
+                            line: def.end_line as usize + 1,
+                            column: def.end_column as usize,
+                        },
+                    },
+                    parent: None,
+                    visibility: crate::model::Visibility::Public, // SCIP doesn't always provide visibility
+                    signature: None,
+                };
+
+                db.insert_scip_symbol(&symbol)?;
+                scip_to_statik.insert(def.symbol.clone(), sym_id);
+                total_symbols += 1;
+            }
+
+            // Insert references: for each SCIP reference, if both source and target
+            // symbols are known, create a reference edge.
+            for scip_ref in &doc.references {
+                // The target is the referenced symbol
+                let target_id = match scip_to_statik.get(&scip_ref.symbol) {
+                    Some(id) => *id,
+                    None => continue, // target not in this index, skip
+                };
+
+                // For the source, find the enclosing definition at this line.
+                // If none found, use a synthetic "file-level" symbol.
+                let source_id =
+                    find_enclosing_definition(&doc.definitions, &scip_to_statik, scip_ref.line)
+                        .unwrap_or(target_id); // self-reference as fallback
+
+                if source_id == target_id {
+                    continue; // skip self-references
+                }
+
+                let ref_kind = match scip_ref.role {
+                    crate::scip::ScipRole::Import => crate::model::RefKind::Import,
+                    crate::scip::ScipRole::Reference => crate::model::RefKind::Call,
+                    crate::scip::ScipRole::Definition => continue,
+                };
+
+                let reference = crate::model::Reference {
+                    id: crate::model::ReferenceId(next_ref_id),
+                    source: source_id,
+                    target: target_id,
+                    kind: ref_kind,
+                    file: file_record.id,
+                    span: crate::model::Span { start: 0, end: 0 },
+                    line_span: crate::model::LineSpan {
+                        start: crate::model::Position {
+                            line: scip_ref.line as usize + 1,
+                            column: scip_ref.column as usize,
+                        },
+                        end: crate::model::Position {
+                            line: scip_ref.end_line as usize + 1,
+                            column: scip_ref.end_column as usize,
+                        },
+                    },
+                    target_name: None,
+                };
+
+                db.insert_scip_reference(&reference)?;
+                next_ref_id += 1;
+                total_refs += 1;
+            }
+
+            total_files_enriched += 1;
+        }
+
+        // Store enrichment timestamp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        db.set_metadata("scip_enriched_at", &timestamp.to_string())?;
+
+        if let Some(tool) = &scip_index.tool_name {
+            db.set_metadata("scip_tool", tool)?;
+        }
+
+        db.commit_transaction()?;
+    }
+
+    Ok(EnrichResult {
+        files_enriched: total_files_enriched,
+        files_skipped: total_files_skipped,
+        symbols_added: total_symbols,
+        references_added: total_refs,
+    })
+}
+
+/// Find the definition whose range encloses the given line.
+fn find_enclosing_definition(
+    definitions: &[crate::scip::ScipDefinition],
+    scip_to_statik: &std::collections::HashMap<String, crate::model::SymbolId>,
+    line: u32,
+) -> Option<crate::model::SymbolId> {
+    // Find the last definition that starts at or before this line.
+    // Definitions are in occurrence order (by position in file).
+    let mut best: Option<&crate::scip::ScipDefinition> = None;
+    for def in definitions {
+        if def.line <= line {
+            match best {
+                Some(prev) if def.line >= prev.line => best = Some(def),
+                None => best = Some(def),
+                _ => {}
+            }
+        }
+    }
+    best.and_then(|d| scip_to_statik.get(&d.symbol).copied())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3094,5 +3316,161 @@ mod tests {
         assert_eq!(parsed["message"], "No lint rules configured");
         assert_eq!(parsed["violations"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["summary"]["total"], 0);
+    }
+
+    #[test]
+    fn test_enrich_imports_scip_data() {
+        use scip::types::{
+            symbol_information::Kind, Document, Index, Occurrence, SymbolInformation, SymbolRole,
+        };
+
+        // Create a temp project with a Rust file
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("main.rs"),
+            "fn main() {\n    greet();\n}\n\nfn greet() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+
+        // Index the project first
+        let config = crate::discovery::DiscoveryConfig::default();
+        crate::cli::index::run_index(tmp.path(), &config, false).unwrap();
+
+        // Build a SCIP index with definitions and references
+        let mut index = Index::new();
+        let mut doc = Document::new();
+        doc.relative_path = "src/main.rs".to_string();
+        doc.language = "Rust".to_string();
+
+        // Definition: main function at line 0
+        let mut main_occ = Occurrence::new();
+        main_occ.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+        main_occ.range = vec![0, 3, 7]; // line 0, col 3-7
+        main_occ.symbol_roles = SymbolRole::Definition as i32;
+        doc.occurrences.push(main_occ);
+
+        // Definition: greet function at line 4
+        let mut greet_occ = Occurrence::new();
+        greet_occ.symbol = "rust-analyzer cargo test 0.1.0 greet().".to_string();
+        greet_occ.range = vec![4, 3, 8]; // line 4, col 3-8
+        greet_occ.symbol_roles = SymbolRole::Definition as i32;
+        doc.occurrences.push(greet_occ);
+
+        // Reference: main calls greet at line 1
+        let mut call_occ = Occurrence::new();
+        call_occ.symbol = "rust-analyzer cargo test 0.1.0 greet().".to_string();
+        call_occ.range = vec![1, 4, 9]; // line 1, col 4-9
+        call_occ.symbol_roles = 0; // plain reference
+        doc.occurrences.push(call_occ);
+
+        // Symbol info
+        let mut main_info = SymbolInformation::new();
+        main_info.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+        main_info.kind = protobuf::EnumOrUnknown::new(Kind::Function);
+        doc.symbols.push(main_info);
+
+        let mut greet_info = SymbolInformation::new();
+        greet_info.symbol = "rust-analyzer cargo test 0.1.0 greet().".to_string();
+        greet_info.kind = protobuf::EnumOrUnknown::new(Kind::Function);
+        doc.symbols.push(greet_info);
+
+        index.documents.push(doc);
+
+        // Write SCIP file
+        let scip_path = tmp.path().join("test.scip");
+        scip::write_message_to_file(&scip_path, index).unwrap();
+
+        // Run enrich
+        let result = run_enrich(tmp.path(), &[scip_path.to_string_lossy().to_string()]).unwrap();
+
+        assert_eq!(result.files_enriched, 1);
+        assert_eq!(result.files_skipped, 0);
+        assert_eq!(result.symbols_added, 2); // main + greet
+        assert_eq!(result.references_added, 1); // main -> greet call
+
+        // Verify DB has SCIP metadata
+        let db_path = tmp.path().join(".statik").join("index.db");
+        let db = crate::db::Database::open(&db_path).unwrap();
+        let enriched_at = db.get_metadata("scip_enriched_at").unwrap();
+        assert!(enriched_at.is_some());
+    }
+
+    #[test]
+    fn test_enrich_skips_unknown_files() {
+        use scip::types::{Document, Index, Occurrence, SymbolRole};
+
+        // Create a temp project with a Rust file
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let config = crate::discovery::DiscoveryConfig::default();
+        crate::cli::index::run_index(tmp.path(), &config, false).unwrap();
+
+        // Build SCIP index referring to a file NOT in the project
+        let mut index = Index::new();
+        let mut doc = Document::new();
+        doc.relative_path = "src/nonexistent.rs".to_string();
+        doc.language = "Rust".to_string();
+        let mut occ = Occurrence::new();
+        occ.symbol = "rust-analyzer cargo test 0.1.0 foo().".to_string();
+        occ.range = vec![0, 0, 3];
+        occ.symbol_roles = SymbolRole::Definition as i32;
+        doc.occurrences.push(occ);
+        index.documents.push(doc);
+
+        let scip_path = tmp.path().join("test.scip");
+        scip::write_message_to_file(&scip_path, index).unwrap();
+
+        let result = run_enrich(tmp.path(), &[scip_path.to_string_lossy().to_string()]).unwrap();
+
+        assert_eq!(result.files_enriched, 0);
+        assert_eq!(result.files_skipped, 1);
+        assert_eq!(result.symbols_added, 0);
+    }
+
+    #[test]
+    fn test_enrich_idempotent() {
+        use scip::types::{
+            symbol_information::Kind, Document, Index, Occurrence, SymbolInformation, SymbolRole,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let config = crate::discovery::DiscoveryConfig::default();
+        crate::cli::index::run_index(tmp.path(), &config, false).unwrap();
+
+        let mut index = Index::new();
+        let mut doc = Document::new();
+        doc.relative_path = "src/main.rs".to_string();
+        doc.language = "Rust".to_string();
+        let mut occ = Occurrence::new();
+        occ.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+        occ.range = vec![0, 3, 7];
+        occ.symbol_roles = SymbolRole::Definition as i32;
+        doc.occurrences.push(occ);
+        let mut sym = SymbolInformation::new();
+        sym.symbol = "rust-analyzer cargo test 0.1.0 main().".to_string();
+        sym.kind = protobuf::EnumOrUnknown::new(Kind::Function);
+        doc.symbols.push(sym);
+        index.documents.push(doc);
+
+        let scip_path = tmp.path().join("test.scip");
+        scip::write_message_to_file(&scip_path, index).unwrap();
+
+        // Enrich twice
+        let scip_file = scip_path.to_string_lossy().to_string();
+        let result1 = run_enrich(tmp.path(), &[scip_file.clone()]).unwrap();
+        let result2 = run_enrich(tmp.path(), &[scip_file]).unwrap();
+
+        // Second run should produce same results (clears previous SCIP data first)
+        assert_eq!(result1.files_enriched, result2.files_enriched);
+        assert_eq!(result1.symbols_added, result2.symbols_added);
     }
 }

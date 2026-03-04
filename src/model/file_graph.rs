@@ -77,6 +77,8 @@ pub struct FileGraph {
     /// Source set names where `analysis = false`, populated during graph construction.
     /// Used by `analysis_excluded_files()` to avoid redundant config I/O.
     pub analysis_disabled_sets: std::collections::HashSet<String>,
+    /// Files that have been enriched with SCIP compiler-resolved references.
+    pub scip_enriched: std::collections::HashSet<FileId>,
 }
 
 impl FileGraph {
@@ -182,6 +184,7 @@ impl FileGraph {
 
         new_graph.unresolved = self.unresolved.clone();
         new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
+        new_graph.scip_enriched = self.scip_enriched.clone();
 
         new_graph
     }
@@ -248,6 +251,7 @@ impl FileGraph {
         }
 
         new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
+        new_graph.scip_enriched = self.scip_enriched.clone();
 
         new_graph
     }
@@ -283,6 +287,7 @@ impl FileGraph {
         }
 
         new_graph.analysis_disabled_sets = self.analysis_disabled_sets.clone();
+        new_graph.scip_enriched = self.scip_enriched.clone();
 
         new_graph
     }

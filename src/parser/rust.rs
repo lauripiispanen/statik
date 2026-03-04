@@ -2720,10 +2720,7 @@ mod tests {
         );
 
         // Imports inside #[cfg(test)] mod should be tagged
-        let test_import = result
-            .imports
-            .iter()
-            .find(|i| i.source_path.contains("db"));
+        let test_import = result.imports.iter().find(|i| i.source_path.contains("db"));
         // The `use crate::db::Database` import should have is_cfg_test = true
         if let Some(imp) = test_import {
             assert!(
@@ -2761,7 +2758,10 @@ use crate::production::important;
             .iter()
             .find(|i| i.source_path.contains("test_util"))
             .expect("should find test_util import");
-        assert!(test_import.is_cfg_test, "import in cfg(test) mod should be tagged");
+        assert!(
+            test_import.is_cfg_test,
+            "import in cfg(test) mod should be tagged"
+        );
 
         let prod_import = result
             .imports

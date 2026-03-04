@@ -102,12 +102,23 @@ pub fn analyze_impact(
     let direct_dependents = graph.direct_importers(target).len();
     let actual_max_depth = affected.last().map(|a| a.depth).unwrap_or(0);
 
+    // Determine confidence: if all unresolved imports come from SCIP-enriched
+    // files, we still have precise data and confidence is Certain.
     let confidence = if graph.unresolved.is_empty() {
         Confidence::Certain
     } else {
-        // With unresolved imports, there might be additional dependents
-        // we can't see, so the blast radius might be larger
-        Confidence::High
+        let unresolved_files_non_enriched = graph
+            .files_with_unresolved_imports()
+            .iter()
+            .any(|fid| !graph.scip_enriched.contains(fid));
+        if unresolved_files_non_enriched {
+            // With non-enriched unresolved imports, there might be additional
+            // dependents we can't see
+            Confidence::High
+        } else {
+            // All files with unresolved imports are SCIP-enriched — precise data
+            Confidence::Certain
+        }
     };
 
     Some(ImpactResult {

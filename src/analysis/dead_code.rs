@@ -134,6 +134,11 @@ pub fn detect_dead_code(
     // Pre-compute set of files with unresolved imports (avoids O(N*M) linear scans)
     let unresolved_file_set = graph.files_with_unresolved_imports();
     let files_with_unresolvable = unresolved_file_set.len();
+    // Files with unresolved imports that are NOT SCIP-enriched (SCIP data is precise)
+    let non_enriched_unresolvable = unresolved_file_set
+        .iter()
+        .filter(|fid| !graph.scip_enriched.contains(fid))
+        .count();
 
     // Dead file detection
     if scope == DeadCodeScope::Files || scope == DeadCodeScope::Both {
@@ -154,11 +159,14 @@ pub fn detect_dead_code(
                 // matter. Confidence is reduced only at the graph level: if
                 // other files have unresolved imports, one of them might
                 // reference this file.
+                // Exception: SCIP-enriched files have precise data, so their
+                // unresolved tree-sitter imports don't reduce confidence.
                 let file_confidence = if unresolved_count == 0 {
                     Confidence::Certain
-                } else if files_with_unresolvable > 0 {
+                } else if non_enriched_unresolvable > 0 {
                     Confidence::High
                 } else {
+                    // All files with unresolved imports are SCIP-enriched
                     Confidence::Certain
                 };
 
@@ -258,11 +266,12 @@ pub fn detect_dead_code(
                         }
                     }
 
-                    let export_confidence = if unresolved_count == 0 {
-                        Confidence::Certain
-                    } else {
-                        Confidence::High
-                    };
+                    let export_confidence =
+                        if unresolved_count == 0 || non_enriched_unresolvable == 0 {
+                            Confidence::Certain
+                        } else {
+                            Confidence::High
+                        };
 
                     dead_exports.push(DeadExport {
                         file_id: *file_id,
@@ -3763,6 +3772,46 @@ mod tests {
             dead_names.contains(&"something"),
             "Child export should be dead when parent is unreachable. Dead: {:?}",
             dead_names
+        );
+    }
+
+    #[test]
+    fn test_dead_file_confidence_certain_when_unresolved_file_is_scip_enriched() {
+        // If a file has unresolved imports BUT is SCIP-enriched, the unresolved
+        // tree-sitter imports should not reduce confidence because SCIP provides
+        // precise data.
+        let mut graph = FileGraph::new();
+        graph.add_file(make_file(1, "src/index.ts", true));
+        graph.add_file(make_file(2, "src/used.ts", false));
+        graph.add_file(make_file(3, "src/orphan.ts", false)); // dead
+
+        graph.add_import(make_edge(1, 2, &["helper"]));
+
+        // File 2 has an unresolved import
+        graph.add_unresolved(UnresolvedImport {
+            file: FileId(2),
+            import_path: "some-missing-module".to_string(),
+            reason: UnresolvedReason::FileNotFound("some-missing-module".to_string()),
+            line: 5,
+        });
+
+        // Without SCIP enrichment, confidence would be High
+        let result_no_scip = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
+        assert_eq!(
+            result_no_scip.dead_files[0].confidence,
+            Confidence::High,
+            "Without SCIP, should be High"
+        );
+
+        // Mark the file with unresolved imports as SCIP-enriched
+        graph.scip_enriched.insert(FileId(2));
+
+        let result_with_scip = detect_dead_code(&graph, DeadCodeScope::Files, &HashSet::new());
+        assert_eq!(result_with_scip.dead_files.len(), 1);
+        assert_eq!(
+            result_with_scip.dead_files[0].confidence,
+            Confidence::Certain,
+            "With SCIP enrichment, unresolved imports should not reduce confidence"
         );
     }
 }

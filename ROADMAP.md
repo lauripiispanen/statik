@@ -558,7 +558,7 @@ ownership with the existing dependency graph, which is already built.
 
 ---
 
-### Phase 11: SCIP Ingestion (Compiler-Grade Precision Without a Compiler)
+### Phase 11: SCIP Ingestion (Compiler-Grade Precision Without a Compiler) — IN PROGRESS
 
 **Goal**: Optionally ingest SCIP (Source Code Intelligence Protocol) indexes
 from external language servers and compilers. This gives statik fully resolved,
@@ -566,6 +566,13 @@ type-aware symbol references without embedding any compiler frontend. Statik
 stays fast and lightweight for its own tree-sitter indexing (file-level deps,
 architectural lint, CI checks), but can optionally consume richer data for
 deep analysis.
+
+**Status**: Core SCIP ingestion is delivered. The `statik enrich` command
+reads `.scip` files and merges compiler-resolved symbols and references into
+the existing SQLite index. Staleness tracking (per-file mtime vs SCIP
+timestamp) and confidence upgrades for enriched data are implemented.
+Remaining: C++ support via scip-clang (11.4), cross-language dependency
+edges (11.5), and large-file benchmarks.
 
 **Key insight from external evaluation**: "The graph algorithms are the hard
 and valuable part — the parsing is commodity." Statik's moat is impact
@@ -668,23 +675,26 @@ Precise path (needs build artifacts, ~25-49s):
 
 **Deliverables**:
 
-1. **SCIP index reader** — Read `.scip` files using the official
-   [`scip` Rust crate](https://crates.io/crates/scip) (v0.6.1, provides
+1. **SCIP index reader** (11.1 ✅) — Read `.scip` files using the official
+   [`scip` Rust crate](https://crates.io/crates/scip) (v0.6, provides
    protobuf types and utilities). Map SCIP occurrences/symbols to statik's
-   existing `SymbolId`, `FileId`, `Reference` types. Note: `scip-clang` is a
-   standalone C++ binary (not embeddable) — statik reads its output via the
-   `scip` crate.
+   existing `SymbolId`, `FileId`, `Reference` types. Implemented in
+   `src/scip/mod.rs`. Handles multi-language indexes, symbol kind mapping,
+   role classification (definition/reference/import), and name extraction
+   from SCIP symbol strings.
 
-2. **`statik enrich` command** — Import one or more SCIP index files into the
-   existing database. Merge with tree-sitter data: SCIP references replace
-   heuristic references for files that appear in both; tree-sitter data is
-   retained for files not covered by the SCIP index. Store the SCIP generation
-   timestamp for staleness tracking.
+2. **`statik enrich` command** (11.2 ✅) — Import one or more SCIP index files
+   into the existing database. Merge with tree-sitter data: SCIP symbols and
+   references are stored with `source='scip'` marker; tree-sitter data is
+   retained for files not covered by the SCIP index. Previous SCIP data for
+   a file is cleared before re-enrichment (idempotent). Stores the SCIP
+   generation timestamp and tool name as DB metadata.
 
-3. **Staleness tracking** — Per-file mtime comparison against the SCIP
-   generation timestamp. When a file is edited after the SCIP index was
-   generated, fall back to tree-sitter for that file. Surface staleness in
-   `statik summary` ("X files enriched, Y stale").
+3. **Staleness tracking** (11.3 ✅) — Per-file mtime comparison against the
+   SCIP enrichment timestamp. When a file's mtime is newer than the SCIP
+   timestamp, that file's SCIP data is considered stale. Staleness is
+   surfaced in `statik summary` output ("X files enriched, Y stale,
+   Z tree-sitter only").
 
 4. **Cross-language edge creation** — When multiple SCIP indexes are imported
    (e.g., one from `scip-java`, one from `scip-clang`), create cross-language
@@ -694,9 +704,11 @@ Precise path (needs build artifacts, ~25-49s):
    automatically supported. No tree-sitter C++ parser needed. Add `Language::Cpp`
    variant and ensure file discovery handles `.cpp`, `.h`, `.hpp`.
 
-6. **Confidence upgrade** — When SCIP data is available for a file, upgrade
-   its references from heuristic confidence to Certain. Reflect this in dead
-   code, impact, and lint output.
+6. **Confidence upgrade** (11.6 ✅) — When SCIP data is available for a file,
+   SCIP-enriched files with unresolved tree-sitter imports no longer reduce
+   confidence. Dead code detection and impact analysis both check the
+   `scip_enriched` set on `FileGraph` and upgrade confidence to Certain
+   when all unresolved imports come from enriched files.
 
 **Dependencies**: None — SCIP ingestion can be built alongside any other phase.
 It only needs the existing database schema and graph infrastructure.

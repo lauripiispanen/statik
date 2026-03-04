@@ -292,6 +292,13 @@ pub enum Commands {
         top: usize,
     },
 
+    /// Enrich the index with SCIP compiler-resolved references
+    Enrich {
+        /// One or more SCIP index files to import
+        #[arg(required = true)]
+        scip_files: Vec<String>,
+    },
+
     /// Analyze cross-team coordination costs via ownership and dependency boundaries
     TeamCoupling {
         /// Glob pattern for files to analyze (optional)

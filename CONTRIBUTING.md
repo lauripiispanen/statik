@@ -63,6 +63,8 @@ statik/
       cycles.rs                       # Circular dependency detection (Tarjan's SCC)
       dependencies.rs                 # Dependency chain analysis (BFS, directional, max depth)
       impact.rs                       # Refactoring blast radius analysis (reverse BFS)
+    scip/
+      mod.rs                          # SCIP index reader: parses .scip protobuf files, maps to statik types
   tests/
     integration/                      # Integration tests (placeholder)
     fixtures/                         # Test fixtures for integration tests

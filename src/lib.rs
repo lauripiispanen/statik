@@ -7,3 +7,4 @@ pub mod linting;
 pub mod model;
 pub mod parser;
 pub mod resolver;
+pub mod scip;

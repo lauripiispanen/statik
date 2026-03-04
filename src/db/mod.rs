@@ -158,6 +158,19 @@ impl Database {
                 [],
             )
             .ok();
+        // SCIP enrichment: track which refs came from SCIP vs tree-sitter
+        self.conn
+            .execute(
+                "ALTER TABLE refs ADD COLUMN source TEXT NOT NULL DEFAULT 'tree_sitter'",
+                [],
+            )
+            .ok();
+        self.conn
+            .execute(
+                "ALTER TABLE symbols ADD COLUMN source TEXT NOT NULL DEFAULT 'tree_sitter'",
+                [],
+            )
+            .ok();
 
         Ok(())
     }
@@ -950,6 +963,145 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // ---- SCIP enrichment operations ----
+
+    /// Delete SCIP-sourced symbols and refs for a file, keeping tree-sitter data.
+    pub fn clear_scip_data_for_file(&self, file_id: FileId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM refs WHERE file_id = ?1 AND source = 'scip'",
+            params![file_id.0],
+        )?;
+        self.conn.execute(
+            "DELETE FROM symbols WHERE file_id = ?1 AND source = 'scip'",
+            params![file_id.0],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a symbol from SCIP enrichment (marked with source='scip').
+    pub fn insert_scip_symbol(&self, symbol: &Symbol) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO symbols (id, file_id, name, qualified_name, kind,
+                 span_start, span_end, line_start, col_start, line_end, col_end,
+                 parent_id, visibility, signature, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'scip')",
+                params![
+                    symbol.id.0,
+                    symbol.file.0,
+                    symbol.name,
+                    symbol.qualified_name,
+                    symbol.kind.as_str(),
+                    symbol.span.start,
+                    symbol.span.end,
+                    symbol.line_span.start.line,
+                    symbol.line_span.start.column,
+                    symbol.line_span.end.line,
+                    symbol.line_span.end.column,
+                    symbol.parent.map(|p| p.0),
+                    symbol.visibility.as_str(),
+                    symbol.signature,
+                ],
+            )
+            .context("failed to insert SCIP symbol")?;
+        Ok(())
+    }
+
+    /// Insert a reference from SCIP enrichment (marked with source='scip').
+    pub fn insert_scip_reference(&self, reference: &Reference) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO refs (id, source_id, target_id, kind, file_id,
+                 span_start, span_end, line_start, col_start, line_end, col_end,
+                 target_name, source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'scip')",
+                params![
+                    reference.id.0,
+                    reference.source.0,
+                    reference.target.0,
+                    reference.kind.as_str(),
+                    reference.file.0,
+                    reference.span.start,
+                    reference.span.end,
+                    reference.line_span.start.line,
+                    reference.line_span.start.column,
+                    reference.line_span.end.line,
+                    reference.line_span.end.column,
+                    reference.target_name,
+                ],
+            )
+            .context("failed to insert SCIP reference")?;
+        Ok(())
+    }
+
+    /// Count the number of files that have SCIP-sourced symbols.
+    pub fn scip_enriched_file_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT file_id) FROM symbols WHERE source = 'scip'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count as usize)
+    }
+
+    /// Get the set of file IDs that have SCIP-sourced symbols.
+    pub fn scip_enriched_file_ids(&self) -> Result<std::collections::HashSet<FileId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT file_id FROM symbols WHERE source = 'scip'")?;
+        let ids = stmt
+            .query_map([], |row| Ok(FileId(row.get::<_, i64>(0)? as u64)))?
+            .collect::<Result<std::collections::HashSet<_>, _>>()
+            .context("failed to get SCIP enriched file IDs")?;
+        Ok(ids)
+    }
+
+    /// Count SCIP-enriched files whose mtime is newer than the enrichment timestamp,
+    /// meaning the file has been edited since SCIP data was imported.
+    pub fn scip_stale_file_count(&self) -> Result<usize> {
+        let enriched_at = match self.get_metadata("scip_enriched_at")? {
+            Some(ts) => ts.parse::<u64>().unwrap_or(0),
+            None => return Ok(0),
+        };
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT s.file_id)
+                 FROM symbols s
+                 JOIN files f ON f.id = s.file_id
+                 WHERE s.source = 'scip' AND f.mtime > ?1",
+                params![enriched_at],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count as usize)
+    }
+
+    /// Get the next available symbol ID (max + 1).
+    pub fn next_symbol_id(&self) -> Result<u64> {
+        let max: Option<i64> = self
+            .conn
+            .query_row("SELECT MAX(id) FROM symbols", [], |row| row.get(0))
+            .optional()
+            .context("failed to get max symbol id")?
+            .flatten();
+        Ok(max.map(|m| m as u64 + 1).unwrap_or(1))
+    }
+
+    /// Get the next available reference ID (max + 1).
+    pub fn next_reference_id(&self) -> Result<u64> {
+        let max: Option<i64> = self
+            .conn
+            .query_row("SELECT MAX(id) FROM refs", [], |row| row.get(0))
+            .optional()
+            .context("failed to get max reference id")?
+            .flatten();
+        Ok(max.map(|m| m as u64 + 1).unwrap_or(1))
+    }
 }
 
 fn row_to_symbol(row: &rusqlite::Row) -> rusqlite::Result<Symbol> {
@@ -1721,5 +1873,51 @@ mod tests {
             Some(&vec!["rule-x".to_string()])
         );
         assert_eq!(all.get(&FileId(2)).unwrap().get(&7), Some(&vec![]));
+    }
+
+    #[test]
+    fn test_scip_enrichment_tracking() {
+        let db = test_db();
+        let file = sample_file();
+        db.upsert_file(&file).unwrap();
+
+        // Initially no SCIP enrichment
+        assert_eq!(db.scip_enriched_file_count().unwrap(), 0);
+        assert_eq!(db.scip_stale_file_count().unwrap(), 0);
+
+        // Insert a SCIP symbol
+        let sym = Symbol {
+            id: SymbolId(100),
+            name: "scip_func".to_string(),
+            qualified_name: "test::scip_func".to_string(),
+            kind: SymbolKind::Function,
+            file: FileId(1),
+            span: Span { start: 0, end: 10 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position {
+                    line: 1,
+                    column: 10,
+                },
+            },
+            parent: None,
+            visibility: Visibility::Public,
+            signature: None,
+        };
+        db.insert_scip_symbol(&sym).unwrap();
+
+        assert_eq!(db.scip_enriched_file_count().unwrap(), 1);
+
+        // Set enrichment timestamp to now (file mtime=1000 < enrichment time)
+        db.set_metadata("scip_enriched_at", "9999999999").unwrap();
+        assert_eq!(db.scip_stale_file_count().unwrap(), 0);
+
+        // Set enrichment timestamp to before file mtime (file mtime=1000 > 500)
+        db.set_metadata("scip_enriched_at", "500").unwrap();
+        assert_eq!(db.scip_stale_file_count().unwrap(), 1);
+
+        // Clear SCIP data for the file
+        db.clear_scip_data_for_file(FileId(1)).unwrap();
+        assert_eq!(db.scip_enriched_file_count().unwrap(), 0);
     }
 }

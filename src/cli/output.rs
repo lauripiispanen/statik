@@ -546,9 +546,39 @@ pub fn format_summary_text(result: &serde_json::Value) -> String {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         out.push_str(&format!(
-            "Cycles: {} cycles, {} files involved",
+            "Cycles: {} cycles, {} files involved\n",
             count, files_in,
         ));
+    }
+
+    if let Some(enrich) = result.get("enrichment") {
+        let scip_files = enrich
+            .get("scip_enriched_files")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let stale_files = enrich
+            .get("scip_stale_files")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let ts_files = enrich
+            .get("tree_sitter_only_files")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let tool = enrich
+            .get("scip_tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if stale_files > 0 {
+            out.push_str(&format!(
+                "Enrichment: {} files via SCIP ({}), {} stale, {} tree-sitter only",
+                scip_files, tool, stale_files, ts_files,
+            ));
+        } else {
+            out.push_str(&format!(
+                "Enrichment: {} files via SCIP ({}), {} tree-sitter only",
+                scip_files, tool, ts_files,
+            ));
+        }
     }
 
     out

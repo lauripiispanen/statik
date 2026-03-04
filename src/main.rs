@@ -434,6 +434,33 @@ fn main() -> Result<()> {
             emit_output(&output, command_name, &post_opts);
         }
 
+        Commands::Enrich { ref scip_files } => {
+            let result = commands::run_enrich(&project_path, scip_files)?;
+            let output = serde_json::json!({
+                "files_enriched": result.files_enriched,
+                "files_skipped": result.files_skipped,
+                "symbols_added": result.symbols_added,
+                "references_added": result.references_added,
+            });
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&output).unwrap_or_default()
+                    );
+                }
+                _ => {
+                    eprintln!(
+                        "Enriched {} files ({} skipped): {} symbols, {} references added",
+                        result.files_enriched,
+                        result.files_skipped,
+                        result.symbols_added,
+                        result.references_added,
+                    );
+                }
+            }
+        }
+
         Commands::TeamCoupling {
             ref glob,
             half_life,
@@ -476,6 +503,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Churn { .. } => "churn",
         Commands::Graph { .. } => "graph",
         Commands::Who { .. } => "who",
+        Commands::Enrich { .. } => "enrich",
         Commands::TeamCoupling { .. } => "team-coupling",
     }
 }
