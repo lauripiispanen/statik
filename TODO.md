@@ -1964,13 +1964,30 @@ point at tree-sitter symbol IDs. Rationale:
 4. For SCIP-only symbols (tree-sitter missed them): optionally insert as
    new symbols, but this is a secondary concern — skip for now.
 
+**Implementation notes** (from codebase exploration):
+- `qualified_name` matching alone won't work: tree-sitter builds names
+  relative to the file (`MyStruct::new`), SCIP includes full module path
+  (`cli::commands::MyStruct::new`). Use `name + line proximity` matching
+  within the same file instead.
+- Cross-file references require a **two-pass approach**: pass 1 iterates
+  all SCIP documents to build a global `scip_symbol_string → SymbolId`
+  map (matching SCIP defs to tree-sitter symbols per file); pass 2
+  iterates again to insert references using the global map.
+- `get_symbols_by_file()` returns both tree-sitter and SCIP symbols
+  (distinguished by `source` column). Filter to `source='tree_sitter'`
+  when building the mapping.
+- `EnrichResult.symbols_added` should become `symbols_matched` since
+  we no longer insert symbols. Update JSON/text output in `main.rs:439`.
+
 Tasks:
 - [ ] In `run_enrich()`, query existing tree-sitter symbols per file and
-  build a `qualified_name → SymbolId` mapping
+  build a `name + line → SymbolId` mapping (not qualified_name — see above)
 - [ ] Stop inserting SCIP symbol definitions (remove `insert_scip_symbol`
   calls, or gate them behind "unmatched only")
+- [ ] Two-pass: first build global `scip_symbol_string → tree_sitter_SymbolId`
+  map across all documents, then insert remapped references in second pass
 - [ ] Remap SCIP reference targets to tree-sitter symbol IDs via the mapping
-- [ ] Update enrichment stats output (symbols_added should reflect reality)
+- [ ] Update enrichment stats output (symbols_added → symbols_matched)
 - [ ] Add test: enrichment does NOT increase dead symbol count
 - [ ] Dogfood: `rust-analyzer scip . && statik enrich index.scip` → dead
   symbols should decrease or stay the same, never increase
