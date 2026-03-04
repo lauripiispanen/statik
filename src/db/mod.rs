@@ -314,12 +314,13 @@ impl Database {
     // ---- Symbol operations ----
 
     pub fn insert_symbol(&self, symbol: &Symbol) -> Result<()> {
-        self.conn
-            .execute(
+        let mut stmt = self.conn.prepare_cached(
                 "INSERT OR REPLACE INTO symbols (id, file_id, name, qualified_name, kind,
                  span_start, span_end, line_start, col_start, line_end, col_end,
                  parent_id, visibility, signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        ).context("failed to prepare insert symbol")?;
+        stmt.execute(
                 params![
                     symbol.id.0,
                     symbol.file.0,
@@ -421,11 +422,12 @@ impl Database {
     // ---- Reference operations ----
 
     pub fn insert_reference(&self, reference: &Reference) -> Result<()> {
-        self.conn
-            .execute(
+        let mut stmt = self.conn.prepare_cached(
                 "INSERT OR REPLACE INTO refs (id, source_id, target_id, kind, file_id,
                  span_start, span_end, line_start, col_start, line_end, col_end, target_name)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        ).context("failed to prepare insert reference")?;
+        stmt.execute(
                 params![
                     reference.id.0,
                     reference.source.0,
@@ -496,13 +498,14 @@ impl Database {
     // ---- Import operations ----
 
     pub fn insert_import(&self, import: &ImportRecord) -> Result<()> {
-        self.conn
-            .execute(
+        let mut stmt = self.conn.prepare_cached(
                 "INSERT INTO imports (file_id, source_path, imported_name, local_name,
                  span_start, span_end, line_start, col_start, line_end, col_end,
                  is_default, is_namespace, is_type_only, is_side_effect, is_dynamic,
                  is_cfg_test)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        ).context("failed to prepare insert import")?;
+        stmt.execute(
                 params![
                     import.file.0,
                     import.source_path,
@@ -561,11 +564,12 @@ impl Database {
     // ---- Export operations ----
 
     pub fn insert_export(&self, export: &ExportRecord) -> Result<()> {
-        self.conn
-            .execute(
+        let mut stmt = self.conn.prepare_cached(
                 "INSERT INTO exports (file_id, symbol_id, exported_name,
                  is_default, is_reexport, is_type_only, source_path)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        ).context("failed to prepare insert export")?;
+        stmt.execute(
                 params![
                     export.file.0,
                     export.symbol.0,
@@ -902,6 +906,22 @@ impl Database {
             "DELETE FROM suppressions WHERE file_id = ?1",
             params![file_id.0],
         )?;
+        Ok(())
+    }
+
+    /// Clear parsed data for multiple files in batch (5 DELETEs total instead of 5*N).
+    pub fn clear_files_data_batch(&self, file_ids: &[FileId]) -> Result<()> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let ids: Vec<u64> = file_ids.iter().map(|f| f.0).collect();
+
+        for table in &["exports", "imports", "refs", "symbols", "suppressions"] {
+            let sql = format!("DELETE FROM {} WHERE file_id IN ({})", table, placeholders);
+            self.conn
+                .execute(&sql, rusqlite::params_from_iter(&ids))?;
+        }
         Ok(())
     }
 

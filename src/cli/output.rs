@@ -574,15 +574,19 @@ pub fn format_summary_text(result: &serde_json::Value) -> String {
             .unwrap_or("unknown");
         if stale_files > 0 {
             out.push_str(&format!(
-                "Enrichment: {} files via SCIP ({}), {} stale, {} tree-sitter only",
+                "Enrichment: {} files via SCIP ({}), {} stale, {} tree-sitter only\n",
                 scip_files, tool, stale_files, ts_files,
             ));
         } else {
             out.push_str(&format!(
-                "Enrichment: {} files via SCIP ({}), {} tree-sitter only",
+                "Enrichment: {} files via SCIP ({}), {} tree-sitter only\n",
                 scip_files, tool, ts_files,
             ));
         }
+        out.push_str(&format!(
+            "Resolution: {} files SCIP-precise, {} tree-sitter-heuristic",
+            scip_files, ts_files,
+        ));
     }
 
     out

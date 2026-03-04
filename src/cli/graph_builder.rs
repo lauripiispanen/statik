@@ -333,6 +333,8 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
         }
     }
 
+    replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
     // Post-filter edges by source set visibility
     if let Some(ref index) = source_set_index {
         graph = graph.filter_by_source_sets(index);
@@ -556,6 +558,44 @@ pub fn maybe_filter_paths(
     }
 }
 
+/// For SCIP-enriched files, replace outgoing tree-sitter edges with SCIP edges.
+///
+/// Tree-sitter edges include false positives (unused imports, wrong wildcard
+/// resolution), so enriched files should only keep SCIP-derived edges.
+/// Non-enriched files keep all their tree-sitter edges unchanged.
+fn replace_tree_sitter_edges_for_enriched_files(graph: &mut FileGraph) {
+    if graph.scip_enriched.is_empty() {
+        return;
+    }
+
+    for &file_id in &graph.scip_enriched.clone() {
+        // Remove outgoing tree-sitter edges from this enriched file
+        if let Some(edges) = graph.imports.get_mut(&file_id) {
+            // Collect targets of tree-sitter edges being removed, for imported_by cleanup
+            let removed_targets: Vec<FileId> = edges
+                .iter()
+                .filter(|e| !e.is_scip_derived)
+                .map(|e| e.to)
+                .collect();
+
+            // Keep only SCIP-derived edges
+            edges.retain(|e| e.is_scip_derived);
+
+            // Clean up reverse index for removed edges
+            for target_id in removed_targets {
+                if let Some(rev_edges) = graph.imported_by.get_mut(&target_id) {
+                    rev_edges.retain(|e| e.from != file_id || e.is_scip_derived);
+                }
+            }
+        }
+    }
+
+    // Remove unresolved imports for enriched files
+    graph
+        .unresolved
+        .retain(|u| !graph.scip_enriched.contains(&u.file));
+}
+
 /// Auto-detect Java source set from directory conventions.
 ///
 /// When no explicit `[scope]` config is present, Java files under
@@ -649,5 +689,167 @@ mod tests {
             auto_detect_java_source_set(Path::new("src/main/Foo.java")),
             None
         );
+    }
+
+    use crate::model::file_graph::{FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason};
+    use crate::model::{FileId, Language};
+
+    fn make_file_info(id: FileId, name: &str) -> FileInfo {
+        FileInfo {
+            id,
+            path: PathBuf::from(name),
+            language: Language::Java,
+            exports: vec![],
+            is_entry_point: false,
+            suppressions: std::collections::HashMap::new(),
+            source_set: None,
+        }
+    }
+
+    fn make_edge(from: FileId, to: FileId, scip: bool) -> FileImport {
+        FileImport {
+            from,
+            to,
+            imported_names: vec!["Foo".to_string()],
+            is_type_only: false,
+            is_mod_declaration: false,
+            is_scip_derived: scip,
+            line: 1,
+        }
+    }
+
+    #[test]
+    fn test_scip_replacement_enriched_file_loses_tree_sitter_edges() {
+        let mut graph = FileGraph::new();
+        let a = FileId(1);
+        let b = FileId(2);
+        let c = FileId(3);
+
+        graph.add_file(make_file_info(a, "A.java"));
+        graph.add_file(make_file_info(b, "B.java"));
+        graph.add_file(make_file_info(c, "C.java"));
+
+        // A has a tree-sitter edge to B and a SCIP edge to C
+        graph.add_import(make_edge(a, b, false));
+        graph.add_import(make_edge(a, c, true));
+
+        // Mark A as SCIP-enriched
+        graph.scip_enriched.insert(a);
+
+        replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
+        // A should only have the SCIP edge to C
+        let a_edges = &graph.imports[&a];
+        assert_eq!(a_edges.len(), 1);
+        assert_eq!(a_edges[0].to, c);
+        assert!(a_edges[0].is_scip_derived);
+    }
+
+    #[test]
+    fn test_scip_replacement_non_enriched_file_keeps_tree_sitter_edges() {
+        let mut graph = FileGraph::new();
+        let a = FileId(1);
+        let b = FileId(2);
+
+        graph.add_file(make_file_info(a, "A.java"));
+        graph.add_file(make_file_info(b, "B.java"));
+
+        // A has a tree-sitter edge to B
+        graph.add_import(make_edge(a, b, false));
+
+        // Mark some other file as enriched (not A)
+        graph.scip_enriched.insert(FileId(99));
+
+        replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
+        // A should still have its tree-sitter edge
+        let a_edges = &graph.imports[&a];
+        assert_eq!(a_edges.len(), 1);
+        assert_eq!(a_edges[0].to, b);
+        assert!(!a_edges[0].is_scip_derived);
+    }
+
+    #[test]
+    fn test_scip_replacement_removes_unresolved_imports_for_enriched_files() {
+        let mut graph = FileGraph::new();
+        let a = FileId(1);
+        let b = FileId(2);
+
+        graph.add_file(make_file_info(a, "A.java"));
+        graph.add_file(make_file_info(b, "B.java"));
+
+        // Add unresolved imports for both files
+        graph.add_unresolved(UnresolvedImport {
+            file: a,
+            import_path: "com.example.Missing".to_string(),
+            reason: UnresolvedReason::FileNotFound("not found".to_string()),
+            line: 5,
+        });
+        graph.add_unresolved(UnresolvedImport {
+            file: b,
+            import_path: "com.example.Other".to_string(),
+            reason: UnresolvedReason::FileNotFound("not found".to_string()),
+            line: 10,
+        });
+
+        // Only A is enriched
+        graph.scip_enriched.insert(a);
+
+        replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
+        // Only B's unresolved import should remain
+        assert_eq!(graph.unresolved.len(), 1);
+        assert_eq!(graph.unresolved[0].file, b);
+    }
+
+    #[test]
+    fn test_scip_replacement_imported_by_stays_consistent() {
+        let mut graph = FileGraph::new();
+        let a = FileId(1);
+        let b = FileId(2);
+        let c = FileId(3);
+
+        graph.add_file(make_file_info(a, "A.java"));
+        graph.add_file(make_file_info(b, "B.java"));
+        graph.add_file(make_file_info(c, "C.java"));
+
+        // A (enriched) -> B via tree-sitter, A -> C via SCIP
+        // C (non-enriched) -> B via tree-sitter
+        graph.add_import(make_edge(a, b, false));
+        graph.add_import(make_edge(a, c, true));
+        graph.add_import(make_edge(c, b, false));
+
+        graph.scip_enriched.insert(a);
+
+        replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
+        // B's imported_by should only have C (A's tree-sitter edge was removed)
+        let b_imported_by = &graph.imported_by[&b];
+        assert_eq!(b_imported_by.len(), 1);
+        assert_eq!(b_imported_by[0].from, c);
+
+        // C's imported_by should still have A (SCIP edge kept)
+        let c_imported_by = &graph.imported_by[&c];
+        assert_eq!(c_imported_by.len(), 1);
+        assert_eq!(c_imported_by[0].from, a);
+        assert!(c_imported_by[0].is_scip_derived);
+    }
+
+    #[test]
+    fn test_scip_replacement_no_enriched_files_is_noop() {
+        let mut graph = FileGraph::new();
+        let a = FileId(1);
+        let b = FileId(2);
+
+        graph.add_file(make_file_info(a, "A.java"));
+        graph.add_file(make_file_info(b, "B.java"));
+
+        graph.add_import(make_edge(a, b, false));
+
+        // No enriched files
+        replace_tree_sitter_edges_for_enriched_files(&mut graph);
+
+        assert_eq!(graph.imports[&a].len(), 1);
+        assert_eq!(graph.imported_by[&b].len(), 1);
     }
 }

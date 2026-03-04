@@ -572,16 +572,24 @@ file-level analyses. The `statik enrich` command reads `.scip` files and
 merges compiler-resolved references into the existing SQLite index. SCIP
 definitions are matched to tree-sitter symbols by name and line proximity
 (11.7) — no duplicate symbol rows are created. SCIP cross-file call
-references now create supplemental edges in the file graph (11.8), so
-enrichment improves all graph-based commands: `dead-code` (fewer false
-positives), `impact` (more complete blast radius), `cycles` (discovers
-hidden cycles), `deps` (shows call-based dependencies), `lint`
-(catches SCIP-discovered violations), and `who`/`bus-factor` (more
-accurate impact radius). SCIP-derived edges are annotated with `[scip]`
-in text output and `"is_scip_derived": true` in JSON. Staleness tracking
-(per-file mtime vs SCIP timestamp) and confidence upgrades for enriched
-data are implemented. Remaining: C++ support via scip-clang (11.4),
-cross-language dependency edges (11.5), and large-file benchmarks.
+references create edges in the file graph (11.8), and for enriched files
+SCIP edges fully replace tree-sitter edges to eliminate false positives
+from unused imports and wrong wildcard resolution (11.8b). Non-enriched
+files keep their tree-sitter edges unchanged. Enrichment improves all
+graph-based commands: `dead-code` (fewer false positives), `impact`
+(more complete blast radius), `cycles` (discovers hidden cycles), `deps`
+(shows call-based dependencies), `lint` (catches SCIP-discovered
+violations), and `who`/`bus-factor` (more accurate impact radius).
+SCIP-derived edges are annotated with `[scip]` in text output and
+`"is_scip_derived": true` in JSON. `statik summary` shows a resolution
+breakdown: "N files SCIP-precise, M tree-sitter-heuristic". Staleness
+tracking (per-file mtime vs SCIP timestamp) and confidence upgrades for
+enriched data are implemented. Indexing performance was improved with
+SQLite batch operations (11.10): prepared statements for all inserts,
+batch DELETEs for changed files, and skipping pointless DELETEs on
+fresh databases. Remaining: SCIP-powered symbol-level analysis (11.9),
+C++ support via scip-clang (11.4), cross-language dependency edges
+(11.5), and large-file benchmarks.
 
 **Key insight from external evaluation**: "The graph algorithms are the hard
 and valuable part — the parsing is commodity." Statik's moat is impact
@@ -735,6 +743,24 @@ Precise path (needs build artifacts, ~25-49s):
    `lint`, `who`, `bus-factor`) automatically benefit. SCIP-derived edges
    are annotated with `[scip]` in text output and `"is_scip_derived": true`
    in JSON output.
+
+9. **SCIP edge replacement for enriched files** (11.8b ✅) — For
+   SCIP-enriched files, outgoing tree-sitter edges are replaced with
+   SCIP-derived edges. Tree-sitter edges include false positives (unused
+   imports, wrong wildcard resolution) that persist alongside precise SCIP
+   edges; replacement eliminates these. Non-enriched files keep all their
+   tree-sitter edges unchanged. Unresolved imports for enriched files are
+   also removed. `statik summary` shows a resolution breakdown: "N files
+   SCIP-precise, M tree-sitter-heuristic".
+
+10. **Indexing performance: SQLite batch operations** (11.10 ✅) —
+    Indexing performance improved via three optimizations: (1) skip
+    `clear_file_data` for files not previously in the DB (eliminates
+    pointless DELETEs on `--force` reindex), (2) use `prepare_cached`
+    for `insert_symbol`, `insert_reference`, `insert_import`, and
+    `insert_export` (avoids re-preparing SQL statements per row), (3)
+    batch `clear_file_data` DELETEs for changed files (5 DELETEs total
+    instead of 5*N individual DELETEs).
 
 **Dependencies**: None — SCIP ingestion can be built alongside any other phase.
 It only needs the existing database schema and graph infrastructure.

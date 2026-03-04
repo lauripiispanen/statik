@@ -75,12 +75,12 @@ pub fn run_index(
                 continue;
             }
             // File changed - reparse with same ID
-            files_to_parse.push((existing.id, df.clone()));
+            files_to_parse.push((existing.id, df.clone(), true));
         } else {
             // New file
             let file_id = FileId(next_file_id);
             next_file_id += 1;
-            files_to_parse.push((file_id, df.clone()));
+            files_to_parse.push((file_id, df.clone(), false));
         }
     }
 
@@ -97,12 +97,12 @@ pub fn run_index(
     // Partition files into parseable and skipped (no parser for language)
     let (parseable, skipped): (Vec<_>, Vec<_>) = files_to_parse
         .iter()
-        .partition(|(_, df)| registry.parser_for(df.language).is_some());
+        .partition(|(_, df, _)| registry.parser_for(df.language).is_some());
     let files_skipped_no_parser = skipped.len();
 
-    let parse_results: Vec<(FileId, Language, String, Result<ParseResult>)> = parseable
+    let parse_results: Vec<(FileId, Language, String, bool, Result<ParseResult>)> = parseable
         .par_iter()
-        .map(|(file_id, df)| {
+        .map(|(file_id, df, is_existing)| {
             let source = std::fs::read_to_string(&df.path)
                 .with_context(|| format!("failed to read {}", df.path.display()));
             match source {
@@ -112,6 +112,7 @@ pub fn run_index(
                         *file_id,
                         df.language,
                         df.path.to_string_lossy().to_string(),
+                        *is_existing,
                         result,
                     )
                 }
@@ -119,6 +120,7 @@ pub fn run_index(
                     *file_id,
                     df.language,
                     df.path.to_string_lossy().to_string(),
+                    *is_existing,
                     Err(e),
                 ),
             }
@@ -135,17 +137,23 @@ pub fn run_index(
 
     // Build FileId -> DiscoveredFile lookup (avoids O(N²) linear scans)
     let files_to_parse_map: HashMap<FileId, &crate::discovery::DiscoveredFile> =
-        files_to_parse.iter().map(|(id, df)| (*id, df)).collect();
+        files_to_parse.iter().map(|(id, df, _)| (*id, df)).collect();
+
+    // Batch-clear old data for changed files (5 DELETEs total instead of 5*N)
+    let changed_ids: Vec<FileId> = parse_results
+        .iter()
+        .filter(|(_, _, _, is_existing, result)| *is_existing && result.is_ok())
+        .map(|(file_id, _, _, _, _)| *file_id)
+        .collect();
+    db.clear_files_data_batch(&changed_ids)?;
 
     let mut total_symbols = 0;
     let mut total_references = 0;
     let mut parse_errors = Vec::new();
 
-    for (file_id, language, path_str, result) in &parse_results {
+    for (file_id, language, path_str, _is_existing, result) in &parse_results {
         match result {
             Ok(parse_result) => {
-                // Clear old data for this file
-                db.clear_file_data(*file_id)?;
 
                 // Upsert file record
                 let df = files_to_parse_map[file_id];

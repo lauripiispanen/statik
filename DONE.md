@@ -109,3 +109,5 @@ Complexity: S=hours, M=days, L=weeks, XL=months
 - [x] [11.6 Confidence upgrade (S)](TODO/11.6-confidence-upgrade.md)
 - [x] [11.7 SCIP symbol deduplication (S)](TODO/11.7-scip-symbol-dedup.md) — two-pass matching, no duplicate symbols
 - [x] [11.8 SCIP cross-file refs in FileGraph (M)](TODO/11.8-scip-file-graph-integration.md) — SCIP call refs feed into all file-level analyses
+- [x] [11.8b SCIP edge replacement for enriched files (S)](TODO/11.8b-scip-edge-replacement.md) — for enriched files, SCIP edges replace tree-sitter edges to eliminate false positives
+- [x] [11.10 Indexing performance: SQLite batch operations (S)](TODO/11.10-indexing-performance.md) — skip pointless DELETEs on --force, prepared statements, batch DELETEs
