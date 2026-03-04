@@ -121,6 +121,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - [ ] Dogfooding report from architect (if applicable)
 
 ## Lead Responsibilities (YOU)
+- **Do NOT enter plan mode** — go straight to team setup. Planning is the architect's job, not yours.
 - **Do NOT pick up implementation tasks** — stay out of the work to preserve your context for coordination
 - Monitor task list progress, nudge idle agents toward available work
 - Create follow-up tasks (e.g., "Update TODO.md") as needs emerge
