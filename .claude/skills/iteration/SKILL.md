@@ -15,7 +15,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 
 ### 1. Architect (`architect`)
 - **Type**: `general-purpose`
-- **Job**: Read TODO.md and ROADMAP.md. Identify the next logical increment based on what's completed (checked items) vs remaining (unchecked). Write a plan, then create concrete implementation tasks in the task list with file paths, descriptions, and acceptance criteria.
+- **Job**: Read TODO.md (condensed index with links) and ROADMAP.md. Follow links to TODO/{task}.md for full task descriptions. Identify the next logical increment based on remaining unchecked items in TODO.md (completed items are in DONE.md). Write a plan, then create concrete implementation tasks in the task list with file paths, descriptions, and acceptance criteria.
 - **First task**: Claim the planning task, analyze the project state, create implementation tasks, message the team when ready.
 - **Ongoing**: Review boyscout findings, confirm completed tasks, answer architecture questions from the coder. Dogfood statik on itself when implementation is done.
 
@@ -56,7 +56,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - **Job**: Ensure documentation matches the current state of the project after the increment. Bridge gaps between ROADMAP.md/TODO.md goals, what was actually implemented, and user-facing docs.
 - **First task**: Read ROADMAP.md, TODO.md, and any existing documentation (README.md, --help output, doc comments). Wait for implementation tasks to be created so you know what's changing.
 - **Ongoing responsibilities**:
-  - Update TODO.md to check off completed items
+  - Move completed items from TODO.md to DONE.md (task details stay in TODO/ directory)
   - Update ROADMAP.md if the increment changes priorities or completes milestones
   - Update README.md or user-facing docs if new CLI flags, commands, or behaviors were added
   - Ensure --help text and CLI argument descriptions are accurate for any new/changed flags
@@ -115,7 +115,7 @@ Create a team with `TeamCreate`, then spawn these 6 agents:
 - [ ] Every bug fix has a substantive regression test
 - [ ] New features have integration tests
 - [ ] No pre-existing issues left unaddressed in touched code areas
-- [ ] Documentation updated (TODO.md, ROADMAP.md, README.md, CLI help text)
+- [ ] Documentation updated (TODO.md, DONE.md, ROADMAP.md, README.md, CLI help text)
 - [ ] `cargo clippy` passes clean
 - [ ] Changes committed to git
 - [ ] Dogfooding report from architect (if applicable)
