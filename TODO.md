@@ -1925,6 +1925,62 @@ on enriched files. `statik summary` shows enrichment coverage.
 
 ---
 
+### 11.7 SCIP symbol deduplication (CRITICAL)
+**Complexity**: S
+**Prerequisites**: 11.2
+**Files**: `src/cli/commands.rs` (`run_enrich()`)
+
+**The problem**: `run_enrich()` inserts each SCIP definition as a NEW symbol
+row with `source='scip'` and a fresh `SymbolId`. This creates duplicates of
+symbols that tree-sitter already found. Tree-sitter references point to the
+original tree-sitter symbol IDs; SCIP references point to the new SCIP symbol
+IDs. Neither set cross-links to the other. Result: all SCIP symbols appear
+dead because no tree-sitter references reach them.
+
+**Evidence** (dogfooding on statik itself with `rust-analyzer scip .`):
+- SCIP index: 7.7MB, 11,466 symbols, 21,251 references
+- Before enrichment: 5 dead symbols
+- After enrichment: **583 dead symbols** (116x increase)
+- All new "dead" symbols are SCIP duplicates of existing tree-sitter symbols
+  (e.g., `Confidence`, `Cli`, `Commands`) that are obviously alive
+
+**Design decision**: Tree-sitter symbol IDs are canonical. Don't insert
+SCIP symbol definitions — only insert SCIP **references**, remapped to
+point at tree-sitter symbol IDs. Rationale:
+
+1. Tree-sitter already found the symbols. SCIP's value is its references
+   (precise cross-file resolution), not its symbol definitions.
+2. Tree-sitter symbol IDs are embedded in all existing references — inserting
+   duplicates with new IDs fragments the graph.
+3. Simpler: no duplicate detection needed, no safety-net filtering needed.
+
+**The fix**: In `run_enrich()`, change the enrichment logic:
+
+1. For each SCIP document, load existing tree-sitter symbols for that file
+   and build a `qualified_name → SymbolId` mapping.
+2. DON'T insert SCIP symbol definitions at all (skip `insert_scip_symbol`).
+3. For each SCIP reference, resolve the target symbol to a tree-sitter
+   `SymbolId` via the mapping. Insert only references that resolve.
+4. For SCIP-only symbols (tree-sitter missed them): optionally insert as
+   new symbols, but this is a secondary concern — skip for now.
+
+Tasks:
+- [ ] In `run_enrich()`, query existing tree-sitter symbols per file and
+  build a `qualified_name → SymbolId` mapping
+- [ ] Stop inserting SCIP symbol definitions (remove `insert_scip_symbol`
+  calls, or gate them behind "unmatched only")
+- [ ] Remap SCIP reference targets to tree-sitter symbol IDs via the mapping
+- [ ] Update enrichment stats output (symbols_added should reflect reality)
+- [ ] Add test: enrichment does NOT increase dead symbol count
+- [ ] Dogfood: `rust-analyzer scip . && statik enrich index.scip` → dead
+  symbols should decrease or stay the same, never increase
+
+**Acceptance**: After enriching statik with its own `rust-analyzer scip .`
+index, dead symbol count is ≤ the pre-enrichment count. SCIP references
+add reachability edges that reduce false positives, not increase them.
+
+---
+
 ## Summary of Complexity Estimates
 
 | Phase | S tasks | M tasks | L tasks | XL tasks | Total tasks |
@@ -1959,9 +2015,13 @@ is now fully complete.
 **Phase 11 (SCIP ingestion)** is a strategic priority — validated by external
 evaluation as "the cleanest path to making the graph analysis actually precise."
 Phase 11.1 (SCIP index reader), 11.2 (`statik enrich` command), 11.3
-(staleness tracking), and 11.6 (confidence upgrade) are complete. Remaining:
-11.4 (C++ support via scip-clang), 11.5 (cross-language dependency edges),
-and large-file benchmarks (179MB+ SCIP indexes).
+(staleness tracking), and 11.6 (confidence upgrade) are complete.
+**CRITICAL**: 11.7 (SCIP symbol deduplication) must be done before SCIP
+enrichment is useful — without it, enrichment creates duplicate symbols that
+inflate dead code counts (5 → 583 on statik's own codebase). This is the
+highest priority remaining Phase 11 item.
+Remaining after 11.7: 11.4 (C++ support via scip-clang), 11.5
+(cross-language dependency edges), and large-file benchmarks.
 
 ---
 
