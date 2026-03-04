@@ -3,10 +3,6 @@
 Remaining tasks by priority. Complexity: S=hours, M=days, L=weeks, XL=months.
 Task details in [TODO/](TODO/). Completed tasks in [DONE.md](DONE.md).
 
-## CRITICAL
-
-- [ ] **[11.7 SCIP symbol deduplication (S)](TODO/11.7-scip-symbol-dedup.md)** — enrichment creates duplicate symbols inflating dead code 5→583; blocks useful SCIP enrichment
-
 ## Phase 11: SCIP Ingestion (in progress)
 
 - [ ] [11.4 C++ support via scip-clang (M)](TODO/11.4-cpp-support.md)
@@ -40,8 +36,7 @@ Task details in [TODO/](TODO/). Completed tasks in [DONE.md](DONE.md).
 
 ## Strategic priorities
 
-1. **11.7** — SCIP symbol dedup (CRITICAL, blocks useful enrichment)
-2. **8.5** — Java multi-module source roots
-3. **1.4–1.5** — Lazy loading + graph caching (10K+ file scale)
-4. **5.x** — Refactoring intelligence (`statik diff HEAD~1 HEAD`)
-5. **6.2** — Graph visualization (`statik graph --format dot`)
+1. **8.5** — Java multi-module source roots
+2. **1.4–1.5** — Lazy loading + graph caching (10K+ file scale)
+3. **5.x** — Refactoring intelligence (`statik diff HEAD~1 HEAD`)
+4. **6.2** — Graph visualization (`statik graph --format dot`)

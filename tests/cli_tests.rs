@@ -2269,8 +2269,8 @@ fn test_enrich_command_json_output() {
         stdout
     );
     assert!(
-        json["symbols_added"].as_u64().unwrap() >= 1,
-        "Should add at least 1 symbol"
+        json["symbols_matched"].as_u64().unwrap() >= 1,
+        "Should match at least 1 symbol"
     );
 }
 
@@ -2341,5 +2341,5 @@ fn test_enrich_empty_scip_index() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(json["files_enriched"].as_u64().unwrap(), 0);
-    assert_eq!(json["symbols_added"].as_u64().unwrap(), 0);
+    assert_eq!(json["symbols_matched"].as_u64().unwrap(), 0);
 }

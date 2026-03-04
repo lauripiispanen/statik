@@ -568,11 +568,13 @@ architectural lint, CI checks), but can optionally consume richer data for
 deep analysis.
 
 **Status**: Core SCIP ingestion is delivered. The `statik enrich` command
-reads `.scip` files and merges compiler-resolved symbols and references into
-the existing SQLite index. Staleness tracking (per-file mtime vs SCIP
-timestamp) and confidence upgrades for enriched data are implemented.
-Remaining: C++ support via scip-clang (11.4), cross-language dependency
-edges (11.5), and large-file benchmarks.
+reads `.scip` files and merges compiler-resolved references into the existing
+SQLite index. SCIP definitions are matched to tree-sitter symbols by name
+and line proximity (11.7) — no duplicate symbol rows are created, so
+enrichment adds reachability edges without inflating dead code counts.
+Staleness tracking (per-file mtime vs SCIP timestamp) and confidence upgrades
+for enriched data are implemented. Remaining: C++ support via scip-clang
+(11.4), cross-language dependency edges (11.5), and large-file benchmarks.
 
 **Key insight from external evaluation**: "The graph algorithms are the hard
 and valuable part — the parsing is commodity." Statik's moat is impact
@@ -684,11 +686,12 @@ Precise path (needs build artifacts, ~25-49s):
    from SCIP symbol strings.
 
 2. **`statik enrich` command** (11.2 ✅) — Import one or more SCIP index files
-   into the existing database. Merge with tree-sitter data: SCIP symbols and
-   references are stored with `source='scip'` marker; tree-sitter data is
-   retained for files not covered by the SCIP index. Previous SCIP data for
-   a file is cleared before re-enrichment (idempotent). Stores the SCIP
-   generation timestamp and tool name as DB metadata.
+   into the existing database. Uses two-pass symbol matching (11.7): pass 1
+   matches SCIP definitions to existing tree-sitter symbols by name + line
+   proximity, building a global mapping; pass 2 inserts SCIP references
+   remapped to tree-sitter symbol IDs. No duplicate symbol rows are created.
+   Previous SCIP data for a file is cleared before re-enrichment (idempotent).
+   Stores the SCIP generation timestamp and tool name as DB metadata.
 
 3. **Staleness tracking** (11.3 ✅) — Per-file mtime comparison against the
    SCIP enrichment timestamp. When a file's mtime is newer than the SCIP
@@ -709,6 +712,13 @@ Precise path (needs build artifacts, ~25-49s):
    confidence. Dead code detection and impact analysis both check the
    `scip_enriched` set on `FileGraph` and upgrade confidence to Certain
    when all unresolved imports come from enriched files.
+
+7. **Symbol deduplication** (11.7 ✅) — SCIP enrichment no longer inserts
+   duplicate symbol rows. Two-pass approach: pass 1 matches each SCIP
+   definition to the closest tree-sitter symbol (by name + line proximity
+   within the same file), building a global `scip_symbol_string → SymbolId`
+   map; pass 2 inserts SCIP references remapped to tree-sitter IDs.
+   Eliminates the 5→583 dead symbol inflation observed during dogfooding.
 
 **Dependencies**: None — SCIP ingestion can be built alongside any other phase.
 It only needs the existing database schema and graph infrastructure.

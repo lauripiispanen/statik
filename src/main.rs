@@ -439,7 +439,7 @@ fn main() -> Result<()> {
             let output = serde_json::json!({
                 "files_enriched": result.files_enriched,
                 "files_skipped": result.files_skipped,
-                "symbols_added": result.symbols_added,
+                "symbols_matched": result.symbols_matched,
                 "references_added": result.references_added,
             });
             match format {
@@ -451,10 +451,10 @@ fn main() -> Result<()> {
                 }
                 _ => {
                     eprintln!(
-                        "Enriched {} files ({} skipped): {} symbols, {} references added",
+                        "Enriched {} files ({} skipped): {} symbols matched, {} references added",
                         result.files_enriched,
                         result.files_skipped,
-                        result.symbols_added,
+                        result.symbols_matched,
                         result.references_added,
                     );
                 }

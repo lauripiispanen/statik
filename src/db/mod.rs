@@ -356,6 +356,23 @@ impl Database {
         Ok(symbols)
     }
 
+    /// Returns only tree-sitter-sourced symbols for a file (excludes SCIP symbols).
+    /// Used during SCIP enrichment to match SCIP definitions to canonical symbol IDs.
+    pub fn get_tree_sitter_symbols_by_file(&self, file_id: FileId) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, file_id, name, qualified_name, kind,
+                    span_start, span_end, line_start, col_start, line_end, col_end,
+                    parent_id, visibility, signature
+             FROM symbols WHERE file_id = ?1 AND source = 'tree_sitter'",
+        )?;
+
+        let symbols = stmt
+            .query_map(params![file_id.0], row_to_symbol)?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get tree-sitter symbols by file")?;
+        Ok(symbols)
+    }
+
     pub fn find_symbols_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind,

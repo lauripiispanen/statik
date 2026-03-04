@@ -863,13 +863,13 @@ statik enrich java-index.scip cpp-index.scip
 
 Output (text mode):
 ```
-Enriched 150 files (3 skipped): 2340 symbols, 8912 references added
+Enriched 150 files (3 skipped): 2340 symbols matched, 8912 references added
 ```
 
 **How it works**:
 - For each SCIP document, statik matches the file to an existing entry in the index by path
 - Previous SCIP data for matched files is cleared before importing (re-enrichment is idempotent)
-- SCIP symbols and references are stored with a `source='scip'` marker in the DB, separate from tree-sitter data
+- SCIP definitions are matched to existing tree-sitter symbols by name and line proximity -- no duplicate symbol rows are created. SCIP references are remapped to point at the canonical tree-sitter symbol IDs, so enrichment adds reachability edges without fragmenting the graph
 - The enrichment timestamp is recorded; files edited after enrichment are considered stale and fall back to tree-sitter resolution
 - `statik summary` shows enrichment status: files enriched, stale files, and tree-sitter-only files
 - `statik dead-code` and `statik impact` automatically upgrade confidence to Certain for SCIP-enriched files
