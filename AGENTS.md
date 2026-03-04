@@ -25,3 +25,9 @@
 - Keep `commands.rs` focused on orchestration; formatting goes in `output.rs`, graph building in `graph_builder.rs`
 - Tests should be substantive — verify behavior, not just absence of crashes
 - When combining data from different subsystems (e.g., file graph paths vs git history paths), normalize path formats. The file graph uses absolute paths; git history uses relative paths. Always convert before comparison and write tests that assert non-trivial values to catch silent mismatches.
+- When adding a new data source that overlaps with existing data (e.g., SCIP symbols alongside tree-sitter symbols), never create duplicate rows with new IDs. Reuse existing IDs and remap references. Dogfood with real data (not just synthetic tests) before committing to catch duplication issues at scale.
+
+## Team Lead Rules
+
+- **Never pick up implementation work** — not even running tests. Delegate everything. Spawn fresh agents when needed. The lead's job is coordination only. Previous iterations failed because the lead did work and ran out of context.
+- When spawning background agents that need bash access, they may be blocked by permission settings. Use foreground agents for tasks requiring shell access, or set `mode: "bypassPermissions"`.
