@@ -215,12 +215,14 @@ pub fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> S
         out.push_str(&format!("Imports ({}):\n", result.imports.len()));
         for dep in &result.imports {
             let indent = "  ".repeat(dep.depth);
-            let names = if dep.imported_names.is_empty() {
+            let suffix = if dep.is_scip_derived {
+                " [scip]".to_string()
+            } else if dep.imported_names.is_empty() {
                 String::new()
             } else {
                 format!(" ({})", dep.imported_names.join(", "))
             };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
+            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), suffix));
         }
         out.push('\n');
     }
@@ -229,12 +231,14 @@ pub fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> S
         out.push_str(&format!("Imported by ({}):\n", result.imported_by.len()));
         for dep in &result.imported_by {
             let indent = "  ".repeat(dep.depth);
-            let names = if dep.imported_names.is_empty() {
+            let suffix = if dep.is_scip_derived {
+                " [scip]".to_string()
+            } else if dep.imported_names.is_empty() {
                 String::new()
             } else {
                 format!(" ({})", dep.imported_names.join(", "))
             };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), names));
+            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), suffix));
         }
         out.push('\n');
     }

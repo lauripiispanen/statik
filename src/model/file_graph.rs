@@ -23,6 +23,8 @@ pub struct FileImport {
     pub is_type_only: bool,
     #[serde(default)]
     pub is_mod_declaration: bool,
+    #[serde(default)]
+    pub is_scip_derived: bool,
     pub line: usize,
 }
 
@@ -100,6 +102,7 @@ impl FileGraph {
             imported_names: import.imported_names.clone(),
             is_type_only: import.is_type_only,
             is_mod_declaration: import.is_mod_declaration,
+            is_scip_derived: import.is_scip_derived,
             line: import.line,
         };
         self.imports.entry(import.from).or_default().push(import);
@@ -414,6 +417,7 @@ impl FileGraph {
                             imported_names: vec![import.imported_name.clone()],
                             is_type_only: false,
                             is_mod_declaration: false,
+                            is_scip_derived: false,
                             line: import.line_span.start.line,
                         });
                     }
@@ -828,6 +832,7 @@ mod tests {
                                 imported_names: vec!["default".to_string()],
                                 is_type_only: false,
                                 is_mod_declaration: false,
+                                is_scip_derived: false,
                                 line: 1,
                             });
                         }
@@ -915,6 +920,7 @@ mod tests {
             imported_names: vec!["UserType".to_string()],
             is_type_only: true,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         // Runtime edge: index -> utils
@@ -924,6 +930,7 @@ mod tests {
             imported_names: vec!["helper".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 2,
         });
 
@@ -969,6 +976,7 @@ mod tests {
             imported_names: vec!["Type".to_string()],
             is_type_only: true,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -1013,6 +1021,7 @@ mod tests {
                 imported_names: vec!["Foo".to_string()],
                 is_type_only: false,
                 is_mod_declaration: false,
+                is_scip_derived: false,
                 line: 1,
             }
         }

@@ -26,6 +26,8 @@ pub struct DepNode {
     pub path: PathBuf,
     pub depth: usize,
     pub imported_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_scip_derived: bool,
 }
 
 /// Result of dependency analysis.
@@ -131,20 +133,25 @@ fn direct_deps(graph: &FileGraph, file: FileId, forward: bool) -> Vec<DepNode> {
                     .map(|f| f.path.clone())
                     .unwrap_or_default();
 
-                // Collect all imported names for this edge
-                let mut names: Vec<String> = edges
+                // Collect all imported names and check if all edges are SCIP-derived
+                let matching_edges: Vec<_> = edges
                     .iter()
                     .filter(|e| if forward { e.to } else { e.from } == neighbor)
+                    .collect();
+                let mut names: Vec<String> = matching_edges
+                    .iter()
                     .flat_map(|e| e.imported_names.clone())
                     .collect();
                 names.sort();
                 names.dedup();
+                let is_scip_derived = matching_edges.iter().all(|e| e.is_scip_derived);
 
                 result.push(DepNode {
                     file_id: neighbor,
                     path,
                     depth: 1,
                     imported_names: names,
+                    is_scip_derived,
                 });
             }
         }
@@ -190,6 +197,7 @@ fn bfs_deps(graph: &FileGraph, start: FileId, forward: bool, max_depth: usize) -
             path,
             depth,
             imported_names,
+            is_scip_derived: false,
         });
 
         if depth < max_depth {
@@ -248,6 +256,7 @@ mod tests {
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         }
     }

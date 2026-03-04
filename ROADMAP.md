@@ -567,14 +567,21 @@ stays fast and lightweight for its own tree-sitter indexing (file-level deps,
 architectural lint, CI checks), but can optionally consume richer data for
 deep analysis.
 
-**Status**: Core SCIP ingestion is delivered. The `statik enrich` command
-reads `.scip` files and merges compiler-resolved references into the existing
-SQLite index. SCIP definitions are matched to tree-sitter symbols by name
-and line proximity (11.7) — no duplicate symbol rows are created, so
-enrichment adds reachability edges without inflating dead code counts.
-Staleness tracking (per-file mtime vs SCIP timestamp) and confidence upgrades
-for enriched data are implemented. Remaining: C++ support via scip-clang
-(11.4), cross-language dependency edges (11.5), and large-file benchmarks.
+**Status**: Core SCIP ingestion is delivered and integrated into all
+file-level analyses. The `statik enrich` command reads `.scip` files and
+merges compiler-resolved references into the existing SQLite index. SCIP
+definitions are matched to tree-sitter symbols by name and line proximity
+(11.7) — no duplicate symbol rows are created. SCIP cross-file call
+references now create supplemental edges in the file graph (11.8), so
+enrichment improves all graph-based commands: `dead-code` (fewer false
+positives), `impact` (more complete blast radius), `cycles` (discovers
+hidden cycles), `deps` (shows call-based dependencies), `lint`
+(catches SCIP-discovered violations), and `who`/`bus-factor` (more
+accurate impact radius). SCIP-derived edges are annotated with `[scip]`
+in text output and `"is_scip_derived": true` in JSON. Staleness tracking
+(per-file mtime vs SCIP timestamp) and confidence upgrades for enriched
+data are implemented. Remaining: C++ support via scip-clang (11.4),
+cross-language dependency edges (11.5), and large-file benchmarks.
 
 **Key insight from external evaluation**: "The graph algorithms are the hard
 and valuable part — the parsing is commodity." Statik's moat is impact
@@ -670,10 +677,10 @@ Precise path (needs build artifacts, ~25-49s):
    numbers are fast enough that some developers may choose to run SCIP
    locally when they need precision.
 
-4. **Precision-sensitive commands opt into SCIP.** `statik lint` → always
-   tree-sitter (fast, file-level rules don't need symbol precision).
-   `statik dead-code` / `statik impact` → uses SCIP if available, warns if
-   stale.
+4. **All graph-based commands benefit from SCIP.** SCIP cross-file call
+   references are added as supplemental edges in the file graph. All
+   commands (`dead-code`, `impact`, `cycles`, `deps`, `lint`, `who`,
+   `bus-factor`) automatically use SCIP-derived edges when available.
 
 **Deliverables**:
 
@@ -719,6 +726,15 @@ Precise path (needs build artifacts, ~25-49s):
    within the same file), building a global `scip_symbol_string → SymbolId`
    map; pass 2 inserts SCIP references remapped to tree-sitter IDs.
    Eliminates the 5→583 dead symbol inflation observed during dogfooding.
+
+8. **SCIP cross-file refs in FileGraph** (11.8 ✅) — SCIP cross-file call
+   references are now queried from the `refs` table and added as
+   supplemental edges in `build_file_graph()`. Edges are deduplicated
+   against existing import-based edges and marked with `is_scip_derived`.
+   All file-level analyses (`dead-code`, `impact`, `cycles`, `deps`,
+   `lint`, `who`, `bus-factor`) automatically benefit. SCIP-derived edges
+   are annotated with `[scip]` in text output and `"is_scip_derived": true`
+   in JSON output.
 
 **Dependencies**: None — SCIP ingestion can be built alongside any other phase.
 It only needs the existing database schema and graph infrastructure.

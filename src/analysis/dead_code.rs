@@ -773,6 +773,7 @@ mod tests {
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         }
     }
@@ -2239,6 +2240,7 @@ mod tests {
             imported_names: vec!["foo".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -2273,6 +2275,7 @@ mod tests {
             imported_names: vec!["foo".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -2500,6 +2503,7 @@ mod tests {
             imported_names: vec!["commands".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -2563,6 +2567,7 @@ mod tests {
             imported_names: vec!["utils".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -3372,6 +3377,7 @@ mod tests {
             imported_names: vec!["do_stuff".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -3681,6 +3687,7 @@ mod tests {
             imported_names: vec!["cycles".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
         graph.add_import(FileImport {
@@ -3689,6 +3696,7 @@ mod tests {
             imported_names: vec!["dead_code".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 2,
         });
 
@@ -3753,6 +3761,7 @@ mod tests {
             imported_names: vec!["child".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
 

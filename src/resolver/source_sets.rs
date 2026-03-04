@@ -632,6 +632,7 @@ deps = ["other"]
             imported_names: vec!["B".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -667,6 +668,7 @@ deps = ["other"]
             imported_names: vec!["Other".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -685,6 +687,7 @@ deps = ["other"]
             imported_names: vec!["Fw".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -703,6 +706,7 @@ deps = ["other"]
             imported_names: vec!["App".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -721,6 +725,7 @@ deps = ["other"]
             imported_names: vec!["Fw".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         // framework -> unknown file: allowed (named set can see default set)
@@ -730,6 +735,7 @@ deps = ["other"]
             imported_names: vec!["Unknown".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 2,
         });
 

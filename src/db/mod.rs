@@ -536,34 +536,7 @@ impl Database {
         )?;
 
         let imports = stmt
-            .query_map(params![file_id.0], |row| {
-                Ok(ImportRecord {
-                    file: FileId(row.get(0)?),
-                    source_path: row.get(1)?,
-                    imported_name: row.get(2)?,
-                    local_name: row.get(3)?,
-                    span: Span {
-                        start: row.get(4)?,
-                        end: row.get(5)?,
-                    },
-                    line_span: LineSpan {
-                        start: Position {
-                            line: row.get(6)?,
-                            column: row.get(7)?,
-                        },
-                        end: Position {
-                            line: row.get(8)?,
-                            column: row.get(9)?,
-                        },
-                    },
-                    is_default: row.get::<_, i32>(10)? != 0,
-                    is_namespace: row.get::<_, i32>(11)? != 0,
-                    is_type_only: row.get::<_, i32>(12)? != 0,
-                    is_side_effect: row.get::<_, i32>(13)? != 0,
-                    is_dynamic: row.get::<_, i32>(14)? != 0,
-                    is_cfg_test: row.get::<_, i32>(15)? != 0,
-                })
-            })?
+            .query_map(params![file_id.0], row_to_import)?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get imports by file")?;
         Ok(imports)
@@ -579,34 +552,7 @@ impl Database {
         )?;
 
         let imports = stmt
-            .query_map([], |row| {
-                Ok(ImportRecord {
-                    file: FileId(row.get(0)?),
-                    source_path: row.get(1)?,
-                    imported_name: row.get(2)?,
-                    local_name: row.get(3)?,
-                    span: Span {
-                        start: row.get(4)?,
-                        end: row.get(5)?,
-                    },
-                    line_span: LineSpan {
-                        start: Position {
-                            line: row.get(6)?,
-                            column: row.get(7)?,
-                        },
-                        end: Position {
-                            line: row.get(8)?,
-                            column: row.get(9)?,
-                        },
-                    },
-                    is_default: row.get::<_, i32>(10)? != 0,
-                    is_namespace: row.get::<_, i32>(11)? != 0,
-                    is_type_only: row.get::<_, i32>(12)? != 0,
-                    is_side_effect: row.get::<_, i32>(13)? != 0,
-                    is_dynamic: row.get::<_, i32>(14)? != 0,
-                    is_cfg_test: row.get::<_, i32>(15)? != 0,
-                })
-            })?
+            .query_map([], row_to_import)?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get all imports")?;
         Ok(imports)
@@ -641,18 +587,7 @@ impl Database {
         )?;
 
         let exports = stmt
-            .query_map(params![file_id.0], |row| {
-                Ok(ExportRecord {
-                    file: FileId(row.get(0)?),
-                    symbol: SymbolId(row.get(1)?),
-                    exported_name: row.get(2)?,
-                    is_default: row.get::<_, i32>(3)? != 0,
-                    is_reexport: row.get::<_, i32>(4)? != 0,
-                    is_type_only: row.get::<_, i32>(5)? != 0,
-                    source_path: row.get(6)?,
-                    line: 0,
-                })
-            })?
+            .query_map(params![file_id.0], row_to_export)?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get exports by file")?;
         Ok(exports)
@@ -665,18 +600,7 @@ impl Database {
         )?;
 
         let exports = stmt
-            .query_map([], |row| {
-                Ok(ExportRecord {
-                    file: FileId(row.get(0)?),
-                    symbol: SymbolId(row.get(1)?),
-                    exported_name: row.get(2)?,
-                    is_default: row.get::<_, i32>(3)? != 0,
-                    is_reexport: row.get::<_, i32>(4)? != 0,
-                    is_type_only: row.get::<_, i32>(5)? != 0,
-                    source_path: row.get(6)?,
-                    line: 0,
-                })
-            })?
+            .query_map([], row_to_export)?
             .collect::<Result<Vec<_>, _>>()
             .context("failed to get all exports")?;
         Ok(exports)
@@ -1098,6 +1022,29 @@ impl Database {
         Ok(count as usize)
     }
 
+    /// Get cross-file SCIP reference edges as (source_file_id, target_file_id) pairs.
+    ///
+    /// Returns distinct pairs where a SCIP reference in one file points to a symbol
+    /// defined in a different file.
+    pub fn scip_cross_file_edges(&self) -> Result<Vec<(FileId, FileId)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT r.file_id, s.file_id
+             FROM refs r
+             JOIN symbols s ON r.target_id = s.id
+             WHERE r.source = 'scip' AND r.file_id != s.file_id",
+        )?;
+        let edges = stmt
+            .query_map([], |row| {
+                Ok((
+                    FileId(row.get::<_, i64>(0)? as u64),
+                    FileId(row.get::<_, i64>(1)? as u64),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to get SCIP cross-file edges")?;
+        Ok(edges)
+    }
+
     /// Get the next available symbol ID (max + 1).
     pub fn next_symbol_id(&self) -> Result<u64> {
         let max: Option<i64> = self
@@ -1119,6 +1066,48 @@ impl Database {
             .flatten();
         Ok(max.map(|m| m as u64 + 1).unwrap_or(1))
     }
+}
+
+fn row_to_import(row: &rusqlite::Row) -> rusqlite::Result<ImportRecord> {
+    Ok(ImportRecord {
+        file: FileId(row.get(0)?),
+        source_path: row.get(1)?,
+        imported_name: row.get(2)?,
+        local_name: row.get(3)?,
+        span: Span {
+            start: row.get(4)?,
+            end: row.get(5)?,
+        },
+        line_span: LineSpan {
+            start: Position {
+                line: row.get(6)?,
+                column: row.get(7)?,
+            },
+            end: Position {
+                line: row.get(8)?,
+                column: row.get(9)?,
+            },
+        },
+        is_default: row.get::<_, i32>(10)? != 0,
+        is_namespace: row.get::<_, i32>(11)? != 0,
+        is_type_only: row.get::<_, i32>(12)? != 0,
+        is_side_effect: row.get::<_, i32>(13)? != 0,
+        is_dynamic: row.get::<_, i32>(14)? != 0,
+        is_cfg_test: row.get::<_, i32>(15)? != 0,
+    })
+}
+
+fn row_to_export(row: &rusqlite::Row) -> rusqlite::Result<ExportRecord> {
+    Ok(ExportRecord {
+        file: FileId(row.get(0)?),
+        symbol: SymbolId(row.get(1)?),
+        exported_name: row.get(2)?,
+        is_default: row.get::<_, i32>(3)? != 0,
+        is_reexport: row.get::<_, i32>(4)? != 0,
+        is_type_only: row.get::<_, i32>(5)? != 0,
+        source_path: row.get(6)?,
+        line: 0,
+    })
 }
 
 fn row_to_symbol(row: &rusqlite::Row) -> rusqlite::Result<Symbol> {
@@ -1936,5 +1925,122 @@ mod tests {
         // Clear SCIP data for the file
         db.clear_scip_data_for_file(FileId(1)).unwrap();
         assert_eq!(db.scip_enriched_file_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_scip_cross_file_edges() {
+        let db = test_db();
+
+        // Set up two files
+        let file1 = FileRecord {
+            id: FileId(1),
+            path: PathBuf::from("src/a.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        let file2 = FileRecord {
+            id: FileId(2),
+            path: PathBuf::from("src/b.ts"),
+            mtime: 1000,
+            language: Language::TypeScript,
+        };
+        db.upsert_file(&file1).unwrap();
+        db.upsert_file(&file2).unwrap();
+
+        // No SCIP data yet
+        let edges = db.scip_cross_file_edges().unwrap();
+        assert!(edges.is_empty());
+
+        // Insert a tree-sitter symbol in file 1 (the definition target)
+        let sym = Symbol {
+            id: SymbolId(1),
+            name: "helper".to_string(),
+            qualified_name: "b::helper".to_string(),
+            kind: SymbolKind::Function,
+            file: FileId(2),
+            span: Span { start: 0, end: 10 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position {
+                    line: 1,
+                    column: 10,
+                },
+            },
+            parent: None,
+            visibility: Visibility::Public,
+            signature: None,
+        };
+        db.insert_symbol(&sym).unwrap();
+
+        // Insert a SCIP symbol in file 1 (the source of the reference)
+        let src_sym = Symbol {
+            id: SymbolId(2),
+            name: "caller".to_string(),
+            qualified_name: "a::caller".to_string(),
+            kind: SymbolKind::Function,
+            file: FileId(1),
+            span: Span { start: 0, end: 10 },
+            line_span: LineSpan {
+                start: Position { line: 1, column: 0 },
+                end: Position {
+                    line: 1,
+                    column: 10,
+                },
+            },
+            parent: None,
+            visibility: Visibility::Public,
+            signature: None,
+        };
+        db.insert_symbol(&src_sym).unwrap();
+
+        // Insert a SCIP reference from file 1 -> symbol in file 2
+        let reference = Reference {
+            id: ReferenceId(1),
+            source: SymbolId(2),
+            target: SymbolId(1),
+            kind: RefKind::Call,
+            file: FileId(1),
+            span: Span { start: 5, end: 11 },
+            line_span: LineSpan {
+                start: Position { line: 3, column: 5 },
+                end: Position {
+                    line: 3,
+                    column: 11,
+                },
+            },
+            target_name: Some("helper".to_string()),
+        };
+        db.insert_scip_reference(&reference).unwrap();
+
+        // Now query cross-file edges
+        let edges = db.scip_cross_file_edges().unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0], (FileId(1), FileId(2)));
+
+        // Insert a same-file SCIP reference (should NOT appear)
+        let same_file_ref = Reference {
+            id: ReferenceId(2),
+            source: SymbolId(2),
+            target: SymbolId(2),
+            kind: RefKind::Call,
+            file: FileId(1),
+            span: Span { start: 20, end: 26 },
+            line_span: LineSpan {
+                start: Position {
+                    line: 5,
+                    column: 20,
+                },
+                end: Position {
+                    line: 5,
+                    column: 26,
+                },
+            },
+            target_name: Some("caller".to_string()),
+        };
+        db.insert_scip_reference(&same_file_ref).unwrap();
+
+        // Still only 1 cross-file edge
+        let edges = db.scip_cross_file_edges().unwrap();
+        assert_eq!(edges.len(), 1);
     }
 }

@@ -202,6 +202,7 @@ mod tests {
             imported_names: vec!["x".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         }
     }
@@ -422,6 +423,7 @@ mod tests {
             imported_names: vec!["a".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
         graph.add_import(FileImport {
@@ -430,6 +432,7 @@ mod tests {
             imported_names: vec!["b".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 2,
         });
 

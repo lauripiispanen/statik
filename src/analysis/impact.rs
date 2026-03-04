@@ -160,6 +160,7 @@ mod tests {
             imported_names: vec!["x".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         }
     }

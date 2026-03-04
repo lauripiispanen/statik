@@ -385,6 +385,7 @@ mod tests {
             imported_names: names.into_iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line,
         }
     }
@@ -749,6 +750,7 @@ mod tests {
             imported_names: vec!["foo".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
 

@@ -943,6 +943,7 @@ mod tests {
                 imported_names: vec!["StringUtils".to_string()],
                 is_type_only: false,
                 is_mod_declaration: false,
+                is_scip_derived: false,
                 line: 1,
             });
         }
@@ -1053,6 +1054,7 @@ mod tests {
             imported_names: vec!["Config".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -1251,6 +1253,7 @@ mod tests {
             imported_names: vec!["old_util".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -1423,6 +1426,7 @@ mod tests {
             imported_names: vec!["auth".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         // handler imports db (db has fan_in = 1)
@@ -1432,6 +1436,7 @@ mod tests {
             imported_names: vec!["db".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 2,
         });
 

@@ -2504,12 +2504,14 @@ mod tests {
                     path: PathBuf::from("src/utils.ts"),
                     depth: 1,
                     imported_names: vec!["helper".to_string()],
+                    is_scip_derived: false,
                 },
                 DepNode {
                     file_id: FileId(3),
                     path: PathBuf::from("src/lib.ts"),
                     depth: 2,
                     imported_names: vec![],
+                    is_scip_derived: false,
                 },
             ],
             imported_by: vec![],
@@ -2942,6 +2944,7 @@ mod tests {
             imported_names: vec!["a".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         // a <-> b: real cycle
@@ -2951,6 +2954,7 @@ mod tests {
             imported_names: vec!["b".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 2,
         });
         graph.add_import(FileImport {
@@ -2959,6 +2963,7 @@ mod tests {
             imported_names: vec!["a".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         // main -> c via mod declaration (should NOT count as cycle edge)
@@ -2968,6 +2973,7 @@ mod tests {
             imported_names: vec!["c".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 3,
         });
         // c -> main via mod declaration (would be false cycle without filtering)
@@ -2977,6 +2983,7 @@ mod tests {
             imported_names: vec!["main".to_string()],
             is_type_only: false,
             is_mod_declaration: true,
+            is_scip_derived: false,
             line: 1,
         });
 
@@ -3109,6 +3116,7 @@ mod tests {
             imported_names: vec!["helper".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         graph.add_import(crate::model::file_graph::FileImport {
@@ -3117,6 +3125,7 @@ mod tests {
             imported_names: vec!["query".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 2,
         });
         (graph, root)
@@ -3197,6 +3206,7 @@ mod tests {
             imported_names: vec!["a".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         graph.add_import(crate::model::file_graph::FileImport {
@@ -3205,6 +3215,7 @@ mod tests {
             imported_names: vec!["b".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
         graph.add_import(crate::model::file_graph::FileImport {
@@ -3213,6 +3224,7 @@ mod tests {
             imported_names: vec!["c".to_string()],
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line: 1,
         });
 

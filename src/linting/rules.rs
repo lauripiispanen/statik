@@ -904,6 +904,7 @@ mod tests {
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: false,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line,
         }
     }
@@ -915,6 +916,7 @@ mod tests {
             imported_names: names.iter().map(|s| s.to_string()).collect(),
             is_type_only: true,
             is_mod_declaration: false,
+            is_scip_derived: false,
             line,
         }
     }

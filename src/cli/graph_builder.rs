@@ -298,8 +298,38 @@ pub fn build_file_graph(db: &Database, project_root: &Path) -> Result<FileGraph>
                 imported_names: names,
                 is_type_only,
                 is_mod_declaration,
+                is_scip_derived: false,
                 line,
             });
+        }
+    }
+
+    // Add SCIP-derived cross-file edges that aren't already covered by import edges
+    if let Ok(scip_edges) = db.scip_cross_file_edges() {
+        if !scip_edges.is_empty() {
+            // Build set of existing (from, to) pairs to dedup
+            let existing_pairs: std::collections::HashSet<(FileId, FileId)> = graph
+                .imports
+                .values()
+                .flat_map(|edges| edges.iter().map(|e| (e.from, e.to)))
+                .collect();
+
+            for (from, to) in scip_edges {
+                if !existing_pairs.contains(&(from, to))
+                    && graph.files.contains_key(&from)
+                    && graph.files.contains_key(&to)
+                {
+                    graph.add_import(FileImport {
+                        from,
+                        to,
+                        imported_names: vec![],
+                        is_type_only: false,
+                        is_mod_declaration: false,
+                        is_scip_derived: true,
+                        line: 0,
+                    });
+                }
+            }
         }
     }
 
