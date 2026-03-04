@@ -222,7 +222,12 @@ pub fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> S
             } else {
                 format!(" ({})", dep.imported_names.join(", "))
             };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), suffix));
+            out.push_str(&format!(
+                "{}{}{}\n",
+                indent,
+                display_path(&dep.path),
+                suffix
+            ));
         }
         out.push('\n');
     }
@@ -238,7 +243,12 @@ pub fn format_deps_text(result: &crate::analysis::dependencies::DepsResult) -> S
             } else {
                 format!(" ({})", dep.imported_names.join(", "))
             };
-            out.push_str(&format!("{}{}{}\n", indent, display_path(&dep.path), suffix));
+            out.push_str(&format!(
+                "{}{}{}\n",
+                indent,
+                display_path(&dep.path),
+                suffix
+            ));
         }
         out.push('\n');
     }

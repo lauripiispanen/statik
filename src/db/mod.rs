@@ -314,31 +314,32 @@ impl Database {
     // ---- Symbol operations ----
 
     pub fn insert_symbol(&self, symbol: &Symbol) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT OR REPLACE INTO symbols (id, file_id, name, qualified_name, kind,
                  span_start, span_end, line_start, col_start, line_end, col_end,
                  parent_id, visibility, signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        ).context("failed to prepare insert symbol")?;
-        stmt.execute(
-                params![
-                    symbol.id.0,
-                    symbol.file.0,
-                    symbol.name,
-                    symbol.qualified_name,
-                    symbol.kind.as_str(),
-                    symbol.span.start,
-                    symbol.span.end,
-                    symbol.line_span.start.line,
-                    symbol.line_span.start.column,
-                    symbol.line_span.end.line,
-                    symbol.line_span.end.column,
-                    symbol.parent.map(|p| p.0),
-                    symbol.visibility.as_str(),
-                    symbol.signature,
-                ],
             )
-            .context("failed to insert symbol")?;
+            .context("failed to prepare insert symbol")?;
+        stmt.execute(params![
+            symbol.id.0,
+            symbol.file.0,
+            symbol.name,
+            symbol.qualified_name,
+            symbol.kind.as_str(),
+            symbol.span.start,
+            symbol.span.end,
+            symbol.line_span.start.line,
+            symbol.line_span.start.column,
+            symbol.line_span.end.line,
+            symbol.line_span.end.column,
+            symbol.parent.map(|p| p.0),
+            symbol.visibility.as_str(),
+            symbol.signature,
+        ])
+        .context("failed to insert symbol")?;
         Ok(())
     }
 
@@ -422,28 +423,29 @@ impl Database {
     // ---- Reference operations ----
 
     pub fn insert_reference(&self, reference: &Reference) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT OR REPLACE INTO refs (id, source_id, target_id, kind, file_id,
                  span_start, span_end, line_start, col_start, line_end, col_end, target_name)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        ).context("failed to prepare insert reference")?;
-        stmt.execute(
-                params![
-                    reference.id.0,
-                    reference.source.0,
-                    reference.target.0,
-                    reference.kind.as_str(),
-                    reference.file.0,
-                    reference.span.start,
-                    reference.span.end,
-                    reference.line_span.start.line,
-                    reference.line_span.start.column,
-                    reference.line_span.end.line,
-                    reference.line_span.end.column,
-                    reference.target_name,
-                ],
             )
-            .context("failed to insert reference")?;
+            .context("failed to prepare insert reference")?;
+        stmt.execute(params![
+            reference.id.0,
+            reference.source.0,
+            reference.target.0,
+            reference.kind.as_str(),
+            reference.file.0,
+            reference.span.start,
+            reference.span.end,
+            reference.line_span.start.line,
+            reference.line_span.start.column,
+            reference.line_span.end.line,
+            reference.line_span.end.column,
+            reference.target_name,
+        ])
+        .context("failed to insert reference")?;
         Ok(())
     }
 
@@ -498,34 +500,35 @@ impl Database {
     // ---- Import operations ----
 
     pub fn insert_import(&self, import: &ImportRecord) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT INTO imports (file_id, source_path, imported_name, local_name,
                  span_start, span_end, line_start, col_start, line_end, col_end,
                  is_default, is_namespace, is_type_only, is_side_effect, is_dynamic,
                  is_cfg_test)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-        ).context("failed to prepare insert import")?;
-        stmt.execute(
-                params![
-                    import.file.0,
-                    import.source_path,
-                    import.imported_name,
-                    import.local_name,
-                    import.span.start,
-                    import.span.end,
-                    import.line_span.start.line,
-                    import.line_span.start.column,
-                    import.line_span.end.line,
-                    import.line_span.end.column,
-                    import.is_default as i32,
-                    import.is_namespace as i32,
-                    import.is_type_only as i32,
-                    import.is_side_effect as i32,
-                    import.is_dynamic as i32,
-                    import.is_cfg_test as i32,
-                ],
             )
-            .context("failed to insert import")?;
+            .context("failed to prepare insert import")?;
+        stmt.execute(params![
+            import.file.0,
+            import.source_path,
+            import.imported_name,
+            import.local_name,
+            import.span.start,
+            import.span.end,
+            import.line_span.start.line,
+            import.line_span.start.column,
+            import.line_span.end.line,
+            import.line_span.end.column,
+            import.is_default as i32,
+            import.is_namespace as i32,
+            import.is_type_only as i32,
+            import.is_side_effect as i32,
+            import.is_dynamic as i32,
+            import.is_cfg_test as i32,
+        ])
+        .context("failed to insert import")?;
         Ok(())
     }
 
@@ -564,23 +567,24 @@ impl Database {
     // ---- Export operations ----
 
     pub fn insert_export(&self, export: &ExportRecord) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT INTO exports (file_id, symbol_id, exported_name,
                  is_default, is_reexport, is_type_only, source_path)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        ).context("failed to prepare insert export")?;
-        stmt.execute(
-                params![
-                    export.file.0,
-                    export.symbol.0,
-                    export.exported_name,
-                    export.is_default as i32,
-                    export.is_reexport as i32,
-                    export.is_type_only as i32,
-                    export.source_path,
-                ],
             )
-            .context("failed to insert export")?;
+            .context("failed to prepare insert export")?;
+        stmt.execute(params![
+            export.file.0,
+            export.symbol.0,
+            export.exported_name,
+            export.is_default as i32,
+            export.is_reexport as i32,
+            export.is_type_only as i32,
+            export.source_path,
+        ])
+        .context("failed to insert export")?;
         Ok(())
     }
 
@@ -919,8 +923,7 @@ impl Database {
 
         for table in &["exports", "imports", "refs", "symbols", "suppressions"] {
             let sql = format!("DELETE FROM {} WHERE file_id IN ({})", table, placeholders);
-            self.conn
-                .execute(&sql, rusqlite::params_from_iter(&ids))?;
+            self.conn.execute(&sql, rusqlite::params_from_iter(&ids))?;
         }
         Ok(())
     }

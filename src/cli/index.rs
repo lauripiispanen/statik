@@ -154,7 +154,6 @@ pub fn run_index(
     for (file_id, language, path_str, _is_existing, result) in &parse_results {
         match result {
             Ok(parse_result) => {
-
                 // Upsert file record
                 let df = files_to_parse_map[file_id];
 

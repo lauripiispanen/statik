@@ -691,7 +691,9 @@ mod tests {
         );
     }
 
-    use crate::model::file_graph::{FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason};
+    use crate::model::file_graph::{
+        FileGraph, FileImport, FileInfo, UnresolvedImport, UnresolvedReason,
+    };
     use crate::model::{FileId, Language};
 
     fn make_file_info(id: FileId, name: &str) -> FileInfo {
